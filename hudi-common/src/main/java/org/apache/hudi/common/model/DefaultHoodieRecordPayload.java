@@ -101,6 +101,7 @@ public class DefaultHoodieRecordPayload extends OverwriteWithLatestAvroPayload {
     return isDefaultRecordPayloadDeleted ? Option.empty() : Option.of(incomingRecord);
   }
 
+  @Override
   public boolean isDeleted(Schema schema, Properties props) {
     if (recordBytes.length == 0) {
       return true;

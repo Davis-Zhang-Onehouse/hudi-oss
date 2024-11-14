@@ -92,6 +92,8 @@ class TestMergeIntoTable extends HoodieSparkSqlTestBase with ScalaAssertionSuppo
              |  select * from (
              |  select 1 as id, 'a1' as name, 10 as price, 1002 as ts
              |  union all
+             |  select 1 as id, 'a11' as name, 10 as price, 1003 as ts
+             |  union all
              |  select 2 as id, 'a2' as name, 12 as price, 1001 as ts
              |  )
              | ) s0

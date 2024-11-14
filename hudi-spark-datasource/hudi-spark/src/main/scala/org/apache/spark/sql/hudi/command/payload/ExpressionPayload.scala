@@ -23,13 +23,12 @@ import org.apache.hudi.SparkAdapterSupport.sparkAdapter
 import org.apache.hudi.avro.AvroSchemaUtils.{isNullable, resolveNullableSchema}
 import org.apache.hudi.avro.HoodieAvroUtils
 import org.apache.hudi.avro.HoodieAvroUtils.bytesToAvro
-import org.apache.hudi.common.model.{DefaultHoodieRecordPayload, HoodiePayloadProps, HoodieRecord, HoodieRecordPayload, OverwriteWithLatestAvroPayload}
+import org.apache.hudi.common.model.{BaseAvroPayload, DefaultHoodieRecordPayload, HoodiePayloadProps, HoodieRecord, HoodieRecordPayload, OverwriteWithLatestAvroPayload}
 import org.apache.hudi.common.util.ValidationUtils.checkState
 import org.apache.hudi.common.util.{BinaryUtil, ConfigUtils, HoodieRecordUtils, StringUtils, ValidationUtils, Option => HOption}
 import org.apache.hudi.config.HoodieWriteConfig
 import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions
-
 import com.github.benmanes.caffeine.cache.{Cache, Caffeine}
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericData, GenericRecord, IndexedRecord}
@@ -45,7 +44,6 @@ import org.apache.spark.{SparkConf, SparkEnv}
 import java.nio.ByteBuffer
 import java.util.function.{Function, Supplier}
 import java.util.{Base64, Objects, Properties}
-
 import scala.collection.JavaConverters._
 
 /**
@@ -63,10 +61,20 @@ import scala.collection.JavaConverters._
  */
 class ExpressionPayload(@transient record: GenericRecord,
                         @transient orderingVal: Comparable[_])
-  extends DefaultHoodieRecordPayload(record, orderingVal) with Logging {
+  extends BaseAvroPayload(record, orderingVal) with Logging with HoodieRecordPayload[ExpressionPayload] {
 
   def this(recordOpt: HOption[GenericRecord]) {
     this(recordOpt.orElse(null), 0)
+  }
+
+  override def preCombine(oldValue: ExpressionPayload): ExpressionPayload = {
+    if (oldValue.recordBytes.length == 0 || oldValue.orderingVal.compareTo(orderingVal) <= 0) {
+      // use natural order for delete record
+      this
+    } else {
+      // pick the payload with greatest ordering value
+      oldValue
+    }
   }
 
   override def combineAndGetUpdateValue(currentValue: IndexedRecord,
@@ -183,9 +191,10 @@ class ExpressionPayload(@transient record: GenericRecord,
       } else {
         val consistentLogicalTimestampEnabled = properties.getProperty(KeyGeneratorOptions.KEYGENERATOR_CONSISTENT_LOGICAL_TIMESTAMP_ENABLED.key,
           KeyGeneratorOptions.KEYGENERATOR_CONSISTENT_LOGICAL_TIMESTAMP_ENABLED.defaultValue).toBoolean
-        val incomingRecordPayload = HoodieRecordUtils.loadPayload(tablePayloadClass, incomingRecord,
-          HoodieAvroUtils.getNestedFieldVal(incomingRecord, orderingField, true, consistentLogicalTimestampEnabled)
-            .asInstanceOf[Comparable[_]]).asInstanceOf[HoodieRecordPayload[_ <: HoodieRecordPayload[_]]]
+        val incomingRecordPayload = HoodieRecordUtils.loadPayload(
+          tablePayloadClass,
+          incomingRecord,
+          HoodieAvroUtils.getNestedFieldVal(incomingRecord, orderingField, true, consistentLogicalTimestampEnabled).asInstanceOf[Comparable[_]]).asInstanceOf[HoodieRecordPayload[_ <: HoodieRecordPayload[_]]]
         incomingRecordPayload.combineAndGetUpdateValue(existingRecord, schema, properties)
       }
     }
@@ -254,7 +263,7 @@ class ExpressionPayload(@transient record: GenericRecord,
   override def isDeleted(schema: Schema, props: Properties): Boolean = {
     val deleteConditionText = props.get(ExpressionPayload.PAYLOAD_DELETE_CONDITION)
     val isUpdateRecord = props.getProperty(HoodiePayloadProps.PAYLOAD_IS_UPDATE_RECORD_FOR_MOR, "false").toBoolean
-    val isDeleteOnCondition= if (isUpdateRecord && deleteConditionText != null) {
+    lazy val isDeleteOnCondition= if (isUpdateRecord && deleteConditionText != null) {
       !getInsertValue(schema, props).isPresent
     } else false
 
