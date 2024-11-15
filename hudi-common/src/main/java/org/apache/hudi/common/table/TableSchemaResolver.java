@@ -115,6 +115,25 @@ public class TableSchemaResolver {
   @GuardedBy("this")
   private volatile HoodieInstant latestCommitWithValidData = null;
 
+  private HoodieTimeline cachedSchemaEvolutionTimelineReverseOrder = null;
+
+  // If we want to compute based on the latest state of metaClient, purge all cached state so no cached result
+  // would be returned.
+  public synchronized void purgeAllCachedStates() {
+    commitMetadataCache.get().clear();
+    tableSchemaCache.get().clear();
+    latestCommitWithValidSchema = Option.empty();
+    latestCommitWithValidData = null;
+    cachedSchemaEvolutionTimelineReverseOrder = null;
+  }
+
+  public synchronized HoodieTimeline getCachedSchemaEvolutionTimelineReverseOrder() {
+    if (cachedSchemaEvolutionTimelineReverseOrder == null) {
+      cachedSchemaEvolutionTimelineReverseOrder = computeSchemaEvolutionTimelineInReverseOrder();
+    }
+    return cachedSchemaEvolutionTimelineReverseOrder;
+  }
+
   @VisibleForTesting
   public ConcurrentHashMap<HoodieInstant, Schema> getTableSchemaCache() {
     return tableSchemaCache.get();
@@ -263,7 +282,7 @@ public class TableSchemaResolver {
 
   @VisibleForTesting
   Option<Pair<HoodieInstant, Schema>> getLastCommitMetadataWithValidSchemaFromTimeline(Option<HoodieInstant> instant) {
-    HoodieTimeline reversedTimeline = getSchemaEvolutionTimelineInReverseOrder();
+    HoodieTimeline reversedTimeline = getCachedSchemaEvolutionTimelineReverseOrder();
     // To find the table schema given an instant time, need to walk backwards from the latest instant in
     // the timeline finding a completed instant containing a valid schema.
     ConcurrentHashMap<HoodieInstant, Schema> tableSchemaAtInstant = new ConcurrentHashMap<>();
@@ -274,6 +293,11 @@ public class TableSchemaResolver {
         // Make sure the commit metadata has a valid schema inside. Same caching the result for expensive operation.
         .filter(s -> {
           try {
+            // If we processed the instant before, do not parse the commit metadata again.
+            if (tableSchemaCache.get().containsKey(s)) {
+              tableSchemaAtInstant.putIfAbsent(s, tableSchemaCache.get().get(s));
+              return true;
+            }
             HoodieCommitMetadata metadata = metaClient.getCommitMetadataSerDe().deserialize(
                     s,
                     reversedTimeline.getInstantDetails(s).get(),
@@ -535,7 +559,7 @@ public class TableSchemaResolver {
    * For types of instants that are included and not reflecting table schema at their instant completion time please refer
    * comments inside the code.
    * */
-  HoodieTimeline getSchemaEvolutionTimelineInReverseOrder() {
+  HoodieTimeline computeSchemaEvolutionTimelineInReverseOrder() {
     HoodieActiveTimeline timeline = metaClient.getActiveTimeline();
     Stream<HoodieInstant> timelineStream = timeline.getInstantsAsStream();
     final Set<String> actions;
