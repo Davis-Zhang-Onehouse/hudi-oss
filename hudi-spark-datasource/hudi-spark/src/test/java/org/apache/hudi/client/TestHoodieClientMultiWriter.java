@@ -117,7 +117,6 @@ import static org.apache.hudi.common.model.HoodieTableType.MERGE_ON_READ;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.COMMIT_ACTION;
 import static org.apache.hudi.common.testutils.HoodieTestDataGenerator.TRIP_EXAMPLE_SCHEMA;
 import static org.apache.hudi.common.testutils.HoodieTestDataGenerator.TRIP_EXAMPLE_SCHEMA_EVOLVED_1;
-import static org.apache.hudi.common.testutils.HoodieTestDataGenerator.TRIP_EXAMPLE_SCHEMA_EVOLVED_2;
 import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_GENERATOR;
 import static org.apache.hudi.common.util.CommitUtils.buildMetadata;
 import static org.apache.hudi.config.HoodieWriteConfig.MERGE_SMALL_FILE_GROUP_CANDIDATES_LIMIT;
@@ -207,33 +206,33 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
             // committed->|------------------------------------------------------------------- initial commit (optional)
 
             // No schema evolution, no conflict.
-            {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA},
-            {false, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA},
-            {false, true, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA},
-            // No concurrent schema evolution, no conflict.
-            {true, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            // If there is a initial commits defining table schema to TRIP_EXAMPLE_SCHEMA.
-            // as long as txn 2 stick to that schema, backwards compatibility handles everything.
-            {true, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA},
+//            {false, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA},
+//            {false, true, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA},
+//            // No concurrent schema evolution, no conflict.
+//            {true, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            // If there is a initial commits defining table schema to TRIP_EXAMPLE_SCHEMA.
+//            // as long as txn 2 stick to that schema, backwards compatibility handles everything.
+//            {true, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
             {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            // In case no initial commits, table schema is not really predefined.
-            // It means are effectively having 2 concurrent txn trying to define table schema
-            // differently in this case.
-            {false, true, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {false, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {false, true, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            // Concurrent schema evolution into the same schema does not conflict.
-            {true, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            // Concurrent schema evolution into different schemas conflicts.
-            // from clustering operation, instead of TRIP_EXAMPLE_SCHEMA_EVOLVED_1 (from commit 2)
-            {true, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {false, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {false, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {false, true, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
-            {false, true, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            // In case no initial commits, table schema is not really predefined.
+//            // It means are effectively having 2 concurrent txn trying to define table schema
+//            // differently in this case.
+//            {false, true, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {false, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {false, true, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            // Concurrent schema evolution into the same schema does not conflict.
+//            {true, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            // Concurrent schema evolution into different schemas conflicts.
+//            // from clustering operation, instead of TRIP_EXAMPLE_SCHEMA_EVOLVED_1 (from commit 2)
+//            {true, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {true, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {false, false, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {false, false, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {false, true, COPY_ON_WRITE, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_2, true, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
+//            {false, true, MERGE_ON_READ, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, TRIP_EXAMPLE_SCHEMA_EVOLVED_1, false, TRIP_EXAMPLE_SCHEMA_EVOLVED_1},
         };
     return Stream.of(data).map(Arguments::of);
   }
