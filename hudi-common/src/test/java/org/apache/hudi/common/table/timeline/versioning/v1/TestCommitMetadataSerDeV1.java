@@ -29,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayInputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -62,10 +63,10 @@ public class TestCommitMetadataSerDeV1 {
   public void testEmptyMetadataSerDe() throws Exception {
     // Create empty commit metadata
     HoodieCommitMetadata emptyMetadata = new HoodieCommitMetadata();
-    
+
     // Create SerDe instance
     CommitMetadataSerDeV1 serDe = new CommitMetadataSerDeV1();
-    
+
     // Create test instant
     HoodieInstant instant = INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.COMPLETED, "commit", "001");
     
@@ -74,7 +75,7 @@ public class TestCommitMetadataSerDeV1 {
     assertTrue(serialized.isPresent());
     
     // Deserialize
-    HoodieCommitMetadata deserialized = serDe.deserialize(instant, serialized.get(), HoodieCommitMetadata.class);
+    HoodieCommitMetadata deserialized = serDe.deserialize(instant, Option.of(new ByteArrayInputStream(serialized.get())), HoodieCommitMetadata.class);
     
     // Verify
     assertNotNull(deserialized);
@@ -134,7 +135,8 @@ public class TestCommitMetadataSerDeV1 {
     assertTrue(serialized.isPresent());
     
     // Deserialize
-    HoodieCommitMetadata deserialized = serDe.deserialize(instant, serialized.get(), HoodieCommitMetadata.class);
+    HoodieCommitMetadata deserialized = serDe.deserialize(
+        instant, Option.of(new ByteArrayInputStream(serialized.get())), HoodieCommitMetadata.class);
     
     // Verify all fields
     assertNotNull(deserialized);
@@ -212,7 +214,7 @@ public class TestCommitMetadataSerDeV1 {
     assertTrue(serialized.isPresent());
     
     // Deserialize
-    HoodieReplaceCommitMetadata deserialized = serDe.deserialize(instant, serialized.get(), HoodieReplaceCommitMetadata.class);
+    HoodieReplaceCommitMetadata deserialized = serDe.deserialize(instant, Option.of(new ByteArrayInputStream(serialized.get())), HoodieReplaceCommitMetadata.class);
     
     // Verify basic fields
     assertNotNull(deserialized);

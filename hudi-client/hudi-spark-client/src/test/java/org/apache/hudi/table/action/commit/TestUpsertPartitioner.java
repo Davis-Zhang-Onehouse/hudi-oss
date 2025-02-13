@@ -52,6 +52,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -174,7 +175,7 @@ public class TestUpsertPartitioner extends HoodieClientTestBase {
     when(commitTimeLine.empty()).thenReturn(false);
     when(commitTimeLine.getReverseOrderedInstants()).thenReturn(setupHoodieInstants().stream());
     LinkedList<Option<byte[]>> commits = generateCommitMetadataList();
-    when(commitTimeLine.getInstantDetails(any(HoodieInstant.class))).thenAnswer(invocationOnMock -> commits.pop());
+    when(commitTimeLine.getInstantContentStream(any(HoodieInstant.class))).thenAnswer(invocationOnMock -> commits.pop().map(ByteArrayInputStream::new));
     long expectAvgSize = (long) Math.ceil((1.0 * 7500) / 1500);
     long actualAvgSize = AverageRecordSizeUtils.averageBytesPerRecord(commitTimeLine, config, COMMIT_METADATA_SER_DE);
     assertEquals(expectAvgSize, actualAvgSize);
