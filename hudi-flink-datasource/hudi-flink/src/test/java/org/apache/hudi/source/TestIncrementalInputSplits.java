@@ -18,6 +18,15 @@
 
 package org.apache.hudi.source;
 
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.expressions.CallExpression;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.table.functions.FunctionIdentifier;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.model.FileSlice;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
@@ -41,16 +50,6 @@ import org.apache.hudi.source.prune.PartitionPruners;
 import org.apache.hudi.storage.StoragePathInfo;
 import org.apache.hudi.utils.TestConfigurations;
 import org.apache.hudi.utils.TestData;
-
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.Path;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.expressions.CallExpression;
-import org.apache.flink.table.expressions.FieldReferenceExpression;
-import org.apache.flink.table.expressions.ValueLiteralExpression;
-import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
-import org.apache.flink.table.functions.FunctionIdentifier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -72,7 +71,6 @@ import java.util.stream.Stream;
 import static org.apache.hudi.common.table.timeline.InstantComparison.GREATER_THAN;
 import static org.apache.hudi.common.table.timeline.InstantComparison.LESSER_THAN;
 import static org.apache.hudi.common.table.timeline.InstantComparison.compareTimestamps;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCommitMetadata;
 import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_GENERATOR;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -173,7 +171,7 @@ public class TestIncrementalInputSplits extends HoodieCommonTestHarness {
             "",
             HoodieTimeline.REPLACE_COMMIT_ACTION);
     timelineMOR.transitionClusterInflightToComplete(true, INSTANT_GENERATOR.getClusteringCommitInflightInstant(commit3.requestedTime()),
-        serializeCommitMetadata(metaClient.getCommitMetadataSerDe(), commitMetadata));
+        Option.of(commitMetadata));
     // commit4: insert overwrite
     HoodieInstant commit4 = INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.REPLACE_COMMIT_ACTION, "4");
     timelineMOR.createNewInstant(commit4);
@@ -186,7 +184,7 @@ public class TestIncrementalInputSplits extends HoodieCommonTestHarness {
             "",
             HoodieTimeline.REPLACE_COMMIT_ACTION);
     timelineMOR.transitionReplaceInflightToComplete(true, INSTANT_GENERATOR.getReplaceCommitInflightInstant(commit4.requestedTime()),
-            serializeCommitMetadata(metaClient.getCommitMetadataSerDe(), commitMetadata));
+            Option.of(commitMetadata));
     // commit5: insert overwrite table
     HoodieInstant commit5 = INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.REPLACE_COMMIT_ACTION, "5");
     timelineMOR.createNewInstant(commit5);
@@ -199,7 +197,7 @@ public class TestIncrementalInputSplits extends HoodieCommonTestHarness {
             "",
             HoodieTimeline.REPLACE_COMMIT_ACTION);
     timelineMOR.transitionReplaceInflightToComplete(true, INSTANT_GENERATOR.getReplaceCommitInflightInstant(commit5.requestedTime()),
-            serializeCommitMetadata(metaClient.getCommitMetadataSerDe(), commitMetadata));
+            Option.of(commitMetadata));
     // commit6:  compaction
     HoodieInstant commit6 = INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.COMPACTION_ACTION, "6");
     timelineMOR.createNewInstant(commit6);
@@ -252,7 +250,7 @@ public class TestIncrementalInputSplits extends HoodieCommonTestHarness {
             HoodieTimeline.REPLACE_COMMIT_ACTION);
     timelineCOW.transitionClusterInflightToComplete(true,
             INSTANT_GENERATOR.getClusteringCommitInflightInstant(commit3.requestedTime()),
-            serializeCommitMetadata(metaClient.getCommitMetadataSerDe(), commitMetadata));
+            Option.of(commitMetadata));
     // commit4: insert overwrite
     HoodieInstant commit4 = INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.REPLACE_COMMIT_ACTION, "4");
     timelineCOW.createNewInstant(commit4);
@@ -265,7 +263,7 @@ public class TestIncrementalInputSplits extends HoodieCommonTestHarness {
             "",
             HoodieTimeline.REPLACE_COMMIT_ACTION);
     timelineCOW.transitionReplaceInflightToComplete(true, INSTANT_GENERATOR.getReplaceCommitInflightInstant(commit4.requestedTime()),
-            serializeCommitMetadata(metaClient.getCommitMetadataSerDe(), commitMetadata));
+            Option.of(commitMetadata));
     // commit5: insert overwrite table
     HoodieInstant commit5 = INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.REPLACE_COMMIT_ACTION, "5");
     timelineCOW.createNewInstant(commit5);
@@ -278,7 +276,7 @@ public class TestIncrementalInputSplits extends HoodieCommonTestHarness {
             "",
             HoodieTimeline.REPLACE_COMMIT_ACTION);
     timelineCOW.transitionReplaceInflightToComplete(true, INSTANT_GENERATOR.getReplaceCommitInflightInstant(commit5.requestedTime()),
-            serializeCommitMetadata(metaClient.getCommitMetadataSerDe(), commitMetadata));
+        Option.of(commitMetadata));
 
     timelineCOW = timelineCOW.reload();
 

@@ -18,6 +18,7 @@
 
 package org.apache.hudi.common.table;
 
+import org.apache.hadoop.fs.Path;
 import org.apache.hudi.common.model.HoodieIndexDefinition;
 import org.apache.hudi.common.model.HoodieIndexMetadata;
 import org.apache.hudi.common.model.HoodieTableType;
@@ -30,8 +31,6 @@ import org.apache.hudi.common.util.FileIOUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.metadata.MetadataPartitionType;
 import org.apache.hudi.storage.StoragePath;
-
-import org.apache.hadoop.fs.Path;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -89,7 +88,7 @@ public class TestHoodieTableMetaClient extends HoodieCommonTestHarness {
     HoodieActiveTimeline commitTimeline = deserializedMetaClient.getActiveTimeline();
     HoodieInstant instant = INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.INFLIGHT, HoodieTimeline.COMMIT_ACTION, "1");
     commitTimeline.createNewInstant(instant);
-    commitTimeline.saveAsComplete(instant, Option.of(getUTF8Bytes("test-detail")));
+    commitTimeline.saveAsComplete(instant, Option.of(outputStream -> outputStream.write(getUTF8Bytes("test-detail"))));
     commitTimeline = commitTimeline.reload();
     HoodieInstant completedInstant = commitTimeline.getInstantsAsStream().findFirst().get();
     assertTrue(completedInstant.isCompleted());
@@ -106,7 +105,7 @@ public class TestHoodieTableMetaClient extends HoodieCommonTestHarness {
 
     HoodieInstant instant = INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.INFLIGHT, HoodieTimeline.COMMIT_ACTION, "1");
     activeTimeline.createNewInstant(instant);
-    activeTimeline.saveAsComplete(instant, Option.of(getUTF8Bytes("test-detail")));
+    activeTimeline.saveAsComplete(instant, Option.of(outputStream -> outputStream.write(getUTF8Bytes("test-detail"))));
 
     // Commit timeline should not auto-reload every time getActiveCommitTimeline(), it should be cached
     activeTimeline = metaClient.getActiveTimeline();

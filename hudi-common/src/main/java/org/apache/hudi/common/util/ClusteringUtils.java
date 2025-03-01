@@ -47,9 +47,9 @@ import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.io.storage.HoodieFileReader;
 import org.apache.hudi.io.storage.HoodieIOFactory;
+import org.apache.hudi.storage.HoodieInstantWriter;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -123,11 +123,11 @@ public class ClusteringUtils {
    * action type. After HUDI-7905, the new clustering commits are written with clustering action.
    */
   public static void transitionClusteringOrReplaceInflightToComplete(boolean shouldLock, HoodieInstant clusteringInstant,
-                                                                     Option<byte[]> commitMetadata, HoodieActiveTimeline activeTimeline) {
+                                                                     Option<HoodieInstantWriter> writerOption, HoodieActiveTimeline activeTimeline) {
     if (clusteringInstant.getAction().equals(HoodieTimeline.CLUSTERING_ACTION)) {
-      activeTimeline.transitionClusterInflightToComplete(shouldLock, clusteringInstant, commitMetadata);
+      activeTimeline.transitionClusterInflightToComplete(shouldLock, clusteringInstant, writerOption);
     } else {
-      activeTimeline.transitionReplaceInflightToComplete(shouldLock, clusteringInstant, commitMetadata);
+      activeTimeline.transitionReplaceInflightToComplete(shouldLock, clusteringInstant, writerOption);
     }
   }
 
@@ -135,12 +135,12 @@ public class ClusteringUtils {
    * Transitions the provided clustering instant fron requested to inflight based on the clustering
    * action type. After HUDI-7905, the new clustering commits are written with clustering action.
    */
-  public static void transitionClusteringOrReplaceRequestedToInflight(HoodieInstant requestedClusteringInstant, Option<byte[]> data,
+  public static void transitionClusteringOrReplaceRequestedToInflight(HoodieInstant requestedClusteringInstant, Option<HoodieInstantWriter> writerOption,
                                                                       HoodieActiveTimeline activeTimeline) {
     if (requestedClusteringInstant.getAction().equals(HoodieTimeline.CLUSTERING_ACTION)) {
-      activeTimeline.transitionClusterRequestedToInflight(requestedClusteringInstant, data);
+      activeTimeline.transitionClusterRequestedToInflight(requestedClusteringInstant, writerOption);
     } else {
-      activeTimeline.transitionReplaceRequestedToInflight(requestedClusteringInstant, data);
+      activeTimeline.transitionReplaceRequestedToInflight(requestedClusteringInstant, writerOption);
     }
   }
 

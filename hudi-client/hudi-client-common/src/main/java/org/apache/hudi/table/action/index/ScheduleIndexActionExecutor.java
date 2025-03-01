@@ -26,7 +26,6 @@ import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.InstantGenerator;
-import org.apache.hudi.common.table.timeline.TimelineMetadataUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.config.HoodieWriteConfig;
@@ -35,11 +34,9 @@ import org.apache.hudi.exception.HoodieIndexException;
 import org.apache.hudi.metadata.MetadataPartitionType;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.action.BaseActionExecutor;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
@@ -48,6 +45,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.hudi.common.model.WriteConcurrencyMode.NON_BLOCKING_CONCURRENCY_CONTROL;
 import static org.apache.hudi.common.model.WriteConcurrencyMode.OPTIMISTIC_CONCURRENCY_CONTROL;
+import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.getInstantWriter;
 import static org.apache.hudi.config.HoodieWriteConfig.WRITE_CONCURRENCY_MODE;
 import static org.apache.hudi.metadata.HoodieTableMetadataUtil.PARTITION_NAME_EXPRESSION_INDEX_PREFIX;
 import static org.apache.hudi.metadata.HoodieTableMetadataUtil.PARTITION_NAME_SECONDARY_INDEX_PREFIX;
@@ -119,14 +117,13 @@ public class ScheduleIndexActionExecutor<T, I, K, O> extends BaseActionExecutor<
             .collect(Collectors.toList());
         HoodieIndexPlan indexPlan = new HoodieIndexPlan(LATEST_INDEX_PLAN_VERSION, indexPartitionInfos);
         // update data timeline with requested instant
-        table.getActiveTimeline().saveToPendingIndexAction(indexInstant, TimelineMetadataUtils.serializeIndexPlan(indexPlan));
+        table.getActiveTimeline().saveToPendingIndexAction(indexInstant, getInstantWriter(indexPlan));
         return Option.of(indexPlan);
       }
-    } catch (IOException e) {
+    } catch (HoodieIOException e) {
       LOG.error("Could not initialize file groups", e);
       // abort gracefully
       abort(indexInstant);
-      throw new HoodieIOException(e.getMessage(), e);
     } finally {
       this.txnManager.endTransaction(Option.of(indexInstant));
     }

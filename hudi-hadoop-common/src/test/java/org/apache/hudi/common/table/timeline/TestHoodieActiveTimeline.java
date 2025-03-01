@@ -18,6 +18,7 @@
 
 package org.apache.hudi.common.table.timeline;
 
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hudi.common.fs.NoOpConsistencyGuard;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieInstant.State;
@@ -31,8 +32,6 @@ import org.apache.hudi.hadoop.fs.HoodieWrapperFileSystem;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.hadoop.HoodieHadoopStorage;
-
-import org.apache.hadoop.fs.FileSystem;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -214,7 +213,7 @@ public class TestHoodieActiveTimeline extends HoodieCommonTestHarness {
 
       byte[] data = getUTF8Bytes("commit");
       timeline.saveAsComplete(INSTANT_GENERATOR.createNewInstant(State.INFLIGHT, instant1.getAction(),
-          instant1.requestedTime()), Option.of(data));
+          instant1.requestedTime()), Option.of(outputStream -> outputStream.write(data)));
 
       timeline = timeline.reload();
 

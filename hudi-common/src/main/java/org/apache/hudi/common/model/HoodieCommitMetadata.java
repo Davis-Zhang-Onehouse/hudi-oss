@@ -18,20 +18,22 @@
 
 package org.apache.hudi.common.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectWriter;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.util.JsonUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.exception.HoodieException;
+import org.apache.hudi.storage.HoodieInstantWriter;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.StoragePathInfo;
-
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -54,10 +56,11 @@ import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.deseri
  * ***************************
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class HoodieCommitMetadata implements Serializable {
+public class HoodieCommitMetadata implements Serializable, HoodieInstantWriter {
 
   public static final String SCHEMA_KEY = "schema";
   private static final Logger LOG = LoggerFactory.getLogger(HoodieCommitMetadata.class);
+  private static final ObjectWriter WRITER = JsonUtils.getObjectMapper().writerFor(HoodieCommitMetadata.class).withDefaultPrettyPrinter();
   protected Map<String, List<HoodieWriteStat>> partitionToWriteStats;
   protected Boolean compacted;
 
@@ -244,6 +247,15 @@ public class HoodieCommitMetadata implements Serializable {
       return clazz.newInstance();
     }
     return JsonUtils.getObjectMapper().readValue(jsonStr, clazz);
+  }
+
+  @Override
+  public void writeToStream(OutputStream outputStream) throws IOException {
+    if (partitionToWriteStats.containsKey(null)) {
+      LOG.info("partition path is null for {}", partitionToWriteStats.get(null));
+      partitionToWriteStats.remove(null);
+    }
+    WRITER.writeValue(outputStream, this);
   }
 
   /**

@@ -34,7 +34,6 @@ import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.StoragePathInfo;
 import org.apache.hudi.table.HoodieTable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -236,7 +235,7 @@ public class ConsistentBucketIndexUtils {
     //prevent exception from race condition. We are ok with the file being created in another thread, so we should
     // check for the marker after catching the exception and we don't need to fail if the file exists
     try {
-      FileIOUtils.createFileInPath(storage, fullPath, Option.of(getUTF8Bytes(StringUtils.EMPTY_STRING)));
+      FileIOUtils.createFileInPath(storage, fullPath, getUTF8Bytes(StringUtils.EMPTY_STRING));
     } catch (HoodieIOException e) {
       if (!storage.exists(fullPath)) {
         throw e;

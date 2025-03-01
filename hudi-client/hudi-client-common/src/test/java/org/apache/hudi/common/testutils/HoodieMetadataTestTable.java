@@ -33,6 +33,7 @@ import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.metadata.HoodieTableMetadataWriter;
+import org.apache.hudi.storage.HoodieInstantWriter;
 import org.apache.hudi.storage.HoodieStorage;
 
 import java.io.IOException;
@@ -173,7 +174,7 @@ public class HoodieMetadataTestTable extends HoodieTestTable {
   public HoodieTestTable addReplaceCommit(
       String instantTime,
       Option<HoodieRequestedReplaceMetadata> requestedReplaceMetadata,
-      Option<HoodieCommitMetadata> inflightReplaceMetadata,
+      Option<HoodieInstantWriter> inflightReplaceMetadata,
       HoodieReplaceCommitMetadata completeReplaceMetadata) throws Exception {
     super.addReplaceCommit(instantTime, requestedReplaceMetadata, inflightReplaceMetadata, completeReplaceMetadata);
     if (writer != null) {
@@ -183,7 +184,7 @@ public class HoodieMetadataTestTable extends HoodieTestTable {
   }
 
   @Override
-  public HoodieTestTable addCluster(String instantTime, HoodieRequestedReplaceMetadata requestedReplaceMetadata, Option<HoodieCommitMetadata> inflightReplaceMetadata,
+  public HoodieTestTable addCluster(String instantTime, HoodieRequestedReplaceMetadata requestedReplaceMetadata, Option<HoodieInstantWriter> inflightReplaceMetadata,
                                     HoodieReplaceCommitMetadata completeReplaceMetadata) throws Exception {
     super.addCluster(instantTime, requestedReplaceMetadata, inflightReplaceMetadata, completeReplaceMetadata);
     if (writer != null) {

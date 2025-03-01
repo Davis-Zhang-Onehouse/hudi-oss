@@ -18,6 +18,8 @@
 
 package org.apache.hudi.common.table;
 
+import org.apache.avro.Schema;
+import org.apache.avro.generic.IndexedRecord;
 import org.apache.hudi.avro.AvroSchemaUtils;
 import org.apache.hudi.avro.model.HoodieClusteringPlan;
 import org.apache.hudi.avro.model.HoodieClusteringStrategy;
@@ -38,14 +40,12 @@ import org.apache.hudi.common.testutils.HoodieCommonTestHarness;
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.common.testutils.SchemaTestUtil;
+import org.apache.hudi.common.testutils.Transformations;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.internal.schema.HoodieSchemaException;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.hadoop.HoodieHadoopStorage;
-
-import org.apache.avro.Schema;
-import org.apache.avro.generic.IndexedRecord;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -72,7 +72,7 @@ import static org.apache.hudi.common.table.timeline.HoodieTimeline.CLUSTERING_AC
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.COMMIT_ACTION;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.REPLACE_COMMIT_ACTION;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.ROLLBACK_ACTION;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeRequestedReplaceMetadata;
+import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.getInstantWriter;
 import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_GENERATOR;
 import static org.apache.hudi.common.testutils.SchemaTestUtil.getSimpleSchema;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -154,7 +154,7 @@ public class TestTableSchemaResolver extends HoodieCommonTestHarness {
     extraMetadata.put(HoodieCommitMetadata.SCHEMA_KEY, originalSchema.toString());
 
     activeTimeline.saveAsComplete(instant1,
-        Option.of(getCommitMetadata(basePath, "partition1", commitTime1, 2, extraMetadata)));
+        getCommitMetadata(basePath, "partition1", commitTime1, 2, extraMetadata));
     metaClient.reloadActiveTimeline();
 
     TableSchemaResolver resolver = new TableSchemaResolver(metaClient);
@@ -175,7 +175,7 @@ public class TestTableSchemaResolver extends HoodieCommonTestHarness {
     String commitTime1 = "001";
     HoodieInstant instant1 = new HoodieInstant(INFLIGHT, COMMIT_ACTION, commitTime1, InstantComparatorV2.REQUESTED_TIME_BASED_COMPARATOR);
     activeTimeline.createNewInstant(instant1);
-    activeTimeline.saveAsComplete(instant1, Option.of(getCommitMetadata(basePath, "partition1", commitTime1, 2, emptyMetadata)));
+    activeTimeline.saveAsComplete(instant1, getCommitMetadata(basePath, "partition1", commitTime1, 2, emptyMetadata));
     metaClient.reloadActiveTimeline();
     metaClient.getTableConfig().setValue(HoodieTableConfig.CREATE_SCHEMA, originalSchema.toString());
 
@@ -352,7 +352,7 @@ public class TestTableSchemaResolver extends HoodieCommonTestHarness {
       // Get the corresponding requested instant for the inflight instant
       HoodieInstant requestedInstant = new HoodieInstant(
           HoodieInstant.State.REQUESTED, CLUSTERING_ACTION, clusteringInstant.get().requestedTime(), InstantComparatorV2.REQUESTED_TIME_BASED_COMPARATOR);
-      when(mockActiveTimeline.getInstantDetails(requestedInstant)).thenReturn(serializeRequestedReplaceMetadata(requestedReplaceMetadata));
+      when(mockActiveTimeline.getInstantDetails(requestedInstant)).thenReturn(getInstantWriter(requestedReplaceMetadata).map(Transformations::writeInstantContentToBytes));
     }
     return mockMetaClient;
   }
@@ -410,7 +410,7 @@ public class TestTableSchemaResolver extends HoodieCommonTestHarness {
     extraMetadata.put(HoodieCommitMetadata.SCHEMA_KEY, originalSchema.toString());
 
     activeTimeline.saveAsComplete(instant,
-        Option.of(getCommitMetadata(basePath, "partition1", commitTime, 2, extraMetadata)));
+        getCommitMetadata(basePath, "partition1", commitTime, 2, extraMetadata));
     metaClient.reloadActiveTimeline();
 
     TableSchemaResolver resolver = new TableSchemaResolver(metaClient);
@@ -483,7 +483,7 @@ public class TestTableSchemaResolver extends HoodieCommonTestHarness {
     Map<String, String> metadata1 = new HashMap<>();
     metadata1.put(HoodieCommitMetadata.SCHEMA_KEY, schema1.toString());
     activeTimeline.saveAsComplete(instant1,
-        Option.of(getCommitMetadata(basePath, "partition1", commitTime1, 2, metadata1)));
+        getCommitMetadata(basePath, "partition1", commitTime1, 2, metadata1));
 
     // Second commit with schema2
     String commitTime2 = "002";
@@ -492,7 +492,7 @@ public class TestTableSchemaResolver extends HoodieCommonTestHarness {
     Map<String, String> metadata2 = new HashMap<>();
     metadata2.put(HoodieCommitMetadata.SCHEMA_KEY, schema2.toString());
     activeTimeline.saveAsComplete(instant2,
-        Option.of(getCommitMetadata(basePath, "partition1", commitTime2, 2, metadata2)));
+        getCommitMetadata(basePath, "partition1", commitTime2, 2, metadata2));
 
     metaClient.reloadActiveTimeline();
 

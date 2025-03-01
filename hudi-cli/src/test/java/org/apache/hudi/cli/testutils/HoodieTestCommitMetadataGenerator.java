@@ -18,6 +18,7 @@
 
 package org.apache.hudi.cli.testutils;
 
+import org.apache.hadoop.fs.Path;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.HoodieWriteStat;
@@ -27,9 +28,8 @@ import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.InProcessTimeGenerator;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.storage.HoodieInstantWriter;
 import org.apache.hudi.storage.StorageConfiguration;
-
-import org.apache.hadoop.fs.Path;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -40,10 +40,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import static org.apache.hudi.common.testutils.HoodieTestUtils.COMMIT_METADATA_SER_DE;
-import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_FILE_NAME_GENERATOR;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCommitMetadata;
 import static org.apache.hudi.common.testutils.FileCreateUtilsLegacy.baseFileName;
+import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_FILE_NAME_GENERATOR;
 import static org.apache.hudi.common.util.CollectionUtils.createImmutableList;
 
 /**
@@ -95,7 +93,7 @@ public class HoodieTestCommitMetadataGenerator extends HoodieTestDataGenerator {
     for (String name : commitFileNames) {
       HoodieCommitMetadata commitMetadata =
               generateCommitMetadata(basePath, commitTime, fileId1, fileId2, writes, updates, extraMetadata, true);
-      createFileWithMetadata(basePath, configuration, name, serializeCommitMetadata(COMMIT_METADATA_SER_DE, commitMetadata).get());
+      createFileWithMetadata(basePath, configuration, name, commitMetadata);
     }
   }
 
@@ -110,14 +108,14 @@ public class HoodieTestCommitMetadataGenerator extends HoodieTestDataGenerator {
     for (String name : commitFileNames) {
       HoodieCommitMetadata commitMetadata =
           generateCommitMetadata(basePath, commitTime, fileId1, fileId2, writes, updates, extraMetadata, setDefaultFileId);
-      createFileWithMetadata(basePath, configuration, name, serializeCommitMetadata(COMMIT_METADATA_SER_DE, commitMetadata).get());
+      createFileWithMetadata(basePath, configuration, name, commitMetadata);
     }
   }
 
-  static void createFileWithMetadata(String basePath, StorageConfiguration<?> configuration, String name, byte[] content) throws IOException {
+  static void createFileWithMetadata(String basePath, StorageConfiguration<?> configuration, String name, HoodieInstantWriter writer) throws IOException {
     Path commitFilePath = new Path(basePath + "/" + HoodieTableMetaClient.METAFOLDER_NAME + "/" + name);
     try (OutputStream os = HadoopFSUtils.getFs(basePath, configuration).create(commitFilePath, true)) {
-      os.write(content);
+      writer.writeToStream(os);
     }
   }
 

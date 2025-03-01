@@ -38,16 +38,18 @@ import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.HoodieTableVersion;
 import org.apache.hudi.common.table.timeline.CommitMetadataSerDe;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
-import org.apache.hudi.common.table.timeline.TimelineMetadataUtils;
 import org.apache.hudi.common.table.timeline.versioning.TimelineLayoutVersion;
 import org.apache.hudi.common.table.view.HoodieTableFileSystemView;
 import org.apache.hudi.common.table.view.TableFileSystemView;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.exception.HoodieException;
+import org.apache.hudi.exception.HoodieIOException;
+import org.apache.hudi.storage.HoodieInstantWriter;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -64,15 +66,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCleanMetadata;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCleanerPlan;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCommitMetadata;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCompactionPlan;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeRequestedReplaceMetadata;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeRestoreMetadata;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeRollbackMetadata;
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeRollbackPlan;
-import static org.apache.hudi.common.util.StringUtils.getUTF8Bytes;
+import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.getInstantWriter;
 
 /**
  * Utils for creating dummy Hudi files in testing.
@@ -91,14 +85,29 @@ public class FileCreateUtils extends FileCreateUtilsBase {
     createMetaFileInMetaPath(metaClient.getMetaPath(), instantTime, suffix, storage, preTableVersion8);
   }
 
-  private static void createMetaFile(HoodieTableMetaClient metaClient, String instantTime, String suffix) throws IOException {
-    createMetaFile(metaClient, instantTime, suffix, getUTF8Bytes(""));
+  private static void createMetaFile(HoodieTableMetaClient metaClient, String instantTime, String suffix) {
+    createMetaFile(metaClient, instantTime, suffix, Option.empty());
   }
 
-  private static void createMetaFile(HoodieTableMetaClient metaClient, String instantTime, String suffix, byte[] content) throws IOException {
-    createMetaFileInTimelinePath(metaClient, instantTime, InProcessTimeGenerator::createNewInstantTime, suffix, content);
+  private static void createMetaFile(HoodieTableMetaClient metaClient, String instantTime, String suffix, Option<HoodieInstantWriter> contentWriter) {
+    Path parentPath = Paths.get(metaClient.getMetaPath().toUri());
+    try {
+      Files.createDirectories(parentPath);
+      Path metaFilePath = parentPath.resolve(instantTime + suffix);
+      if (Files.notExists(metaFilePath)) {
+        if (contentWriter.isPresent()) {
+          try (OutputStream outputStream = Files.newOutputStream(metaFilePath)) {
+            contentWriter.get().writeToStream(outputStream);
+          }
+        } else {
+          Files.createFile(metaFilePath);
+        }
+      }
+    } catch (IOException ex) {
+      throw new HoodieIOException("failed to create meta file for " + instantTime, ex);
+    }
   }
-
+  
   private static void deleteMetaFile(HoodieTableMetaClient metaClient, String instantTime, String suffix,
                                      HoodieStorage storage) throws IOException {
     deleteMetaFileInTimeline(metaClient.getTimelinePath().toUri().getPath(), instantTime, suffix, storage);
@@ -115,18 +124,17 @@ public class FileCreateUtils extends FileCreateUtilsBase {
     if (metadata.isPresent()) {
       HoodieCommitMetadata commitMetadata = metadata.get();
       createMetaFileInTimelinePath(metaClient, instantTime, completionTimeSupplier, HoodieTimeline.COMMIT_EXTENSION,
-          serializeCommitMetadata(commitMetadataSerDe, commitMetadata).get());
+          Option.of(commitMetadata));
     } else {
       createMetaFileInTimelinePath(metaClient, instantTime, completionTimeSupplier, HoodieTimeline.COMMIT_EXTENSION,
-          getUTF8Bytes(""));
+          Option.empty());
     }
   }
 
   public static void createSavepointCommit(HoodieTableMetaClient metaClient, String instantTime,
-                                           HoodieSavepointMetadata savepointMetadata)
-      throws IOException {
+                                           HoodieSavepointMetadata savepointMetadata) {
     createMetaFile(metaClient, instantTime, HoodieTimeline.SAVEPOINT_EXTENSION,
-        TimelineMetadataUtils.serializeSavepointMetadata(savepointMetadata).get());
+        getInstantWriter(savepointMetadata));
   }
 
   public static void createCommit(HoodieTableMetaClient metaClient, String instantTime)
@@ -144,8 +152,7 @@ public class FileCreateUtils extends FileCreateUtilsBase {
 
   public static void createDeltaCommit(HoodieTableMetaClient metaClient, CommitMetadataSerDe commitMetadataSerDe, String instantTime,
                                        HoodieCommitMetadata metadata) throws IOException {
-    createMetaFile(metaClient, instantTime, HoodieTimeline.DELTA_COMMIT_EXTENSION,
-        serializeCommitMetadata(commitMetadataSerDe, metadata).get());
+    createMetaFile(metaClient, instantTime, HoodieTimeline.DELTA_COMMIT_EXTENSION, Option.of(metadata));
   }
 
   public static void createDeltaCommit(HoodieTableMetaClient metaClient, String instantTime) throws IOException {
@@ -183,34 +190,26 @@ public class FileCreateUtils extends FileCreateUtilsBase {
   }
 
   public static void createReplaceCommit(HoodieTableMetaClient metaClient, CommitMetadataSerDe commitMetadataSerDe,
-                                         String instantTime, HoodieReplaceCommitMetadata metadata) throws IOException {
-    createMetaFile(metaClient, instantTime, HoodieTimeline.REPLACE_COMMIT_EXTENSION,
-        serializeCommitMetadata(commitMetadataSerDe, metadata).get());
+                                         String instantTime, HoodieReplaceCommitMetadata metadata) {
+    createMetaFile(metaClient, instantTime, HoodieTimeline.REPLACE_COMMIT_EXTENSION, Option.of(metadata));
   }
 
   public static void createReplaceCommit(HoodieTableMetaClient metaClient, CommitMetadataSerDe commitMetadataSerDe,
                                          String instantTime, String completionTime, HoodieReplaceCommitMetadata metadata) throws IOException {
     createMetaFileInTimelinePath(
-        metaClient, instantTime, () -> completionTime, HoodieTimeline.REPLACE_COMMIT_EXTENSION,
-        serializeCommitMetadata(commitMetadataSerDe, metadata).get());
+        metaClient, instantTime, () -> completionTime, HoodieTimeline.REPLACE_COMMIT_EXTENSION, Option.of(metadata));
   }
 
   public static void createRequestedClusterCommit(HoodieTableMetaClient metaClient, String instantTime,
-                                                  HoodieRequestedReplaceMetadata requestedReplaceMetadata)
-      throws IOException {
+                                                  HoodieRequestedReplaceMetadata requestedReplaceMetadata) {
     createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_CLUSTERING_COMMIT_EXTENSION,
-        serializeRequestedReplaceMetadata(requestedReplaceMetadata).get());
+        getInstantWriter(requestedReplaceMetadata));
   }
 
   public static void createInflightClusterCommit(HoodieTableMetaClient metaClient, CommitMetadataSerDe commitMetadataSerDe,
-                                                 String instantTime, Option<HoodieCommitMetadata> inflightReplaceMetadata)
-      throws IOException {
-    if (inflightReplaceMetadata.isPresent()) {
-      createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_CLUSTERING_COMMIT_EXTENSION,
-          serializeCommitMetadata(commitMetadataSerDe, inflightReplaceMetadata.get()).get());
-    } else {
-      createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_CLUSTERING_COMMIT_EXTENSION);
-    }
+                                                 String instantTime, Option<HoodieInstantWriter> inflightReplaceMetadata) {
+    createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_CLUSTERING_COMMIT_EXTENSION,
+        inflightReplaceMetadata);
   }
 
   public static void createRequestedReplaceCommit(HoodieTableMetaClient metaClient, String instantTime,
@@ -218,75 +217,64 @@ public class FileCreateUtils extends FileCreateUtilsBase {
       throws IOException {
     if (requestedReplaceMetadata.isPresent()) {
       createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_REPLACE_COMMIT_EXTENSION,
-          serializeRequestedReplaceMetadata(requestedReplaceMetadata.get()).get());
+          getInstantWriter(requestedReplaceMetadata.get()));
     } else {
       createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_REPLACE_COMMIT_EXTENSION);
     }
   }
 
   public static void createInflightReplaceCommit(HoodieTableMetaClient metaClient, CommitMetadataSerDe commitMetadataSerDe,
-                                                 String instantTime, Option<HoodieCommitMetadata> inflightReplaceMetadata)
-      throws IOException {
-    if (inflightReplaceMetadata.isPresent()) {
-      createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_REPLACE_COMMIT_EXTENSION,
-          serializeCommitMetadata(commitMetadataSerDe, inflightReplaceMetadata.get()).get());
-    } else {
-      createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_REPLACE_COMMIT_EXTENSION);
-    }
+                                                 String instantTime, Option<HoodieInstantWriter> inflightReplaceMetadata) {
+    createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_REPLACE_COMMIT_EXTENSION, inflightReplaceMetadata);
   }
 
   public static void createRequestedCompactionCommit(HoodieTableMetaClient metaClient, String instantTime,
-                                                     HoodieCompactionPlan requestedCompactionPlan)
-      throws IOException {
+                                                     HoodieCompactionPlan requestedCompactionPlan) {
     createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_COMPACTION_EXTENSION,
-        serializeCompactionPlan(requestedCompactionPlan).get());
+        getInstantWriter(requestedCompactionPlan));
   }
 
   public static void createCleanFile(HoodieTableMetaClient metaClient, String instantTime,
-                                     HoodieCleanMetadata metadata) throws IOException {
-    createMetaFile(metaClient, instantTime, HoodieTimeline.CLEAN_EXTENSION,
-        serializeCleanMetadata(metadata).get());
+                                     HoodieCleanMetadata metadata) {
+    createMetaFile(metaClient, instantTime, HoodieTimeline.CLEAN_EXTENSION, getInstantWriter(metadata));
   }
 
   public static void createCleanFile(HoodieTableMetaClient metaClient, String instantTime,
-                                     HoodieCleanMetadata metadata, boolean isEmpty)
-      throws IOException {
+                                     HoodieCleanMetadata metadata, boolean isEmpty) {
     createMetaFile(metaClient, instantTime, HoodieTimeline.CLEAN_EXTENSION,
-        isEmpty ? EMPTY_BYTES : serializeCleanMetadata(metadata).get());
+        isEmpty ? Option.empty() : getInstantWriter(metadata));
   }
 
   public static void createRequestedCleanFile(HoodieTableMetaClient metaClient, String instantTime,
-                                              HoodieCleanerPlan cleanerPlan) throws IOException {
+                                              HoodieCleanerPlan cleanerPlan) {
     createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_CLEAN_EXTENSION,
-        serializeCleanerPlan(cleanerPlan).get());
+        getInstantWriter(cleanerPlan));
   }
 
   public static void createRequestedCleanFile(HoodieTableMetaClient metaClient, String instantTime,
-                                              HoodieCleanerPlan cleanerPlan, boolean isEmpty)
-      throws IOException {
+                                              HoodieCleanerPlan cleanerPlan, boolean isEmpty) {
     createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_CLEAN_EXTENSION,
-        isEmpty ? EMPTY_BYTES : serializeCleanerPlan(cleanerPlan).get());
+        isEmpty ? Option.empty() : getInstantWriter(cleanerPlan));
   }
 
   public static void createInflightCleanFile(HoodieTableMetaClient metaClient, String instantTime,
-                                             HoodieCleanerPlan cleanerPlan) throws IOException {
+                                             HoodieCleanerPlan cleanerPlan) {
     createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_CLEAN_EXTENSION,
-        serializeCleanerPlan(cleanerPlan).get());
+        getInstantWriter(cleanerPlan));
   }
 
   public static void createInflightCleanFile(HoodieTableMetaClient metaClient, String instantTime,
-                                             HoodieCleanerPlan cleanerPlan, boolean isEmpty)
-      throws IOException {
+                                             HoodieCleanerPlan cleanerPlan, boolean isEmpty) {
     createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_CLEAN_EXTENSION,
-        isEmpty ? EMPTY_BYTES : serializeCleanerPlan(cleanerPlan).get());
+        isEmpty ? Option.empty() : getInstantWriter(cleanerPlan));
   }
 
   public static void createRequestedRollbackFile(HoodieTableMetaClient metaClient, String instantTime, HoodieRollbackPlan plan) throws IOException {
-    createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_ROLLBACK_EXTENSION, serializeRollbackPlan(plan).get());
+    createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_ROLLBACK_EXTENSION, getInstantWriter(plan));
   }
 
-  public static void createRequestedRollbackFile(HoodieTableMetaClient metaClient, String instantTime, byte[] content) throws IOException {
-    createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_ROLLBACK_EXTENSION, content);
+  public static void createRequestedRollbackFile(HoodieTableMetaClient metaClient, String instantTime, Option<HoodieInstantWriter> writerOption) throws IOException {
+    createMetaFile(metaClient, instantTime, HoodieTimeline.REQUESTED_ROLLBACK_EXTENSION, writerOption);
   }
 
   public static void createRequestedRollbackFile(HoodieTableMetaClient metaClient, String instantTime) throws IOException {
@@ -297,12 +285,12 @@ public class FileCreateUtils extends FileCreateUtilsBase {
     createMetaFile(metaClient, instantTime, HoodieTimeline.INFLIGHT_ROLLBACK_EXTENSION);
   }
 
-  public static void createRollbackFile(HoodieTableMetaClient metaClient, String instantTime, HoodieRollbackMetadata hoodieRollbackMetadata, boolean isEmpty) throws IOException {
-    createMetaFile(metaClient, instantTime, HoodieTimeline.ROLLBACK_EXTENSION, isEmpty ? EMPTY_BYTES : serializeRollbackMetadata(hoodieRollbackMetadata).get());
+  public static void createRollbackFile(HoodieTableMetaClient metaClient, String instantTime, HoodieRollbackMetadata hoodieRollbackMetadata, boolean isEmpty) {
+    createMetaFile(metaClient, instantTime, HoodieTimeline.ROLLBACK_EXTENSION, isEmpty ? Option.empty() : getInstantWriter(hoodieRollbackMetadata));
   }
 
   public static void createRestoreFile(HoodieTableMetaClient metaClient, String instantTime, HoodieRestoreMetadata hoodieRestoreMetadata) throws IOException {
-    createMetaFile(metaClient, instantTime, HoodieTimeline.RESTORE_ACTION, serializeRestoreMetadata(hoodieRestoreMetadata).get());
+    createMetaFile(metaClient, instantTime, HoodieTimeline.RESTORE_ACTION, getInstantWriter(hoodieRestoreMetadata));
   }
 
   public static void createRequestedCompaction(HoodieTableMetaClient metaClient, String instantTime) throws IOException {
@@ -318,17 +306,19 @@ public class FileCreateUtils extends FileCreateUtilsBase {
   }
 
   protected static void createMetaFileInTimelinePath(
-      HoodieTableMetaClient metaClient, String instantTime, Supplier<String> completionTimeSupplier, String suffix, byte[] content) throws IOException {
+      HoodieTableMetaClient metaClient, String instantTime, Supplier<String> completionTimeSupplier, String suffix, Option<HoodieInstantWriter> writerOption) throws IOException {
     try {
       Path parentPath = Paths.get(metaClient.getTimelinePath().makeQualified(new URI("file:///")).toUri());
       Files.createDirectories(parentPath);
       if (suffix.contains(HoodieTimeline.INFLIGHT_EXTENSION) || suffix.contains(HoodieTimeline.REQUESTED_EXTENSION)) {
         Path metaFilePath = parentPath.resolve(instantTime + suffix);
         if (Files.notExists(metaFilePath)) {
-          if (content.length == 0) {
+          if (writerOption.isEmpty()) {
             Files.createFile(metaFilePath);
           } else {
-            Files.write(metaFilePath, content);
+            try (OutputStream outputStream = Files.newOutputStream(metaFilePath)) {
+              writerOption.get().writeToStream(outputStream);
+            }
           }
         }
       } else {
@@ -343,10 +333,12 @@ public class FileCreateUtils extends FileCreateUtilsBase {
               completedInstantFilePrefix = instantTime + "_" + completionTimeSupplier.get();
             }
             Path metaFilePath = parentPath.resolve(completedInstantFilePrefix + suffix);
-            if (content.length == 0) {
+            if (writerOption.isEmpty()) {
               Files.createFile(metaFilePath);
             } else {
-              Files.write(metaFilePath, content);
+              try (OutputStream outputStream = Files.newOutputStream(metaFilePath)) {
+                writerOption.get().writeToStream(outputStream);
+              }
             }
           }
         }

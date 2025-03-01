@@ -34,6 +34,7 @@ import org.apache.hudi.common.testutils.FileCreateUtilsLegacy;
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.HoodieTestTable;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.storage.HoodieInstantWriter;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -307,7 +308,7 @@ public class TestConflictResolutionStrategyUtil {
   }
 
   public static void createClusterInflight(String instantTime, WriteOperationType writeOperationType, HoodieTableMetaClient metaClient) throws Exception {
-    Option<HoodieCommitMetadata> inflightReplaceMetadata = Option.empty();
+    Option<HoodieInstantWriter> inflightReplaceMetadata = Option.empty();
     if (WriteOperationType.INSERT_OVERWRITE.equals(writeOperationType)) {
       inflightReplaceMetadata = Option.of(createReplaceCommitMetadata(WriteOperationType.INSERT_OVERWRITE));
     }

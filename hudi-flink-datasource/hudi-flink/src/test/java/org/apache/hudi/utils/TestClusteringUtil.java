@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utils;
 
+import org.apache.flink.configuration.Configuration;
 import org.apache.hudi.avro.model.HoodieClusteringGroup;
 import org.apache.hudi.avro.model.HoodieClusteringPlan;
 import org.apache.hudi.avro.model.HoodieClusteringStrategy;
@@ -27,19 +28,15 @@ import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
-import org.apache.hudi.common.table.timeline.TimelineMetadataUtils;
 import org.apache.hudi.common.util.ClusteringUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.configuration.FlinkOptions;
-import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.table.HoodieFlinkTable;
 import org.apache.hudi.util.ClusteringUtil;
 import org.apache.hudi.util.FlinkTables;
 import org.apache.hudi.util.FlinkWriteClients;
 import org.apache.hudi.util.StreamerUtil;
-
-import org.apache.flink.configuration.Configuration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -52,6 +49,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.getInstantWriter;
 import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_GENERATOR;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -137,13 +135,9 @@ public class TestClusteringUtil {
     String instantTime = table.getMetaClient().createNewInstantTime();
     HoodieInstant clusteringInstant =
         INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.CLUSTERING_ACTION, instantTime);
-    try {
-      metaClient.getActiveTimeline().saveToPendingClusterCommit(clusteringInstant,
-          TimelineMetadataUtils.serializeRequestedReplaceMetadata(metadata));
-      table.getActiveTimeline().transitionClusterRequestedToInflight(clusteringInstant, Option.empty());
-    } catch (IOException ioe) {
-      throw new HoodieIOException("Exception scheduling clustering", ioe);
-    }
+    metaClient.getActiveTimeline().saveToPendingClusterCommit(clusteringInstant,
+        getInstantWriter(metadata));
+    table.getActiveTimeline().transitionClusterRequestedToInflight(clusteringInstant, Option.empty());
     metaClient.reloadActiveTimeline();
     return instantTime;
   }

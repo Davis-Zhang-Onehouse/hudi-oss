@@ -19,6 +19,11 @@
 
 package org.apache.hudi.common.testutils;
 
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocatedFileStatus;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hudi.avro.model.HoodieActionInstant;
 import org.apache.hudi.avro.model.HoodieCleanMetadata;
 import org.apache.hudi.avro.model.HoodieCleanerPlan;
@@ -68,15 +73,10 @@ import org.apache.hudi.common.util.ValidationUtils;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.storage.HoodieInstantWriter;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.StoragePathInfo;
-
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.LocatedFileStatus;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.RemoteIterator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -109,6 +109,7 @@ import static org.apache.hudi.common.model.WriteOperationType.UPSERT;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.CLEAN_ACTION;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.CLUSTERING_ACTION;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.REPLACE_COMMIT_ACTION;
+import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.getInstantWriter;
 import static org.apache.hudi.common.testutils.FileCreateUtils.baseFileName;
 import static org.apache.hudi.common.testutils.FileCreateUtils.createCleanFile;
 import static org.apache.hudi.common.testutils.FileCreateUtils.createCommit;
@@ -330,7 +331,7 @@ public class HoodieTestTable implements AutoCloseable {
   public HoodieTestTable addReplaceCommit(
       String instantTime,
       Option<HoodieRequestedReplaceMetadata> requestedReplaceMetadata,
-      Option<HoodieCommitMetadata> inflightReplaceMetadata,
+      Option<HoodieInstantWriter> inflightReplaceMetadata,
       HoodieReplaceCommitMetadata completeReplaceMetadata) throws Exception {
     createRequestedReplaceCommit(metaClient, instantTime, requestedReplaceMetadata);
     createInflightReplaceCommit(metaClient, COMMIT_METADATA_SER_DE, instantTime, inflightReplaceMetadata);
@@ -339,14 +340,15 @@ public class HoodieTestTable implements AutoCloseable {
     return this;
   }
 
-  public HoodieTestTable addPendingReplace(String instantTime, Option<HoodieRequestedReplaceMetadata> requestedReplaceMetadata, Option<HoodieCommitMetadata> inflightReplaceMetadata) throws Exception {
+  public HoodieTestTable addPendingReplace(
+      String instantTime, Option<HoodieRequestedReplaceMetadata> requestedReplaceMetadata, Option<HoodieInstantWriter> inflightReplaceMetadata) throws Exception {
     createRequestedReplaceCommit(metaClient, instantTime, requestedReplaceMetadata);
     createInflightReplaceCommit(metaClient, COMMIT_METADATA_SER_DE, instantTime, inflightReplaceMetadata);
     currentInstantTime = instantTime;
     return this;
   }
 
-  public HoodieTestTable addPendingCluster(String instantTime, HoodieRequestedReplaceMetadata requestedReplaceMetadata, Option<HoodieCommitMetadata> inflightReplaceMetadata) throws Exception {
+  public HoodieTestTable addPendingCluster(String instantTime, HoodieRequestedReplaceMetadata requestedReplaceMetadata, Option<HoodieInstantWriter> inflightReplaceMetadata) throws Exception {
     createRequestedClusterCommit(metaClient, instantTime, requestedReplaceMetadata);
     createInflightClusterCommit(metaClient, COMMIT_METADATA_SER_DE, instantTime, inflightReplaceMetadata);
     currentInstantTime = instantTime;
@@ -359,7 +361,7 @@ public class HoodieTestTable implements AutoCloseable {
     return this;
   }
 
-  public HoodieTestTable addInflightCluster(String instantTime, Option<HoodieCommitMetadata> inflightReplaceMetadata) throws Exception {
+  public HoodieTestTable addInflightCluster(String instantTime, Option<HoodieInstantWriter> inflightReplaceMetadata) throws Exception {
     createInflightClusterCommit(metaClient, COMMIT_METADATA_SER_DE, instantTime, inflightReplaceMetadata);
     currentInstantTime = instantTime;
     return this;
@@ -368,7 +370,7 @@ public class HoodieTestTable implements AutoCloseable {
   public HoodieTestTable addCluster(
       String instantTime,
       HoodieRequestedReplaceMetadata requestedReplaceMetadata,
-      Option<HoodieCommitMetadata> inflightReplaceMetadata,
+      Option<HoodieInstantWriter> inflightReplaceMetadata,
       HoodieReplaceCommitMetadata completeReplaceMetadata) throws Exception {
     createRequestedClusterCommit(metaClient, instantTime, requestedReplaceMetadata);
     createInflightClusterCommit(metaClient, COMMIT_METADATA_SER_DE, instantTime, inflightReplaceMetadata);
@@ -380,7 +382,7 @@ public class HoodieTestTable implements AutoCloseable {
   public HoodieTestTable addCluster(
       String instantTime,
       HoodieRequestedReplaceMetadata requestedReplaceMetadata,
-      Option<HoodieCommitMetadata> inflightReplaceMetadata,
+      Option<HoodieInstantWriter> inflightReplaceMetadata,
       HoodieReplaceCommitMetadata completeReplaceMetadata,
       String completionTime) throws Exception {
     createRequestedClusterCommit(metaClient, instantTime, requestedReplaceMetadata);
@@ -396,7 +398,7 @@ public class HoodieTestTable implements AutoCloseable {
     return this;
   }
 
-  public HoodieTestTable addInflightReplace(String instantTime, Option<HoodieCommitMetadata> inflightReplaceMetadata) throws Exception {
+  public HoodieTestTable addInflightReplace(String instantTime, Option<HoodieInstantWriter> inflightReplaceMetadata) throws Exception {
     createInflightReplaceCommit(metaClient, COMMIT_METADATA_SER_DE, instantTime, inflightReplaceMetadata);
     currentInstantTime = instantTime;
     return this;
@@ -557,7 +559,7 @@ public class HoodieTestTable implements AutoCloseable {
             .collect(Collectors.toList()), Option.empty(), Option.empty());
     HoodieInstant compactionInstant = instantGenerator.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.COMPACTION_ACTION, instantTime);
     metaClient.getActiveTimeline().saveToCompactionRequested(compactionInstant,
-        TimelineMetadataUtils.serializeCompactionPlan(compactionPlan));
+        getInstantWriter(compactionPlan));
     currentInstantTime = instantTime;
     return this;
   }
@@ -565,7 +567,7 @@ public class HoodieTestTable implements AutoCloseable {
   public HoodieTestTable addRequestedCompaction(String instantTime, HoodieCompactionPlan compactionPlan) throws IOException {
     HoodieInstant compactionInstant = instantGenerator.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.COMPACTION_ACTION, instantTime);
     metaClient.getActiveTimeline().saveToCompactionRequested(compactionInstant,
-        TimelineMetadataUtils.serializeCompactionPlan(compactionPlan));
+        getInstantWriter(compactionPlan));
     currentInstantTime = instantTime;
     return this;
   }

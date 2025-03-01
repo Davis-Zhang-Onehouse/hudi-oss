@@ -42,7 +42,6 @@ import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.action.BaseActionExecutor;
 import org.apache.hudi.table.marker.WriteMarkersFactory;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,6 +54,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.hudi.common.table.timeline.InstantComparison.EQUALS;
 import static org.apache.hudi.common.table.timeline.InstantComparison.compareTimestamps;
+import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.getInstantWriter;
 
 public abstract class BaseRollbackActionExecutor<T, I, K, O> extends BaseActionExecutor<T, I, K, O, HoodieRollbackMetadata> {
 
@@ -267,11 +267,9 @@ public abstract class BaseRollbackActionExecutor<T, I, K, O> extends BaseActionE
         // when skipLocking is false, txnManager above-mentioned should lock it.
         // when skipLocking is true, the caller should have already held the lock.
         table.getActiveTimeline().transitionRollbackInflightToComplete(false, inflightInstant,
-            TimelineMetadataUtils.serializeRollbackMetadata(rollbackMetadata));
+            getInstantWriter(rollbackMetadata));
         LOG.info("Rollback of Commits " + rollbackMetadata.getCommitsRollback() + " is complete");
       }
-    } catch (IOException e) {
-      throw new HoodieIOException("Error executing rollback at instant " + instantTime, e);
     } finally {
       if (enableLocking) {
         this.txnManager.endTransaction(Option.of(inflightInstant));

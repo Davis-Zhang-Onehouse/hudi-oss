@@ -310,7 +310,7 @@ public class EightToSevenDowngradeHandler implements DowngradeHandler {
         data = commitMetadataSerDeV1.serialize(commitMetadataSerDeV2.deserialize(instant, metaClient.getActiveTimeline().getInstantDetails(instant).get(), HoodieCommitMetadata.class));
       }
       String toPathStr = toPath.toUri().toString();
-      activeTimelineV1.createFileInMetaPath(toPathStr, data, true);
+      activeTimelineV1.createFileInMetaPath(toPathStr, Option.of(outputStream -> outputStream.write(data.get())), true);
       /*
         When we downgrade the table from 1.0 to 0.x, it is important to set the modification
         timestamp of the 0.x completed instant to match the completion time of the

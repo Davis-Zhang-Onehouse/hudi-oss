@@ -21,6 +21,7 @@ package org.apache.hudi.common.table.timeline;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
+import org.apache.hudi.storage.HoodieInstantWriter;
 import org.apache.hudi.storage.StoragePath;
 
 import java.util.Set;
@@ -58,17 +59,17 @@ public interface HoodieActiveTimeline extends HoodieTimeline {
   /**
    * Save Completed instant in active timeline.
    * @param instant Instant to be saved.
-   * @param data Metadata to be written in the instant file.
+   * @param writerOption writer for writing the instant file content
    */
-  void saveAsComplete(HoodieInstant instant, Option<byte[]> data);
+  void saveAsComplete(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save Completed instant in active timeline.
    * @param shouldLock Lock before writing to timeline.
    * @param instant Instant to be saved.
-   * @param data Metadata to be written in the instant file.
+   * @param writerOption writer for writing the instant file content
    */
-  void saveAsComplete(boolean shouldLock, HoodieInstant instant, Option<byte[]> data);
+  void saveAsComplete(boolean shouldLock, HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Delete Compaction requested instant file from timeline.
@@ -199,22 +200,22 @@ public interface HoodieActiveTimeline extends HoodieTimeline {
    *
    * @param shouldLock Whether to hold the lock when performing transition
    * @param inflightInstant Inflight instant
-   * @param data Extra Metadata
+   * @param writerOption writer for writing the instant file content
    * @return commit instant
    */
   HoodieInstant transitionCompactionInflightToComplete(boolean shouldLock, HoodieInstant inflightInstant,
-                                                       Option<byte[]> data);
+                                                       Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition Log Compaction State from inflight to Committed.
    *
    * @param shouldLock Whether to hold the lock when performing transition
    * @param inflightInstant Inflight instant
-   * @param data Extra Metadata
+   * @param writerOption writer for writing the instant file content
    * @return commit instant
    */
   HoodieInstant transitionLogCompactionInflightToComplete(boolean shouldLock,
-                                                          HoodieInstant inflightInstant, Option<byte[]> data);
+                                                          HoodieInstant inflightInstant, Option<HoodieInstantWriter> writerOption);
 
   //-----------------------------------------------------------------
   //      END - COMPACTION RELATED META-DATA MANAGEMENT
@@ -225,31 +226,31 @@ public interface HoodieActiveTimeline extends HoodieTimeline {
    *
    * @param shouldLock Whether to hold the lock when performing transition
    * @param inflightInstant Inflight instant
-   * @param data Extra Metadata
+   * @param writerOption writer for writing the instant file content
    * @return commit instant
    */
   HoodieInstant transitionCleanInflightToComplete(boolean shouldLock, HoodieInstant inflightInstant,
-                                                  Option<byte[]> data);
+                                                  Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition Clean State from requested to inflight.
    *
    * @param requestedInstant requested instant
-   * @param data Optional data to be stored
+   * @param writerOption writer for writing the instant file content
    * @return commit instant
    */
-  HoodieInstant transitionCleanRequestedToInflight(HoodieInstant requestedInstant, Option<byte[]> data);
+  HoodieInstant transitionCleanRequestedToInflight(HoodieInstant requestedInstant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition Rollback State from inflight to Committed.
    *
    * @param shouldLock Whether to hold the lock when performing transition
    * @param inflightInstant Inflight instant
-   * @param data Extra Metadata
+   * @param writerOption writer for writing the instant file content
    * @return commit instant
    */
   HoodieInstant transitionRollbackInflightToComplete(boolean shouldLock,
-                                                     HoodieInstant inflightInstant, Option<byte[]> data);
+                                                     HoodieInstant inflightInstant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition Rollback State from requested to inflight.
@@ -271,41 +272,41 @@ public interface HoodieActiveTimeline extends HoodieTimeline {
    * Transition replace requested file to replace inflight.
    *
    * @param requestedInstant Requested instant
-   * @param data Extra Metadata
+   * @param writerOption writer for writing the instant file content
    * @return inflight instant
    */
-  HoodieInstant transitionReplaceRequestedToInflight(HoodieInstant requestedInstant, Option<byte[]> data);
+  HoodieInstant transitionReplaceRequestedToInflight(HoodieInstant requestedInstant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition cluster requested file to cluster inflight.
    *
    * @param requestedInstant Requested instant
-   * @param data Extra Metadata
+   * @param writerOption writer for writing the instant file content
    * @return inflight instant
    */
-  HoodieInstant transitionClusterRequestedToInflight(HoodieInstant requestedInstant, Option<byte[]> data);
+  HoodieInstant transitionClusterRequestedToInflight(HoodieInstant requestedInstant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition replace inflight to Committed.
    *
    * @param shouldLock Whether to hold the lock when performing transition
    * @param inflightInstant Inflight instant
-   * @param data Extra Metadata
+   * @param writerOption writer for writing the instant file content
    * @return commit instant
    */
   HoodieInstant transitionReplaceInflightToComplete(boolean shouldLock,
-                                                    HoodieInstant inflightInstant, Option<byte[]> data);
+                                                    HoodieInstant inflightInstant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition cluster inflight to replace committed.
    *
    * @param shouldLock Whether to hold the lock when performing transition
    * @param inflightInstant Inflight instant
-   * @param data Extra Metadata
+   * @param writerOption writer for writing the instant file content
    * @return commit instant
    */
   HoodieInstant transitionClusterInflightToComplete(boolean shouldLock,
-                                                    HoodieInstant inflightInstant, Option<byte[]> data);
+                                                    HoodieInstant inflightInstant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save Restore requested instant with metadata.
@@ -317,82 +318,82 @@ public interface HoodieActiveTimeline extends HoodieTimeline {
   /**
    * Save Restore requested instant with metadata.
    * @param requested Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void transitionRequestedToInflight(HoodieInstant requested, Option<byte[]> content);
+  void transitionRequestedToInflight(HoodieInstant requested, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save Restore requested instant with metadata.
    * @param requested Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void transitionRequestedToInflight(HoodieInstant requested, Option<byte[]> content,
+  void transitionRequestedToInflight(HoodieInstant requested, Option<HoodieInstantWriter> writerOption,
                                      boolean allowRedundantTransitions);
 
   /**
    * Save Compaction requested instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void saveToCompactionRequested(HoodieInstant instant, Option<byte[]> content);
+  void saveToCompactionRequested(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save Compaction requested instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    * @param overwrite Overwrite existing instant file.
    */
-  void saveToCompactionRequested(HoodieInstant instant, Option<byte[]> content, boolean overwrite);
+  void saveToCompactionRequested(HoodieInstant instant, Option<HoodieInstantWriter> writerOption, boolean overwrite);
 
   /**
    * Save Log Compaction requested instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void saveToLogCompactionRequested(HoodieInstant instant, Option<byte[]> content);
+  void saveToLogCompactionRequested(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save Log Compaction requested instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    * @param overwrite Overwrite existing instant file.
    */
-  void saveToLogCompactionRequested(HoodieInstant instant, Option<byte[]> content, boolean overwrite);
+  void saveToLogCompactionRequested(HoodieInstant instant, Option<HoodieInstantWriter> writerOption, boolean overwrite);
 
   /**
    * Save pending replace instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void saveToPendingReplaceCommit(HoodieInstant instant, Option<byte[]> content);
+  void saveToPendingReplaceCommit(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save pending cluster instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void saveToPendingClusterCommit(HoodieInstant instant, Option<byte[]> content);
+  void saveToPendingClusterCommit(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save clean requested instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void saveToCleanRequested(HoodieInstant instant, Option<byte[]> content);
+  void saveToCleanRequested(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save rollback requested instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void saveToRollbackRequested(HoodieInstant instant, Option<byte[]> content);
+  void saveToRollbackRequested(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Save Restore requested instant with metadata.
    * @param instant Instant to save.
-   * @param content Metadata to be stored in instant file.
+   * @param writerOption writer to write the instant file content
    */
-  void saveToRestoreRequested(HoodieInstant instant, Option<byte[]> content);
+  void saveToRestoreRequested(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition index instant state from requested to inflight.
@@ -400,7 +401,7 @@ public interface HoodieActiveTimeline extends HoodieTimeline {
    * @param requestedInstant Inflight Instant
    * @return inflight instant
    */
-  HoodieInstant transitionIndexRequestedToInflight(HoodieInstant requestedInstant, Option<byte[]> data);
+  HoodieInstant transitionIndexRequestedToInflight(HoodieInstant requestedInstant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Transition index instant state from inflight to completed.
@@ -410,7 +411,7 @@ public interface HoodieActiveTimeline extends HoodieTimeline {
    * @return completed instant
    */
   HoodieInstant transitionIndexInflightToComplete(boolean shouldLock,
-                                                  HoodieInstant inflightInstant, Option<byte[]> data);
+                                                  HoodieInstant inflightInstant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Revert index instant state from inflight to requested.
@@ -422,7 +423,7 @@ public interface HoodieActiveTimeline extends HoodieTimeline {
   /**
    * Save content for inflight/requested index instant.
    */
-  void saveToPendingIndexAction(HoodieInstant instant, Option<byte[]> content);
+  void saveToPendingIndexAction(HoodieInstant instant, Option<HoodieInstantWriter> writerOption);
 
   /**
    * Reloads timeline from storage

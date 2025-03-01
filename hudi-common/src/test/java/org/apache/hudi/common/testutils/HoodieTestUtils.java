@@ -21,6 +21,7 @@ package org.apache.hudi.common.testutils;
 import org.apache.hudi.avro.model.HoodieCleanMetadata;
 import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.model.FileSlice;
+import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.HoodieFileFormat;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.model.HoodieWriteStat;
@@ -390,6 +391,16 @@ public class HoodieTestUtils {
   public static StoragePath getCompleteInstantPath(HoodieStorage storage, StoragePath parent,
                                                    String instantTime, String action) {
     return getCompleteInstantFileInfo(storage, parent, instantTime, action).getPath();
+  }
+
+  public static byte[] commitMetadataToBytArray(HoodieCommitMetadata metadata) {
+    try {
+      ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+      metadata.writeToStream(outputStream);
+      return outputStream.toByteArray();
+    } catch (Exception ex) {
+      throw new RuntimeException(ex);
+    }
   }
 
   private static StoragePathInfo getCompleteInstantFileInfo(HoodieStorage storage,

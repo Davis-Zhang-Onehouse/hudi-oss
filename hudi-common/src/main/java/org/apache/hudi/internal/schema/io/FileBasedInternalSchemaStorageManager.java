@@ -31,7 +31,6 @@ import org.apache.hudi.internal.schema.utils.InternalSchemaUtils;
 import org.apache.hudi.internal.schema.utils.SerDeHelper;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -91,7 +90,10 @@ public class FileBasedInternalSchemaStorageManager extends AbstractInternalSchem
     timeline.createNewInstant(hoodieInstant);
     byte[] writeContent = getUTF8Bytes(historySchemaStr);
     timeline.transitionRequestedToInflight(hoodieInstant, Option.empty());
-    timeline.saveAsComplete(false, metaClient.createNewInstant(HoodieInstant.State.INFLIGHT, hoodieInstant.getAction(), hoodieInstant.requestedTime()), Option.of(writeContent));
+    timeline.saveAsComplete(
+        false, metaClient.createNewInstant(HoodieInstant.State.INFLIGHT,
+            hoodieInstant.getAction(), hoodieInstant.requestedTime()),
+        Option.of((outputStream) -> outputStream.write(writeContent)));
     LOG.info(String.format("persist history schema success on commit time: %s", instantTime));
   }
 

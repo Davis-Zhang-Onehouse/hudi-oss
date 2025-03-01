@@ -40,7 +40,6 @@ import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieCleanConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.testutils.HoodieCleanerTestBase;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -60,7 +59,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 
-import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCommitMetadata;
 import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_GENERATOR;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -244,7 +242,7 @@ public class TestCleanPlanExecutor extends HoodieCleanerTestBase {
         INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.COMMIT_ACTION, "00000000000011"));
     metaClient.getActiveTimeline().transitionRequestedToInflight(
         INSTANT_GENERATOR.createNewInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.COMMIT_ACTION, "00000000000011"),
-        serializeCommitMetadata(metaClient.getCommitMetadataSerDe(), commitMetadata));
+        Option.of(commitMetadata));
     List<HoodieCleanStat> hoodieCleanStatsFive2 =
         runCleaner(config, simulateFailureRetry, simulateMetadataFailure, 12, true);
     HoodieCleanStat cleanStat = getCleanStat(hoodieCleanStatsFive2, p0);

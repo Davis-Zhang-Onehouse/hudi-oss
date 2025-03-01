@@ -26,7 +26,6 @@ import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableVersion;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
-import org.apache.hudi.common.table.timeline.TimelineMetadataUtils;
 import org.apache.hudi.common.table.timeline.TimelineUtils;
 import org.apache.hudi.common.util.CompactionUtils;
 import org.apache.hudi.common.util.ConfigUtils;
@@ -37,17 +36,14 @@ import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieCompactionConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieCompactionException;
-import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.action.BaseTableServicePlanActionExecutor;
 import org.apache.hudi.table.action.compact.plan.generators.BaseHoodieCompactionPlanGenerator;
 import org.apache.hudi.table.action.compact.plan.generators.HoodieLogCompactionPlanGenerator;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +52,7 @@ import java.util.stream.Collectors;
 import static org.apache.hudi.common.table.timeline.InstantComparison.GREATER_THAN;
 import static org.apache.hudi.common.table.timeline.InstantComparison.GREATER_THAN_OR_EQUALS;
 import static org.apache.hudi.common.table.timeline.InstantComparison.compareTimestamps;
+import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.getInstantWriter;
 import static org.apache.hudi.common.util.CollectionUtils.nonEmpty;
 import static org.apache.hudi.common.util.ValidationUtils.checkArgument;
 
@@ -121,20 +118,16 @@ public class ScheduleCompactionActionExecutor<T, I, K, O> extends BaseTableServi
     Option<HoodieCompactionPlan> option = Option.empty();
     if (plan != null && nonEmpty(plan.getOperations())) {
       extraMetadata.ifPresent(plan::setExtraMetadata);
-      try {
-        if (operationType.equals(WriteOperationType.COMPACT)) {
-          HoodieInstant compactionInstant = instantGenerator.createNewInstant(HoodieInstant.State.REQUESTED,
-              HoodieTimeline.COMPACTION_ACTION, instantTime);
-          table.getActiveTimeline().saveToCompactionRequested(compactionInstant,
-              TimelineMetadataUtils.serializeCompactionPlan(plan));
-        } else {
-          HoodieInstant logCompactionInstant = instantGenerator.createNewInstant(HoodieInstant.State.REQUESTED,
-              HoodieTimeline.LOG_COMPACTION_ACTION, instantTime);
-          table.getActiveTimeline().saveToLogCompactionRequested(logCompactionInstant,
-              TimelineMetadataUtils.serializeCompactionPlan(plan));
-        }
-      } catch (IOException ioe) {
-        throw new HoodieIOException("Exception scheduling compaction", ioe);
+      if (operationType.equals(WriteOperationType.COMPACT)) {
+        HoodieInstant compactionInstant = instantGenerator.createNewInstant(HoodieInstant.State.REQUESTED,
+            HoodieTimeline.COMPACTION_ACTION, instantTime);
+        table.getActiveTimeline().saveToCompactionRequested(compactionInstant,
+            getInstantWriter(plan));
+      } else {
+        HoodieInstant logCompactionInstant = instantGenerator.createNewInstant(HoodieInstant.State.REQUESTED,
+            HoodieTimeline.LOG_COMPACTION_ACTION, instantTime);
+        table.getActiveTimeline().saveToLogCompactionRequested(logCompactionInstant,
+            getInstantWriter(plan));
       }
       option = Option.of(plan);
     }

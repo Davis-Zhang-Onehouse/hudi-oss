@@ -27,7 +27,6 @@ import org.apache.hudi.common.model.HoodieLogFile;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieInstant.State;
-import org.apache.hudi.common.table.timeline.TimelineMetadataUtils;
 import org.apache.hudi.common.util.CollectionUtils;
 import org.apache.hudi.common.util.CompactionUtils;
 import org.apache.hudi.common.util.Option;
@@ -48,6 +47,7 @@ import java.util.stream.Stream;
 
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.COMPACTION_ACTION;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.DELTA_COMMIT_ACTION;
+import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.getInstantWriter;
 import static org.apache.hudi.common.testutils.FileCreateUtilsLegacy.baseFileName;
 import static org.apache.hudi.common.testutils.FileCreateUtilsLegacy.createBaseFile;
 import static org.apache.hudi.common.testutils.FileCreateUtilsLegacy.createLogFile;
@@ -139,7 +139,7 @@ public class CompactionTestUtils {
       HoodieCompactionPlan compactionPlan) throws IOException {
     metaClient.getActiveTimeline().saveToCompactionRequested(
         INSTANT_GENERATOR.createNewInstant(State.REQUESTED, COMPACTION_ACTION, instantTime),
-        TimelineMetadataUtils.serializeCompactionPlan(compactionPlan));
+        getInstantWriter(compactionPlan));
   }
 
   public static void createDeltaCommit(HoodieTableMetaClient metaClient, String instantTime) {

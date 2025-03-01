@@ -23,7 +23,6 @@ import org.apache.hudi.client.utils.SparkInternalSchemaConverter
 import org.apache.hudi.common.model.{HoodieCommitMetadata, HoodieFailedWritesCleaningPolicy, WriteOperationType}
 import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
 import org.apache.hudi.common.table.timeline.HoodieInstant.State
-import org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCommitMetadata
 import org.apache.hudi.common.util.{CommitUtils, Option}
 import org.apache.hudi.config.{HoodieArchivalConfig, HoodieCleanConfig}
 import org.apache.hudi.hadoop.fs.HadoopFSUtils
@@ -33,6 +32,7 @@ import org.apache.hudi.internal.schema.action.TableChanges
 import org.apache.hudi.internal.schema.convert.AvroInternalSchemaConverter
 import org.apache.hudi.internal.schema.io.FileBasedInternalSchemaStorageManager
 import org.apache.hudi.internal.schema.utils.{SchemaChangeUtils, SerDeHelper}
+import org.apache.hudi.storage.HoodieInstantWriter
 import org.apache.hudi.table.HoodieSparkTable
 
 import org.apache.hadoop.conf.Configuration
@@ -284,7 +284,7 @@ object AlterTableCommand extends Logging {
     val requested = instantGenerator.createNewInstant(State.REQUESTED, commitActionType, instantTime)
     val metadata = new HoodieCommitMetadata
     metadata.setOperationType(WriteOperationType.ALTER_SCHEMA)
-    timeLine.transitionRequestedToInflight(requested, serializeCommitMetadata(metaClient.getTimelineLayout.getCommitMetadataSerDe, metadata))
+    timeLine.transitionRequestedToInflight(requested, org.apache.hudi.common.util.Option.of(metadata.asInstanceOf[HoodieInstantWriter]))
     val extraMeta = new util.HashMap[String, String]()
     extraMeta.put(SerDeHelper.LATEST_SCHEMA, SerDeHelper.toJson(internalSchema.setSchemaId(instantTime.toLong)))
     val schemaManager = new FileBasedInternalSchemaStorageManager(metaClient)
