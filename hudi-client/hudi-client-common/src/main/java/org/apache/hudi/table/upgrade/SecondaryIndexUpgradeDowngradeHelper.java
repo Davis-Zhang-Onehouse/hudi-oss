@@ -19,6 +19,7 @@
 package org.apache.hudi.table.upgrade;
 
 import org.apache.hudi.common.engine.HoodieEngineContext;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.metadata.MetadataPartitionType;
 import org.apache.hudi.table.HoodieTable;
@@ -26,7 +27,8 @@ import org.apache.hudi.table.HoodieTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.apache.hudi.index.HoodieIndexUtils.dropMDTPartitions;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Helper class to handle secondary index operations during upgrade/downgrade.
@@ -45,5 +47,25 @@ public class SecondaryIndexUpgradeDowngradeHelper {
   public static void dropSecondaryIndexPartitions(HoodieWriteConfig config, HoodieEngineContext context,
       HoodieTable table, String operationType) {
     dropMDTPartitions(MetadataPartitionType.SECONDARY_INDEX, config, context, table, operationType);
+  }
+
+  /**
+   * Drops secondary index partitions from metadata table.
+   *
+   * @param mdtPartitionType Type of MDT partition to drop
+   * @param config Write config
+   * @param context Engine context
+   * @param table Hoodie table
+   * @param operationType Type of operation (upgrade/downgrade)
+   */
+  public static void dropMDTPartitions(
+      MetadataPartitionType mdtPartitionType, HoodieWriteConfig config, HoodieEngineContext context, HoodieTable table, String operationType) {
+    HoodieTableMetaClient metaClient = table.getMetaClient();
+    List<String> secIdxPartitions = metaClient.getTableConfig().getMetadataPartitions()
+        .stream()
+        .filter(partition -> partition.startsWith(mdtPartitionType.getPartitionPath()))
+        .collect(Collectors.toList());
+    LOG.info("Dropping {} from MDT for {}: {}", mdtPartitionType.getPartitionPath(), operationType, secIdxPartitions);
+    table.dropIndex(config, context, secIdxPartitions);
   }
 }
