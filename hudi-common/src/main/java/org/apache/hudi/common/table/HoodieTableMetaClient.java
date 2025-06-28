@@ -294,24 +294,7 @@ public class HoodieTableMetaClient implements Serializable {
     if (tableConfig.getRelativeIndexDefinitionPath().isPresent() && StringUtils.nonEmpty(tableConfig.getRelativeIndexDefinitionPath().get())) {
       indexDefOption = loadIndexDefFromStorage(basePath, tableConfig.getRelativeIndexDefinitionPath().get(), storage);
     }
-    populateIndexVersionIfMissing(tableConfig.getTableVersion(), indexDefOption);
     return indexDefOption;
-  }
-
-  public static void populateIndexVersionIfMissing(HoodieTableVersion tableVersion, Option<HoodieIndexMetadata> indexDefOption) {
-    indexDefOption.ifPresent(idxDefs ->
-        idxDefs.getIndexDefinitions().replaceAll((indexName, idxDef) -> {
-          ValidationUtils.checkArgument(HoodieIndexVersion.isValidIndexDefinition(tableVersion, idxDef),
-              String.format("Table version %s, index definition %s", tableVersion, idxDef));
-          if (idxDef.getVersion() == null) {
-            // If version field is missing, it implies either of the cases (validated by isValidIndexDefinition):
-            // - It is table version 8, because we don't write version attributes in some hudi releases
-            // - It is table version 9, and it is not secondary index. Since we drop SI on upgrade and we always write version attributes.
-            return idxDef.toBuilder().withVersion(getCurrentVersion(tableVersion, idxDef.getIndexName())).build();
-          } else {
-            return idxDef;
-          }
-        }));
   }
 
   public static Option<HoodieIndexMetadata> loadIndexDefFromStorage(

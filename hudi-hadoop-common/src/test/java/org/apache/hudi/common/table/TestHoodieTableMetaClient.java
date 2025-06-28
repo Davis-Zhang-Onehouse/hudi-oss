@@ -46,7 +46,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
-import java.util.function.Function;
 
 import static org.apache.hudi.common.table.HoodieTableMetaClient.loadIndexDefFromStorage;
 import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_GENERATOR;
@@ -303,33 +302,26 @@ public class TestHoodieTableMetaClient extends HoodieCommonTestHarness {
   }
 
   @Test
-  public void testPopulateVersionFieldIfMissing() {
-    Function<String, HoodieIndexMetadata> getIndexDef = (idxFileName) ->
-        loadIndexDefFromStorage(
-           new StoragePath(Objects.requireNonNull(getClass().getClassLoader().getResource(idxFileName)).toString()), "",
-           metaClient.getStorage()).get();
-    HoodieIndexMetadata loadedDef = getIndexDef.apply("indexMissingVersion1.json");
-    assertEquals(2, loadedDef.getIndexDefinitions().size());
-    // Apply the function fixing the missing version field
-    // Table version 9 with missing version field is not acceptable for secondary index as it should always write the version field.
-    assertThrows(IllegalArgumentException.class, () -> HoodieTableMetaClient.populateIndexVersionIfMissing(HoodieTableVersion.NINE,
-        Option.of(getIndexDef.apply("indexMissingVersion1.json"))));
+  public void testDeserializationWhenVersionFieldIsMissing() {
+    // Test case 1: Load JSON file with missing version fields for both indexes
+    StoragePath indexDefPath1 = new StoragePath(Objects.requireNonNull(getClass().getClassLoader().getResource("indexMissingVersion1.json")).toString());
+    HoodieIndexMetadata loadedDef1 = loadIndexDefFromStorage(indexDefPath1, "", metaClient.getStorage()).get();
+    assertEquals(2, loadedDef1.getIndexDefinitions().size());
 
-    // If it is table version 8, secondary index def missing version field will be fixed.
-    HoodieIndexMetadata loadedDef2 = getIndexDef.apply("indexMissingVersion1.json");
-    HoodieTableMetaClient.populateIndexVersionIfMissing(HoodieTableVersion.EIGHT, Option.of(loadedDef2));
-
+    // Table version 8 should populate missing version fields for both indexes
+    assertEquals(HoodieIndexVersion.V1, loadedDef1.getIndexDefinitions().get("column_stats").getVersion());
+    assertEquals(HoodieIndexVersion.V1, loadedDef1.getIndexDefinitions().get("secondary_index_idx_price").getVersion());
+    validateAllFieldsExcludingVersion(loadedDef1);
+    
+    // Test case 2: Load JSON file with missing version field only for non-secondary index
+    StoragePath indexDefPath2 = new StoragePath(Objects.requireNonNull(getClass().getClassLoader().getResource("indexMissingVersion2.json")).toString());
+    HoodieIndexMetadata loadedDef2 = loadIndexDefFromStorage(indexDefPath2, "", metaClient.getStorage()).get();
+    
+    // Verify only column_stats is missing version field, secondary index has V2
+    assertEquals(2, loadedDef2.getIndexDefinitions().size());
+    assertEquals(HoodieIndexVersion.V2, loadedDef2.getIndexDefinitions().get("secondary_index_idx_price").getVersion());
     assertEquals(HoodieIndexVersion.V1, loadedDef2.getIndexDefinitions().get("column_stats").getVersion());
-    assertEquals(HoodieIndexVersion.V1, loadedDef2.getIndexDefinitions().get("secondary_index_idx_price").getVersion());
     validateAllFieldsExcludingVersion(loadedDef2);
-
-    // If it is table version 9 and only non secondary index index missing version attribute
-    HoodieIndexMetadata loadedDef3 = getIndexDef.apply("indexMissingVersion2.json");
-    HoodieTableMetaClient.populateIndexVersionIfMissing(HoodieTableVersion.NINE, Option.of(loadedDef3));
-
-    assertEquals(HoodieIndexVersion.V1, loadedDef3.getIndexDefinitions().get("column_stats").getVersion());
-    assertEquals(HoodieIndexVersion.V2, loadedDef3.getIndexDefinitions().get("secondary_index_idx_price").getVersion());
-    validateAllFieldsExcludingVersion(loadedDef3);
   }
 
   private static void validateAllFieldsExcludingVersion(HoodieIndexMetadata loadedDef) {

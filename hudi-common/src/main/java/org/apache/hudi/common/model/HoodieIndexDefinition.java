@@ -19,11 +19,13 @@
 
 package org.apache.hudi.common.model;
 
+import org.apache.hudi.common.deserialization.HoodieIndexDefinitionDeserializer;
 import org.apache.hudi.common.util.ValidationUtils;
 import org.apache.hudi.metadata.HoodieIndexVersion;
 import org.apache.hudi.metadata.MetadataPartitionType;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -47,6 +49,7 @@ import static org.apache.hudi.index.expression.HoodieExpressionIndex.TRIM_STRING
 /**
  * Class representing the metadata for a functional or secondary index in Hudi.
  */
+@JsonDeserialize(using = HoodieIndexDefinitionDeserializer.class)
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class HoodieIndexDefinition implements Serializable {
 
