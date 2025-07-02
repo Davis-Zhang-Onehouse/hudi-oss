@@ -118,6 +118,16 @@ public interface HoodiePairData<K, V> extends Serializable {
       SerializablePairFunction<Pair<K, V>, L, W> mapToPairFunc);
 
   /**
+   * Maps partitions of this {@link HoodiePairData} container leveraging provided mapper
+   *
+   * @param func serializable function to map each partition
+   * @param preservesPartitioning whether to preserve partitioning
+   * @param <O> output type
+   * @return containing the result. Actual execution may be deferred.
+   */
+  <O> HoodieData<O> mapPartitions(SerializableFunction<Iterator<Pair<K, V>>, Iterator<O>> func, boolean preservesPartitioning);
+
+  /**
    * Performs a left outer join of this dataset against {@code other}.
    *
    * For each element (k, v) in this, the resulting {@link HoodiePairData} will either contain all

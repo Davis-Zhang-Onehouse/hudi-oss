@@ -443,6 +443,92 @@ public class TestHoodieListDataPairData {
   }
 
   @Test
+  public void testMapPartitions() {
+    List<String> result = testHoodiePairData.mapPartitions(iterator -> {
+      List<String> partitionResult = new ArrayList<>();
+      while (iterator.hasNext()) {
+        Pair<String, String> pair = iterator.next();
+        partitionResult.add(pair.getKey() + ":" + pair.getValue());
+      }
+      return partitionResult.iterator();
+    }, true).collectAsList();
+    
+    List<String> expected = Arrays.asList(
+        "key1:value1", "key1:value2", "key2:value3", "key2:value4", "key3:value5", "key4:value6"
+    );
+    assertEquals(expected, result);
+  }
+
+  @Test
+  public void testMapPartitionsWithEmptyData() {
+    HoodiePairData<String, String> emptyData = HoodieListPairData.lazy(Collections.emptyList());
+    
+    List<String> result = emptyData.mapPartitions(iterator -> {
+      List<String> partitionResult = new ArrayList<>();
+      while (iterator.hasNext()) {
+        Pair<String, String> pair = iterator.next();
+        partitionResult.add(pair.getKey() + ":" + pair.getValue());
+      }
+      return partitionResult.iterator();
+    }, true).collectAsList();
+    
+    assertEquals(Collections.emptyList(), result);
+  }
+
+  @Test
+  public void testMapPartitionsWithEagerExecution() {
+    HoodiePairData<String, String> eagerData = HoodieListPairData.eager(testPairs);
+    
+    List<String> result = eagerData.mapPartitions(iterator -> {
+      List<String> partitionResult = new ArrayList<>();
+      while (iterator.hasNext()) {
+        Pair<String, String> pair = iterator.next();
+        partitionResult.add(pair.getKey() + ":" + pair.getValue());
+      }
+      return partitionResult.iterator();
+    }, true).collectAsList();
+    
+    List<String> expected = Arrays.asList(
+        "key1:value1", "key1:value2", "key2:value3", "key2:value4", "key3:value5", "key4:value6"
+    );
+    assertEquals(expected, result);
+    
+    // Should work multiple times with eager execution
+    assertEquals(expected, eagerData.mapPartitions(iterator -> {
+      List<String> partitionResult = new ArrayList<>();
+      while (iterator.hasNext()) {
+        Pair<String, String> pair = iterator.next();
+        partitionResult.add(pair.getKey() + ":" + pair.getValue());
+      }
+      return partitionResult.iterator();
+    }, true).collectAsList());
+  }
+
+  @Test
+  public void testMapPartitionsWithLargeData() {
+    // Create a larger dataset
+    List<Pair<Integer, Integer>> largeData = new ArrayList<>();
+    for (int i = 0; i < 1000; i++) {
+      largeData.add(Pair.of(i, i * 2));
+    }
+    
+    HoodiePairData<Integer, Integer> data = HoodieListPairData.lazy(largeData);
+    
+    List<String> result = data.mapPartitions(iterator -> {
+      List<String> partitionResult = new ArrayList<>();
+      while (iterator.hasNext()) {
+        Pair<Integer, Integer> pair = iterator.next();
+        partitionResult.add(pair.getKey() + "->" + pair.getValue());
+      }
+      return partitionResult.iterator();
+    }, true).collectAsList();
+    
+    assertEquals(1000, result.size());
+    assertEquals("0->0", result.get(0));
+    assertEquals("999->1998", result.get(999));
+  }
+
+  @Test
   public void testFilterChaining() {
     // Test chaining multiple filter operations
     HoodiePairData<String, String> filtered1 = testHoodiePairData.filter((key, value) -> key.equals(KEY1));
@@ -482,16 +568,6 @@ public class TestHoodieListDataPairData {
             p -> StreamSupport.stream(p.getValue().spliterator(), false).collect(Collectors.toList())
         )
       );
-  }
-
-  private static <V> void addPairsToMap(
-      Map<String, List<V>> map, final List<Pair<String, V>> pairs) {
-    for (Pair<String, V> pair : pairs) {
-      String key = pair.getKey();
-      V value = pair.getValue();
-      List<V> list = map.computeIfAbsent(key, k -> new ArrayList<>());
-      list.add(value);
-    }
   }
 
   private <T> void assertHoodieDataEquals(

@@ -30,6 +30,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -118,5 +119,29 @@ public class TestHoodieJavaPairRDD {
         .collectAsList();
     assertTrue(TrackingCloseableIterator.isClosed(partition1));
     assertTrue(TrackingCloseableIterator.isClosed(partition2));
+  }
+
+  @Test
+  public void testMapPartitions() {
+    JavaPairRDD<String, Integer> pairRDD = jsc.parallelizePairs(Arrays.asList(
+        new Tuple2<>("key1", 1),
+        new Tuple2<>("key1", 2),
+        new Tuple2<>("key2", 2),
+        new Tuple2<>("key3", 3)
+    ));
+
+    HoodieJavaPairRDD<String, Integer> hoodiePairData = HoodieJavaPairRDD.of(pairRDD);
+    
+    List<String> result = hoodiePairData.mapPartitions(iterator -> {
+      List<String> partitionResult = new ArrayList<>();
+      while (iterator.hasNext()) {
+        Pair<String, Integer> pair = iterator.next();
+        partitionResult.add(pair.getKey() + ":" + pair.getValue());
+      }
+      return partitionResult.iterator();
+    }, true).collectAsList();
+    
+    List<String> expected = Arrays.asList("key1:1", "key1:2", "key2:2", "key3:3");
+    assertEquals(expected, result);
   }
 }

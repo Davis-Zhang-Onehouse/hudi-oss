@@ -176,6 +176,19 @@ public class HoodieListPairData<K, V> extends HoodieBaseListData<Pair<K, V>> imp
   }
 
   @Override
+  public <O> HoodieData<O> mapPartitions(SerializableFunction<Iterator<Pair<K, V>>, Iterator<O>> func, boolean preservesPartitioning) {
+    Function<Iterator<Pair<K, V>>, Iterator<O>> mapper = throwingMapWrapper(func);
+    Iterator<Pair<K, V>> iterator = asStream().iterator();
+    Iterator<O> newIterator = mapper.apply(iterator);
+    return new HoodieListData<>(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(
+                newIterator, Spliterator.ORDERED), true).onClose(new IteratorCloser(newIterator)),
+        lazy
+    );
+  }
+
+  @Override
   public <W> HoodiePairData<K, Pair<V, Option<W>>> leftOuterJoin(HoodiePairData<K, W> other) {
     ValidationUtils.checkArgument(other instanceof HoodieListPairData);
 

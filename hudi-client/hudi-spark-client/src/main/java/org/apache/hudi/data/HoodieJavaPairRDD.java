@@ -27,6 +27,7 @@ import org.apache.hudi.common.function.SerializablePairPredicate;
 import org.apache.hudi.common.function.SerializablePairFunction;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.ImmutablePair;
+import org.apache.hudi.common.util.collection.MappingIterator;
 import org.apache.hudi.common.util.collection.Pair;
 
 import org.apache.spark.Partitioner;
@@ -141,6 +142,13 @@ public class HoodieJavaPairRDD<K, V> implements HoodiePairData<K, V> {
       Pair<L, W> newPair = mapToPairFunc.call(new ImmutablePair<>(pair._1, pair._2));
       return new Tuple2<>(newPair.getLeft(), newPair.getRight());
     }));
+  }
+
+  @Override
+  public <O> HoodieData<O> mapPartitions(SerializableFunction<Iterator<Pair<K, V>>, Iterator<O>> func, boolean preservesPartitioning) {
+    return HoodieJavaRDD.of(pairRDDData.mapPartitions(iter ->
+        CloseableIteratorListener.addListener(func.apply(new MappingIterator<>(iter, pair -> 
+            new ImmutablePair<>(pair._1, pair._2)))), preservesPartitioning));
   }
 
   @Override
