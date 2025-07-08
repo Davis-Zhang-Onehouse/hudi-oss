@@ -233,13 +233,14 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
         getEngineContext().parallelize(partitionFileSlices))
         .flatMap(
             (SerializableFunction<FileSlice, Iterator<HoodieRecord<HoodieMetadataPayload>>>) fileSlice ->
-                getByKeyPrefixes(fileSlice, sortedKeyPrefixes, partitionName));
+                getBySecKey(fileSlice, sortedKeyPrefixes, partitionName));
   }
 
-  private Iterator<HoodieRecord<HoodieMetadataPayload>> getByKeyPrefixes(FileSlice fileSlice,
-                                                                         List<String> sortedEncodedKeyPrefixes,
-                                                                         String partitionName) throws IOException {
-    HoodieFileGroupReader<IndexedRecord> fileGroupReader = buildFileGroupReader(sortedEncodedKeyPrefixes, fileSlice, false);
+  private Iterator<HoodieRecord<HoodieMetadataPayload>> getBySecKey(FileSlice fileSlice,
+                                                                    List<String> sortedEncodedKeyPrefixes,
+                                                                    String partitionName) throws IOException {
+    Predicate predicate = buildPrefixPredicate(partitionName, sortedEncodedKeyPrefixes);
+    HoodieFileGroupReader<IndexedRecord> fileGroupReader = buildFileGroupReader(predicate, fileSlice);
     ClosableIterator<IndexedRecord> it = fileGroupReader.getClosableIterator();
     return new CloseableMappingIterator<>(
         it,
@@ -252,16 +253,6 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
         });
   }
 
-  private Predicate transformKeysToPredicate(List<String> keys) {
-    List<Expression> right = keys.stream().map(Literal::from).collect(Collectors.toList());
-    return Predicates.in(null, right);
-  }
-
-  private Predicate transformKeyPrefixesToPredicate(List<String> keyPrefixes) {
-    List<Expression> right = keyPrefixes.stream().map(Literal::from).collect(Collectors.toList());
-    return Predicates.startsWithAny(null, right);
-  }
-
   /**
    * All keys to be looked up go through the following steps:
    * 1. [encode] escape/encode the key if needed
@@ -270,13 +261,12 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
    * 4. the record is returned
    */
   private HoodiePairData<String, HoodieRecord<HoodieMetadataPayload>> doLookup(HoodieData<String> keys, String partitionName, List<FileSlice> fileSlices,
-                                                                               boolean isSecondaryIndex, Option<SerializableFunctionUnchecked<String, String>> keyEncodingFn) {
-
+                                                                               Option<SerializableFunctionUnchecked<String, String>> keyEncodingFn) {
     final int numFileSlices = fileSlices.size();
     if (numFileSlices == 1) {
       List<String> keysList = keyEncodingFn.isPresent() ? keys.map(k -> keyEncodingFn.get().apply(k)).collectAsList() : keys.collectAsList();
       TreeSet<String> distinctSortedKeys = new TreeSet<>(keysList);
-      return lookupKeyRecordPairs(partitionName, new ArrayList<>(distinctSortedKeys), fileSlices.get(0), !isSecondaryIndex);
+      return lookupKeyRecordPairs(partitionName, new ArrayList<>(distinctSortedKeys), fileSlices.get(0));
     }
 
     // For SI v2, there are 2 cases require different implementation:
@@ -304,14 +294,13 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
             distinctSortedKeyIter.forEachRemaining(keysList::add);
           }
           FileSlice fileSlice = fileSlices.get(mappingFunction.apply(keysList.get(0), numFileSlices));
-          return lookupKeyRecordPairsItr(partitionName, keysList, fileSlice, !isSecondaryIndex);
+          return lookupKeyRecordPairsItr(partitionName, keysList, fileSlice);
         };
 
     List<Integer> keySpace = IntStream.range(0, numFileSlices).boxed().collect(Collectors.toList());
     HoodiePairData<String, HoodieRecord<HoodieMetadataPayload>> result =
         getEngineContext().mapGroupsByKey(persistedInitialPairData, processFunction, keySpace, true)
             .mapToPair(p -> Pair.of(p.getLeft(), p.getRight()));
-
     return result.filter((String k, HoodieRecord<HoodieMetadataPayload> v) -> !v.getData().isDeleted());
   }
 
@@ -323,13 +312,13 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
    * 4. the record is returned
    */
   private HoodieData<HoodieRecord<HoodieMetadataPayload>> doLookupIndexRecords(HoodieData<String> keys, String partitionName, List<FileSlice> fileSlices,
-                                                                               boolean isSecondaryIndex, Option<SerializableFunctionUnchecked<String, String>> keyEncodingFn) {
+                                                                               Option<SerializableFunctionUnchecked<String, String>> keyEncodingFn) {
 
     final int numFileSlices = fileSlices.size();
     if (numFileSlices == 1) {
       List<String> keysList = keyEncodingFn.isPresent() ? keys.map(k -> keyEncodingFn.get().apply(k)).collectAsList() : keys.collectAsList();
       TreeSet<String> distinctSortedKeys = new TreeSet<>(keysList);
-      return lookupRecords(partitionName, new ArrayList<>(distinctSortedKeys), fileSlices.get(0), !isSecondaryIndex);
+      return lookupRecords(partitionName, new ArrayList<>(distinctSortedKeys), fileSlices.get(0));
     }
 
     // For SI v2, there are 2 cases require different implementation:
@@ -358,7 +347,7 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
             distinctSortedKeyIter.forEachRemaining(keysList::add);
           }
           FileSlice fileSlice = fileSlices.get(mappingFunction.apply(keysList.get(0), numFileSlices));
-          return lookupRecordsItr(partitionName, keysList, fileSlice, !isSecondaryIndex);
+          return lookupRecordsItr(partitionName, keysList, fileSlice);
         };
     List<Integer> keySpace = IntStream.range(0, numFileSlices).boxed().collect(Collectors.toList());
     HoodieData<HoodieRecord<HoodieMetadataPayload>> result =
@@ -454,8 +443,7 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
         k -> HoodieTableMetadataUtil.getPartitionLatestMergedFileSlices(metadataMetaClient, getMetadataFileSystemView(), partitionName));
     checkState(!fileSlices.isEmpty(), "No file slices found for partition: " + partitionName);
 
-    boolean isSecondaryIndex = MetadataPartitionType.SECONDARY_INDEX.matchesPartitionPath(partitionName);
-    return doLookup(keys, partitionName, fileSlices, isSecondaryIndex, keyEncodingFn);
+    return doLookup(keys, partitionName, fileSlices, keyEncodingFn);
   }
 
   public HoodieData<String> getRecordKeysFromSecondaryKeysV2(HoodieData<String> secondaryKeys, String partitionName) {
@@ -491,8 +479,7 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
         k -> HoodieTableMetadataUtil.getPartitionLatestMergedFileSlices(metadataMetaClient, getMetadataFileSystemView(), partitionName));
     checkState(!fileSlices.isEmpty(), "No file slices found for partition: " + partitionName);
 
-    boolean isSecondaryIndex = MetadataPartitionType.SECONDARY_INDEX.matchesPartitionPath(partitionName);
-    return doLookupIndexRecords(keys, partitionName, fileSlices, isSecondaryIndex, keyEncodingFn);
+    return doLookupIndexRecords(keys, partitionName, fileSlices, keyEncodingFn);
   }
 
   // When testing we noticed that the parallelism can be very low which hurts the performance. so we should start with a reasonable
@@ -519,9 +506,8 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
     return keys;
   }
 
-  private HoodieFileGroupReader<IndexedRecord> buildFileGroupReader(List<String> sortedKeys,
-                                                                    FileSlice fileSlice,
-                                                                    boolean isFullKey) {
+  private HoodieFileGroupReader<IndexedRecord> buildFileGroupReader(Predicate predicate,
+                                                                    FileSlice fileSlice) {
     Option<HoodieInstant> latestMetadataInstant =
         metadataMetaClient.getActiveTimeline().filterCompletedInstants().lastInstant();
     String latestMetadataInstantTime =
@@ -538,10 +524,7 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
         storageConf,
         metadataMetaClient.getTableConfig(),
         Option.of(instantRange),
-        Option.of(
-            isFullKey
-                ? transformKeysToPredicate(sortedKeys)
-                : transformKeyPrefixesToPredicate(sortedKeys)));
+        Option.of(predicate));
     return HoodieFileGroupReader.<IndexedRecord>newBuilder()
         .withReaderContext(readerContext)
         .withHoodieTableMetaClient(metadataMetaClient)
@@ -560,20 +543,19 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
                                                                                            List<String> sortedKeys,
                                                                                            FileSlice fileSlice,
                                                                                            Boolean isFullKey) {
-    Map<String, List<HoodieRecord<HoodieMetadataPayload>>> map = new HashMap<>();
+    Map<String, HoodieRecord<HoodieMetadataPayload>> map = new HashMap<>();
     try (ClosableIterator<Pair<String, HoodieRecord<HoodieMetadataPayload>>> iterator =
              lookupKeyRecordPairsItr(partitionName, sortedKeys, fileSlice, isFullKey)) {
-      iterator.forEachRemaining(entry -> map.put(entry.getKey(), Collections.singletonList(entry.getValue())));
+      iterator.forEachRemaining(entry -> map.put(entry.getKey(), entry.getValue()));
     }
     return HoodieListPairData.eager(map);
   }
 
   private HoodieData<HoodieRecord<HoodieMetadataPayload>> lookupRecords(String partitionName,
                                                                         List<String> sortedKeys,
-                                                                        FileSlice fileSlice,
-                                                                        Boolean isFullKey) {
+                                                                        FileSlice fileSlice) {
     List<HoodieRecord<HoodieMetadataPayload>> res = new ArrayList<>();
-    try (ClosableIterator<HoodieRecord<HoodieMetadataPayload>> iterator = lookupRecordsItr(partitionName, sortedKeys, fileSlice, isFullKey)) {
+    try (ClosableIterator<HoodieRecord<HoodieMetadataPayload>> iterator = lookupRecordsItr(partitionName, sortedKeys, fileSlice)) {
       iterator.forEachRemaining(res::add);
     }
     return HoodieListData.lazy(res);
@@ -581,9 +563,8 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
 
   private ClosableIterator<Pair<String, HoodieRecord<HoodieMetadataPayload>>> lookupKeyRecordPairsItr(String partitionName,
                                                                                                       List<String> sortedKeys,
-                                                                                                      FileSlice fileSlice,
-                                                                                                      Boolean isFullKey) {
-    return lookupRecords(sortedKeys, fileSlice, isFullKey, metadataRecord -> {
+                                                                                                      FileSlice fileSlice) {
+    return lookupRecords(partitionName, sortedKeys, fileSlice, metadataRecord -> {
       HoodieMetadataPayload payload = new HoodieMetadataPayload(Option.of(metadataRecord));
       String rowKey = payload.key != null ? payload.key : metadataRecord.get(KEY_FIELD_NAME).toString();
       HoodieKey hoodieKey = new HoodieKey(rowKey, partitionName);
@@ -593,9 +574,8 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
 
   private ClosableIterator<HoodieRecord<HoodieMetadataPayload>> lookupRecordsItr(String partitionName,
                                                                                  List<String> keys,
-                                                                                 FileSlice fileSlice,
-                                                                                 Boolean isFullKey) {
-    return lookupRecords(keys, fileSlice, isFullKey,
+                                                                                 FileSlice fileSlice) {
+    return lookupRecords(partitionName, keys, fileSlice,
         metadataRecord -> {
           HoodieMetadataPayload payload = new HoodieMetadataPayload(Option.of(metadataRecord));
           return new HoodieAvroRecord<>(new HoodieKey(payload.key, partitionName), payload);
@@ -605,16 +585,17 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
   /**
    * Lookup records and produce a lazy iterator of mapped HoodieRecords.
    */
-  private <T> ClosableIterator<T> lookupRecords(List<String> sortedKeys,
+  private <T> ClosableIterator<T> lookupRecords(String partitionName,
+                                                List<String> sortedKeys,
                                                 FileSlice fileSlice,
-                                                Boolean isFullKey,
                                                 SerializableFunctionUnchecked<GenericRecord, T> transformer) {
     // If no keys to lookup, we must return early, otherwise, the hfile lookup will return all records.
     if (sortedKeys.isEmpty()) {
       return new EmptyIterator<>();
     }
     try {
-      HoodieFileGroupReader<IndexedRecord> fileGroupReader = buildFileGroupReader(sortedKeys, fileSlice, isFullKey);
+      Predicate predicate = buildPredicate(partitionName, sortedKeys);
+      HoodieFileGroupReader<IndexedRecord> fileGroupReader = buildFileGroupReader(predicate, fileSlice);
       ClosableIterator<IndexedRecord> rawIterator = fileGroupReader.getClosableIterator();
 
       return new CloseableMappingIterator<>(rawIterator, record -> {
@@ -624,6 +605,34 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
     } catch (IOException e) {
       throw new HoodieIOException("Error merging records from metadata table for " + sortedKeys.size() + " keys", e);
     }
+  }
+
+  private Predicate buildPrefixPredicate(String partitionName, List<String> sortedKeys) {
+    if (MetadataPartitionType.fromPartitionPath(partitionName)
+          .equals(MetadataPartitionType.SECONDARY_INDEX)) {
+      return Predicates.startsWithAny(null,
+          sortedKeys.stream()
+          .map(SecondaryIndexKeyUtils::constructSecondaryIndexKeyPrefix)
+          .map(Literal::from)
+          .collect(Collectors.toList()));
+    }
+    return Predicates.startsWithAny(null, sortedKeys.stream()
+        .map(Literal::from)
+        .collect(Collectors.toList()));
+  }
+
+  private Predicate  buildPredicate(String partitionName, List<String> sortedKeys) {
+    if (MetadataPartitionType.fromPartitionPath(partitionName)
+          .equals(MetadataPartitionType.SECONDARY_INDEX)) {
+      return Predicates.startsWithAny(null,
+          sortedKeys.stream()
+          .map(SecondaryIndexKeyUtils::constructSecondaryIndexKeyPrefix)
+          .map(Literal::from)
+          .collect(Collectors.toList()));
+    }
+    return Predicates.in(null, sortedKeys.stream()
+        .map(Literal::from)
+        .collect(Collectors.toList()));
   }
 
   private Set<String> getValidInstantTimestamps() {
