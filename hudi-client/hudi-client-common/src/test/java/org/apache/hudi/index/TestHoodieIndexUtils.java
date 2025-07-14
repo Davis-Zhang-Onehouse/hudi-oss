@@ -67,13 +67,13 @@ public class TestHoodieIndexUtils {
   /**
    * Test eligibility check for secondary index with supported data types.
    * 
-   * Given: A schema with supported data types (String/CHAR, Int, Long) and record index enabled
+   * Given: A schema with supported data types (String/CHAR, Int, Long, Bytes) and record index enabled
    * When: Checking eligibility for secondary index creation
    * Then: Should not throw exception as all data types are supported and record index requirement is met
    */
   @Test
   public void testIsEligibleForSecondaryIndexWithSupportedDataTypes() {
-    // Given: A schema with supported data types for secondary index (String/CHAR, Int, Long)
+    // Given: A schema with supported data types for secondary index (String/CHAR, Int, Long, Bytes)
     // Note: CHAR is represented as STRING in Avro schema
     Schema schema = SchemaBuilder.record("TestRecord")
         .fields()
@@ -81,6 +81,7 @@ public class TestHoodieIndexUtils {
         .requiredString("charField") // CHAR is represented as STRING in Avro
         .optionalInt("intField")
         .requiredLong("longField")
+        .name("bytesField").type().bytesType().noDefault()
         .endRecord();
 
     // Mock the schema resolver
@@ -126,13 +127,13 @@ public class TestHoodieIndexUtils {
       assertDoesNotThrow(() -> HoodieIndexUtils.validateEligibilityForSecondaryOrExpressionIndex(
           mockMetaClient, PARTITION_NAME_SECONDARY_INDEX, options, columns, "test_index"));
       
-      // Test case 4: Secondary index with boolean field
-      // Given: Column with boolean data type
+      // Test case 4: Secondary index with bytes field
+      // Given: Column with bytes data type
       columns.clear();
-      columns.put("booleanField", Collections.emptyMap());
+      columns.put("bytesField", Collections.emptyMap());
       
-      // When: Checking eligibility for secondary index with boolean field
-      // Then: Should not throw exception because boolean is now supported
+      // When: Checking eligibility for secondary index with bytes field
+      // Then: Should not throw exception because bytes is supported
       assertDoesNotThrow(() -> HoodieIndexUtils.validateEligibilityForSecondaryOrExpressionIndex(
           mockMetaClient, PARTITION_NAME_SECONDARY_INDEX, options, columns, "test_index"));
     }

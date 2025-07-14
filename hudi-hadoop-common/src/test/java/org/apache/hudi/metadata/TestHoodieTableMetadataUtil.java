@@ -387,7 +387,7 @@ public class TestHoodieTableMetadataUtil extends HoodieCommonTestHarness {
   /**
    * Test validation of data types for secondary index.
    * 
-   * Given: A schema with various data types including supported (String/CHAR, Int, Long) and unsupported (Float, Double, Boolean, Array, Map, Struct) types
+   * Given: A schema with various data types including supported (String/CHAR, Int, Long, Bytes) and unsupported (Float, Double, Boolean, Array, Map, Struct) types
    * When: Validating each data type for secondary index compatibility
    * Then: Should return true for supported types and false for unsupported types
    */
@@ -401,6 +401,7 @@ public class TestHoodieTableMetadataUtil extends HoodieCommonTestHarness {
         .optionalInt("intField")
         .requiredLong("longField")
         .name("timestampField").type().longType().longDefault(0L) // timestamp as long
+        .name("bytesField").type().bytesType().noDefault()
         .name("booleanField").type().booleanType().noDefault()
         .name("floatField").type().floatType().noDefault()
         .name("doubleField").type().doubleType().noDefault()
@@ -419,9 +420,10 @@ public class TestHoodieTableMetadataUtil extends HoodieCommonTestHarness {
     assertTrue(validateDataTypeForSecondaryIndex(Collections.singletonList("intField"), schema));
     assertTrue(validateDataTypeForSecondaryIndex(Collections.singletonList("longField"), schema));
     assertTrue(validateDataTypeForSecondaryIndex(Collections.singletonList("timestampField"), schema));
+    assertTrue(validateDataTypeForSecondaryIndex(Collections.singletonList("bytesField"), schema)); // BYTES is now supported
     
     // Test multiple supported fields
-    assertTrue(validateDataTypeForSecondaryIndex(Arrays.asList("stringField", "intField", "longField"), schema));
+    assertTrue(validateDataTypeForSecondaryIndex(Arrays.asList("stringField", "intField", "longField", "bytesField"), schema));
 
     // Test unsupported types for secondary index
     assertFalse(validateDataTypeForSecondaryIndex(Collections.singletonList("floatField"), schema));

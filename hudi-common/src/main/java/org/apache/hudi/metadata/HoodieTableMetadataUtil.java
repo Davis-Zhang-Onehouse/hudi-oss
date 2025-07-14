@@ -2507,7 +2507,7 @@ public class HoodieTableMetadataUtil {
 
   /**
    * Check if the given schema type is supported for secondary index.
-   * Supported types are: String (including CHAR), Integer types (Int, BigInt, Long, Short), and timestamp
+   * Supported types are: String (including CHAR), Bytes, Integer types (Int, BigInt, Long, Short), and timestamp
    */
   private static boolean isSecondaryIndexSupportedType(Schema schema) {
     // Handle union types (nullable fields)
@@ -2525,6 +2525,12 @@ public class HoodieTableMetadataUtil {
           return false; // UUID and other string-based logical types are not supported
         }
         return true; // Regular STRING (includes CHAR)
+      case BYTES:
+        // BYTES type can have decimal logical type which we don't support
+        if (schema.getLogicalType() != null) {
+          return false; // Decimal and other bytes-based logical types are not supported
+        }
+        return true; // Regular BYTES (binary data)
       case INT:
         // INT type can represent regular integers or dates/times with logical types
         if (schema.getLogicalType() != null) {
