@@ -272,12 +272,33 @@ public class HoodieSparkEngineContext extends HoodieEngineContext {
     return javaSparkContext.emptyRDD();
   }
 
+  /**
+   * Maps groups by key with automatic repartitioning based on sample key ranges.
+   *
+   * This Spark-specific implementation performs range-based repartitioning of the input data
+   * before applying the process function. The repartitioning ensures a statistically even distribution
+   * of data across partitions based on the provided key space, which can significantly improve
+   * performance for skewed datasets.
+   *
+   * Note:
+   * 1. This repartitioning behavior is specific to the Spark engine context and is not
+   * applicable to other engine contexts like HoodieLocalEngineContext.
+   * 2. The algorithm is not deterministic across different runs since the sample seed is based on current time.
+   *
+   * @param data The input key-value pair data
+   * @param processFunc Function to apply to each group of values
+   * @param keySpace List of keys to define the partitioning ranges
+   * @param preservesPartitioning Whether the operation preserves partitioning
+   * @return Processed data after grouping by key and applying the process function
+   */
   @Override
-  public <S extends Comparable<S>, V extends Comparable<V>, R> HoodieData<R> processValuesOfTheSameShards(
-      HoodiePairData<S, V> data, SerializableFunction<Iterator<V>, Iterator<R>> func, List<S> shardIndices, boolean preservesPartitioning) {
-    HoodiePairData<S, V> repartitionedData = rangeBasedRepartitionForEachKey(
-        data, shardIndices, 0.1, 100000, System.nanoTime());
-    return repartitionedData.values().mapPartitions(func, preservesPartitioning);
+  public <K extends Comparable<K>, V extends Comparable<V>, R> HoodieData<R> mapGroupsByKey(HoodiePairData<K, V> data,
+                                                                                            SerializableFunction<Iterator<V>, Iterator<R>> processFunc,
+                                                                                            List<K> keySpace,
+                                                                                            boolean preservesPartitioning) {
+    HoodiePairData<K, V> repartitionedData = rangeBasedRepartitionForEachKey(
+        data, keySpace, 0.02, 100000, System.nanoTime());
+    return repartitionedData.values().mapPartitions(processFunc, preservesPartitioning);
   }
 
   /**
@@ -297,7 +318,7 @@ public class HoodieSparkEngineContext extends HoodieEngineContext {
    * <p>The method is particularly useful for: Balancing workload across partitions for better parallel processing</p>
    *
    * @param data The input data as key-value pairs where keys are integers and values are of type V
-   * @param shardIndices The set must cover all possible keys of the given data
+   * @param partitioningKeySpace The set must cover all possible keys of the given data
    * @param sampleFraction The fraction of data to sample for each key (between 0 and 1).
    *                       A higher fraction provides better distribution analysis but increases sampling overhead.
    *                       It typically should be smaller than 0.05 for large datasets.
@@ -308,10 +329,10 @@ public class HoodieSparkEngineContext extends HoodieEngineContext {
    * @throws IllegalArgumentException if sampleFraction is not between 0 and 1
    */
   public <S extends Comparable<S>, V extends Comparable<V>> HoodiePairData<S, V> rangeBasedRepartitionForEachKey(
-      HoodiePairData<S, V> data, List<S> shardIndices, double sampleFraction, int maxKeyPerBucket, long seed) {
+      HoodiePairData<S, V> data, List<S> partitioningKeySpace, double sampleFraction, int maxKeyPerBucket, long seed) {
     ValidationUtils.checkState(sampleFraction > 0 && sampleFraction <= 1, "sampleFraction must be between 0 and 1");
     Map<S, Double> samplingFractions = new HashMap<>();
-    for (S s : shardIndices) {
+    for (S s : partitioningKeySpace) {
       samplingFractions.put(s, sampleFraction);
     }
     JavaPairRDD<S, V> pairRddDataSKV = HoodieJavaPairRDD.getJavaPairRDD(data);
