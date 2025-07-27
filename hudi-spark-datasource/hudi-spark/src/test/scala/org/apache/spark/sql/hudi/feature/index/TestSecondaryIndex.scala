@@ -33,8 +33,9 @@ import org.apache.hudi.metadata.HoodieMetadataPayload.SECONDARY_INDEX_RECORD_KEY
 import org.apache.hudi.metadata.HoodieTableMetadataUtil.PARTITION_NAME_SECONDARY_INDEX
 import org.apache.hudi.storage.StoragePath
 
-import org.apache.spark.sql.SaveMode
+import org.apache.spark.sql.{Row, SaveMode}
 import org.apache.spark.sql.hudi.common.HoodieSparkSqlTestBase
+import org.apache.spark.sql.types._
 import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertNotNull, assertTrue}
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -1186,6 +1187,206 @@ class TestSecondaryIndex extends HoodieSparkSqlTestBase {
         Seq(1, "a1", 10, 100, 1000),
         Seq(2, "a2", 20, 200, 1001)
       )
+    }
+  }
+
+  test("Test Schema Evolution from Int to Double Without Secondary Index") {
+    import spark.implicits._
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      val basePath = s"${tmp.getCanonicalPath}/$tableName"
+
+      // Define initial schema explicitly with data_column as IntegerType
+      val initialSchema = StructType(Seq(
+        StructField("id", IntegerType, nullable = false),
+        StructField("name", StringType, nullable = false),
+        StructField("data_column", IntegerType, nullable = false),
+        StructField("ts", LongType, nullable = false)
+      ))
+
+      // Create table with data source write - initial schema where data_column is int
+      import spark.implicits._
+      val initialRows = Seq(
+        Row(1, "a1", 10, 1000L),
+        Row(2, "a2", 20, 1001L)
+      )
+      val initialData = spark.createDataFrame(
+        spark.sparkContext.parallelize(initialRows),
+        initialSchema
+      )
+
+      initialData.write
+        .format("hudi")
+        .option("hoodie.table.name", tableName)
+        .option("hoodie.datasource.write.table.type", "COPY_ON_WRITE")
+        .option("hoodie.datasource.write.recordkey.field", "id")
+        .option("hoodie.datasource.write.precombine.field", "ts")
+        .option("hoodie.datasource.write.operation", "insert")
+        .option("hoodie.metadata.enable", "true")
+        .option("hoodie.metadata.record.index.enable", "true")
+        .option("hoodie.index.type", "RECORD_INDEX")  // Enable RLI
+        .mode(SaveMode.Overwrite)
+        .save(basePath)
+
+      // Verify initial data
+      val result = spark.read.format("hudi").load(basePath).select("id", "name", "data_column", "ts").orderBy("id").collect()
+      assert(result.length == 2)
+      assert(result(0).getAs[Int]("id") == 1)
+      assert(result(0).getAs[String]("name") == "a1")
+      assert(result(0).getAs[Int]("data_column") == 10)
+      assert(result(0).getAs[Long]("ts") == 1000)
+      assert(result(1).getAs[Int]("id") == 2)
+      assert(result(1).getAs[String]("name") == "a2")
+      assert(result(1).getAs[Int]("data_column") == 20)
+      assert(result(1).getAs[Long]("ts") == 1001)
+
+      // Validate that data_column is initially int type
+      validateFieldType(basePath, "data_column", "int")
+
+      // Enable schema on read
+      spark.sql(s"set hoodie.schema.on.read.enable = true")
+
+      // Define evolved schema with data_column as DoubleType
+      val evolvedSchema = StructType(Seq(
+        StructField("id", IntegerType, nullable = false),
+        StructField("name", StringType, nullable = false),
+        StructField("data_column", DoubleType, nullable = false),
+        StructField("ts", LongType, nullable = false)
+      ))
+
+      // Evolve schema to double by writing data with double values
+      val evolvedRows = Seq(
+        Row(3, "a3", 30.5, 1002L),
+        Row(4, "a4", 40.7, 1003L)
+      )
+      val evolvedData = spark.createDataFrame(
+        spark.sparkContext.parallelize(evolvedRows),
+        evolvedSchema
+      )
+
+      evolvedData.write
+        .format("hudi")
+        .option("hoodie.table.name", tableName)
+        .option("hoodie.datasource.write.table.type", "COPY_ON_WRITE")
+        .option("hoodie.datasource.write.recordkey.field", "id")
+        .option("hoodie.datasource.write.precombine.field", "ts")
+        .option("hoodie.datasource.write.operation", "upsert")
+        .option("hoodie.schema.on.read.enable", "true")
+        .option("hoodie.metadata.enable", "true")
+        .option("hoodie.metadata.record.index.enable", "true")
+        .option("hoodie.index.type", "RECORD_INDEX")
+        .mode("append")
+        .save(basePath)
+
+      // Verify schema has evolved to double
+      validateFieldType(basePath, "data_column", "double")
+
+      // Create secondary index on the evolved column
+      spark.sql(s"set hoodie.schema.on.read.enable = false")
+
+      spark.sql(s"create table $tableName using hudi location '$basePath'")
+      spark.sql(s"create index idx_data_column on $tableName (data_column)")
+      spark.sql(s"set hoodie.schema.on.read.enable = true")
+
+      // Verify index was created
+      val indexes = spark.sql(s"show indexes from $tableName").collect()
+      val secondaryIndexExists = indexes.exists(row => 
+        row.getString(0).contains("secondary_index_idx_data_column") && 
+        row.getString(2) == "data_column"
+      )
+      assert(secondaryIndexExists, "Secondary index on data_column should exist")
+
+      // Write more data using the old schema (int values)
+      val oldSchemaRows = Seq(
+        Row(5, "a5", 50, 1004L),
+        Row(6, "a6", 60, 1005L)
+      )
+      val oldSchemaData = spark.createDataFrame(
+        spark.sparkContext.parallelize(oldSchemaRows),
+        initialSchema  // Using the original schema with IntegerType
+      )
+
+      oldSchemaData.write
+        .format("hudi")
+        .option("hoodie.table.name", tableName)
+        .option("hoodie.datasource.write.table.type", "COPY_ON_WRITE")
+        .option("hoodie.datasource.write.recordkey.field", "id")
+        .option("hoodie.datasource.write.precombine.field", "ts")
+        .option("hoodie.datasource.write.operation", "upsert")
+        .option("hoodie.schema.on.read.enable", "true")
+        .option("hoodie.metadata.enable", "true")
+        .option("hoodie.metadata.record.index.enable", "true")
+        .option("hoodie.index.type", "RECORD_INDEX")
+        .mode("append")
+        .save(basePath)
+
+      // Verify all data is correctly stored and readable
+      val finalResult = spark.read.format("hudi").load(basePath).select("id", "name", "data_column", "ts").orderBy("id").collect()
+      assert(finalResult.length == 6)
+      assert(finalResult(0).getAs[Int]("id") == 1)
+      assert(finalResult(0).getAs[Double]("data_column") == 10.0)
+      assert(finalResult(1).getAs[Int]("id") == 2)
+      assert(finalResult(1).getAs[Double]("data_column") == 20.0)
+      assert(finalResult(2).getAs[Int]("id") == 3)
+      assert(finalResult(2).getAs[Double]("data_column") == 30.5)
+      assert(finalResult(3).getAs[Int]("id") == 4)
+      assert(finalResult(3).getAs[Double]("data_column") == 40.7)
+      assert(finalResult(4).getAs[Int]("id") == 5)
+      assert(finalResult(4).getAs[Double]("data_column") == 50.0)
+      assert(finalResult(5).getAs[Int]("id") == 6)
+      assert(finalResult(5).getAs[Double]("data_column") == 60.0)
+
+      // Verify we can query with predicates on the evolved column
+      val filteredResult = spark.read.format("hudi").load(basePath)
+        .filter("data_column > 25.0")
+        .select("id", "name")
+        .orderBy("id")
+        .collect()
+      assert(filteredResult.length == 4)
+      assert(filteredResult(0).getAs[Int]("id") == 3)
+      assert(filteredResult(0).getAs[String]("name") == "a3")
+      assert(filteredResult(1).getAs[Int]("id") == 4)
+      assert(filteredResult(1).getAs[String]("name") == "a4")
+      assert(filteredResult(2).getAs[Int]("id") == 5)
+      assert(filteredResult(2).getAs[String]("name") == "a5")
+      assert(filteredResult(3).getAs[Int]("id") == 6)
+      assert(filteredResult(3).getAs[String]("name") == "a6")
+
+      // Verify secondary index can be used with the evolved column
+      val indexQuery = spark.sql(s"SELECT id, name, data_column FROM $tableName WHERE data_column = 30.5")
+      val indexResult = indexQuery.collect()
+      assert(indexResult.length == 1)
+      assert(indexResult(0).getAs[Int]("id") == 3)
+      assert(indexResult(0).getAs[String]("name") == "a3")
+      assert(indexResult(0).getAs[Double]("data_column") == 30.5)
+
+      // Validate secondary index metadata content (type = 7)
+      val expectedSecondaryKeys = spark.sql(s"SELECT _hoodie_record_key, data_column FROM $tableName")
+        .collect()
+        .map(row => {
+          val recordKey = row.getString(0)
+          val dataColumnValue = row.getDouble(1).toString
+          SecondaryIndexKeyUtils.constructSecondaryIndexKey(dataColumnValue, recordKey)
+        })
+      
+      val actualSecondaryKeys = spark.sql(s"SELECT key FROM hudi_metadata('$basePath') WHERE type=7")
+        .collect()
+        .map(_.getString(0))
+        .filter(_.contains(SECONDARY_INDEX_RECORD_KEY_SEPARATOR))
+      
+      assert(actualSecondaryKeys.length == 6, s"Expected 6 secondary index entries, but found ${actualSecondaryKeys.length}")
+      assert(expectedSecondaryKeys.toSet == actualSecondaryKeys.toSet, 
+        s"Secondary index keys mismatch.\nExpected: ${expectedSecondaryKeys.mkString(", ")}\nActual: ${actualSecondaryKeys.mkString(", ")}")
+
+      // Verify specific secondary index entries for evolved schema values
+      val evolvedValueKeys = actualSecondaryKeys.filter(key => {
+        val secondaryKey = SecondaryIndexKeyUtils.getSecondaryKeyFromSecondaryIndexKey(key)
+        secondaryKey == "30.5" || secondaryKey == "40.7"
+      })
+      assert(evolvedValueKeys.length == 2, "Should have secondary index entries for evolved double values")
+
+      // Clean up the table registration
+      spark.sql(s"DROP TABLE IF EXISTS $tableName")
     }
   }
 }
