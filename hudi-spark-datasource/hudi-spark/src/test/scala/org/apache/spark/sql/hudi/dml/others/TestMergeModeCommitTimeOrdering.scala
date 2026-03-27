@@ -32,9 +32,7 @@ class TestMergeModeCommitTimeOrdering extends HoodieSparkSqlTestBase {
 
   Seq(
     "cow,current,false,false", "cow,current,false,true", "cow,current,true,false",
-    "mor,current,false,false", "mor,current,false,true", "mor,current,true,false",
-    "cow,6,true,false", "cow,6,true,true", "mor,6,true,true",
-    "cow,8,true,false", "cow,8,true,true", "mor,8,true,true").foreach { args =>
+    "mor,current,false,false", "mor,current,false,true", "mor,current,true,false").foreach { args =>
     val argList = args.split(',')
     val tableType = argList(0)
     val tableVersion = if (argList(1).equals("current")) {

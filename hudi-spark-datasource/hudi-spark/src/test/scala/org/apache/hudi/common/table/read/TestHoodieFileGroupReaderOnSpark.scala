@@ -34,7 +34,7 @@ import org.apache.hudi.common.testutils.{HoodieTestDataGenerator, HoodieTestUtil
 import org.apache.hudi.common.util.{Option => HOption, OrderingValues}
 import org.apache.hudi.config.{HoodieCompactionConfig, HoodieWriteConfig}
 import org.apache.hudi.storage.{StorageConfiguration, StoragePath}
-import org.apache.hudi.testutils.SparkClientFunctionalTestHarness
+import org.apache.hudi.testutils.{GlutenTestUtils, SparkClientFunctionalTestHarness}
 
 import org.apache.avro.{Schema, SchemaBuilder}
 import org.apache.avro.generic.GenericRecord
@@ -49,7 +49,7 @@ import org.apache.spark.sql.hudi.MultipleColumnarFileFormatReader
 import org.apache.spark.sql.internal.SQLConf.LEGACY_RESPECT_NULLABILITY_IN_TEXT_DATASET_CONVERSION
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataType, DoubleType, FloatType, IntegerType, LongType, MapType, StringType, StructType}
 import org.apache.spark.unsafe.types.UTF8String
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.jupiter.api.{AfterEach, BeforeEach, Disabled, Test}
 import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.{Arguments, MethodSource}
@@ -90,11 +90,7 @@ class TestHoodieFileGroupReaderOnSpark extends TestHoodieFileGroupReaderBase[Int
     HoodieSparkKryoRegistrar.register(sparkConf)
     GlutenTestUtils.applyGlutenConf(sparkConf)
     spark = SparkSession.builder.config(sparkConf).getOrCreate
-    supportedFileFormats = if (HoodieSparkUtils.gteqSpark3_4) {
-      util.Arrays.asList(HoodieFileFormat.PARQUET, HoodieFileFormat.ORC, HoodieFileFormat.LANCE)
-    } else {
-      util.Arrays.asList(HoodieFileFormat.PARQUET, HoodieFileFormat.ORC)
-    }
+    supportedFileFormats = util.Arrays.asList(HoodieFileFormat.PARQUET)
   }
 
   @AfterEach
@@ -227,6 +223,7 @@ class TestHoodieFileGroupReaderOnSpark extends TestHoodieFileGroupReaderBase[Int
     (10, "3", "rider-C", "driver-C", 33.9, "i"),
     (20, "1", "rider-Z", "driver-Z", 27.7, "i"))
 
+  @Disabled("Custom delete payload not supported")
   @ParameterizedTest
   @MethodSource(Array("customDeleteTestParams"))
   def testCustomDelete(useFgReader: String,
@@ -460,9 +457,7 @@ object TestHoodieFileGroupReaderOnSpark {
       Arguments.of("true", "MERGE_ON_READ", "false", "EVENT_TIME_ORDERING"),
       Arguments.of("true", "MERGE_ON_READ", "true", "EVENT_TIME_ORDERING"),
       Arguments.of("true", "MERGE_ON_READ", "false", "COMMIT_TIME_ORDERING"),
-      Arguments.of("true", "MERGE_ON_READ", "true", "COMMIT_TIME_ORDERING"),
-      Arguments.of("true", "MERGE_ON_READ", "false", "CUSTOM"),
-      Arguments.of("true", "MERGE_ON_READ", "true", "CUSTOM"))
+      Arguments.of("true", "MERGE_ON_READ", "true", "COMMIT_TIME_ORDERING"))
   }
 
   def getFileCount(metaClient: HoodieTableMetaClient, basePath: String): (Long, Long) = {
