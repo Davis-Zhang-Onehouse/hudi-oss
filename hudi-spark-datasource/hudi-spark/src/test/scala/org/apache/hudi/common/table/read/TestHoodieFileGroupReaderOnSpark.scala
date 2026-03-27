@@ -88,6 +88,7 @@ class TestHoodieFileGroupReaderOnSpark extends TestHoodieFileGroupReaderBase[Int
     sparkConf.set("spark.sql.orc.enableVectorizedReader", "false")
     sparkConf.set(LEGACY_RESPECT_NULLABILITY_IN_TEXT_DATASET_CONVERSION.key, "true")
     HoodieSparkKryoRegistrar.register(sparkConf)
+    GlutenTestUtils.applyGlutenConf(sparkConf)
     spark = SparkSession.builder.config(sparkConf).getOrCreate
     supportedFileFormats = if (HoodieSparkUtils.gteqSpark3_4) {
       util.Arrays.asList(HoodieFileFormat.PARQUET, HoodieFileFormat.ORC, HoodieFileFormat.LANCE)
