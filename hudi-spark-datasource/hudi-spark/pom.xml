@@ -535,8 +535,48 @@
               </argLine>
             </configuration>
           </plugin>
+          <plugin>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest-maven-plugin</artifactId>
+            <configuration>
+              <systemProperties>
+                <gluten.bundle.jar>${gluten.bundle.jar}</gluten.bundle.jar>
+              </systemProperties>
+              <argLine>${argLine}
+                --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED
+                --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
+                --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
+                -Dio.netty.tryReflectionSetAccessible=true
+              </argLine>
+            </configuration>
+          </plugin>
         </plugins>
       </build>
+      <dependencies>
+        <dependency>
+          <groupId>io.glutenproject</groupId>
+          <artifactId>gluten-velox-bundle</artifactId>
+          <version>0.0.0</version>
+          <scope>system</scope>
+          <systemPath>${gluten.bundle.jar}</systemPath>
+        </dependency>
+        <!-- Override lance-core to exclude arrow JARs that conflict with
+             the shaded copies inside the Gluten bundle. -->
+        <dependency>
+          <groupId>org.lance</groupId>
+          <artifactId>lance-core</artifactId>
+          <exclusions>
+            <exclusion>
+              <groupId>org.apache.arrow</groupId>
+              <artifactId>arrow-c-data</artifactId>
+            </exclusion>
+            <exclusion>
+              <groupId>org.apache.arrow</groupId>
+              <artifactId>arrow-dataset</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+      </dependencies>
     </profile>
   </profiles>
 </project>
