@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -91,6 +92,19 @@ public class TestBlobFileNames {
   @Test
   public void contentTypeOfPdf() {
     assertEquals("application/pdf", BlobFileNames.contentType("pdf"));
+  }
+
+  @Test
+  public void contentTypesOfImages() {
+    assertEquals("image/png", BlobFileNames.contentType("png"));
+    assertEquals("image/jpeg", BlobFileNames.contentType("jpg"));
+    assertEquals("image/jpeg", BlobFileNames.contentType("jpeg"));
+    assertEquals("image/gif", BlobFileNames.contentType("gif"));
+    assertEquals("image/bmp", BlobFileNames.contentType("bmp"));
+    assertEquals("image/tiff", BlobFileNames.contentType("tif"));
+    assertEquals("image/tiff", BlobFileNames.contentType("tiff"));
+    assertEquals("image/webp", BlobFileNames.contentType("webp"));
+    assertNull(BlobFileNames.contentType("mp4"), "video types are not named here");
   }
 
 }
