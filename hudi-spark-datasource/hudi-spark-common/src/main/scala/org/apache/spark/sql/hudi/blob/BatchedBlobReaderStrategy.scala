@@ -48,12 +48,15 @@ case class BatchedBlobReaderStrategy(sparkSession: SparkSession) extends SparkSt
         String.valueOf(BatchedBlobReader.DEFAULT_LOOKAHEAD_SIZE)).toInt
 
       val storageConf = new HadoopStorageConfiguration(sparkSession.sparkContext.hadoopConfiguration)
+      // Resolved on the driver from the optimized child; only the plain path string reaches executors
+      val tableBasePath = BlobTableBasePath.resolve(child, read.blobAttr)
       BatchedBlobReadExec(
         planLater(child),
         maxGapBytes,
         storageConf,
         lookaheadSize,
-        read.blobAttr.name,
+        read.blobAttr,
+        tableBasePath,
         read.output
       ) :: Nil
 

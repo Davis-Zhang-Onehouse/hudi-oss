@@ -24,13 +24,17 @@ import org.apache.hudi.common.schema.{HoodieSchema, HoodieSchemaType}
 import org.apache.hudi.common.util.HoodieStorageUtils
 import org.apache.hudi.io.SeekableDataInputStream
 import org.apache.hudi.storage.{HoodieStorage, StorageConfiguration, StoragePath}
+import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.spark.SparkContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, Row}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{GenericRowWithSchema, SpecificInternalRow}
 import org.apache.spark.sql.types.{BinaryType, BlobType, DataType, StructField, StructType}
+import org.apache.spark.util.SerializableConfiguration
 import org.slf4j.LoggerFactory
 
 import java.io.InputStream
@@ -93,11 +97,15 @@ import scala.collection.mutable.ArrayBuffer
  *                       known once its row arrives, so this is called per read rather than once.
  * @param maxGapBytes    Maximum gap between ranges to consider for batching (default: 4KB)
  * @param lookaheadRows  Number of rows to buffer for batch detection (default: 50)
+ * @param tableBasePath  Base path of the Hudi table the blob column was read from, if known. Managed
+ *                       references with a relative external_path are resolved against it; see
+ *                       [[BatchedBlobReader.resolveReferencePath]].
  */
 class BatchedBlobReader(
                          resolveStorage: StoragePath => HoodieStorage,
                          maxGapBytes: Int = 4096,
-                         lookaheadRows: Int = 50) {
+                         lookaheadRows: Int = 50,
+                         tableBasePath: Option[String] = None) {
 
   private val logger = LoggerFactory.getLogger(classOf[BatchedBlobReader])
 
@@ -239,8 +247,11 @@ class BatchedBlobReader(
               // Case 2 or 3: Out-of-line — get reference struct (field 2)
               require(!accessor.isNullAt(blobStruct, 2), s"Out-of-line blob at row $rowIndex must set reference")
               val referenceStruct = accessor.getStruct(blobStruct, 2, HoodieSchema.Blob.getReferenceFieldCount)
-              val filePath = accessor.getString(referenceStruct, 0)
-              require(filePath != null && filePath.nonEmpty, s"Blob reference must have non-empty external_path at row $rowIndex")
+              val externalPath = accessor.getString(referenceStruct, 0)
+              require(externalPath != null && externalPath.nonEmpty, s"Blob reference must have non-empty external_path at row $rowIndex")
+              // Resolve before grouping so rows of one object merge on the same (resolved) path
+              val managed = !accessor.isNullAt(referenceStruct, 3) && accessor.getBoolean(referenceStruct, 3)
+              val filePath = BatchedBlobReader.resolveReferencePath(externalPath, managed, tableBasePath)
               val offsetIsNull = accessor.isNullAt(referenceStruct, 1)
               val lengthIsNull = accessor.isNullAt(referenceStruct, 2)
               if (offsetIsNull && lengthIsNull) {
@@ -530,6 +541,7 @@ private[blob] trait RowAccessor[R] {
   def getStruct(row: R, structColIdx: Int, numFields: Int): R
   def getString(struct: R, fieldIdx: Int): String
   def getLong(struct: R, fieldIdx: Int): Long
+  def getBoolean(struct: R, fieldIdx: Int): Boolean
   def getBytes(row: R, fieldIdx: Int): Array[Byte]
   def isNullAt(row: R, fieldIdx: Int): Boolean
   // Return a deep copy safe to retain across iterator advances. Spark's child
@@ -556,6 +568,7 @@ private[blob] object RowAccessor {
     override def getStruct(row: Row, structColIdx: Int, numFields: Int): Row = row.getStruct(structColIdx)
     override def getString(struct: Row, fieldIdx: Int): String = struct.getString(fieldIdx)
     override def getLong(struct: Row, fieldIdx: Int): Long = struct.getLong(fieldIdx)
+    override def getBoolean(struct: Row, fieldIdx: Int): Boolean = struct.getBoolean(fieldIdx)
     override def getBytes(row: Row, fieldIdx: Int): Array[Byte] = row.getAs[Array[Byte]](fieldIdx)
     override def isNullAt(row: Row, fieldIdx: Int): Boolean = row.isNullAt(fieldIdx)
     override def copy(row: Row): Row = row
@@ -568,6 +581,7 @@ private[blob] object RowAccessor {
       if (utf8String == null) null else utf8String.toString
     }
     override def getLong(struct: InternalRow, fieldIdx: Int): Long = struct.getLong(fieldIdx)
+    override def getBoolean(struct: InternalRow, fieldIdx: Int): Boolean = struct.getBoolean(fieldIdx)
     override def getBytes(row: InternalRow, fieldIdx: Int): Array[Byte] = row.getBinary(fieldIdx)
     override def isNullAt(row: InternalRow, fieldIdx: Int): Boolean = row.isNullAt(fieldIdx)
     override def copy(row: InternalRow): InternalRow = row.copy()
@@ -674,6 +688,67 @@ object BatchedBlobReader {
   val DATA_COL = "__temp__data"
 
   /**
+   * Broadcasts the Hadoop configuration behind `storageConf` wrapped in Spark's
+   * [[SerializableConfiguration]], which survives any `spark.serializer`. A broadcast
+   * [[HadoopStorageConfiguration]] arrives on executors with a null configuration under Kryo
+   * unless Hudi's Kryo registrator is configured, because its configuration is transient.
+   */
+  def broadcastStorageConf(sc: SparkContext,
+                           storageConf: StorageConfiguration[_]): Broadcast[SerializableConfiguration] =
+    sc.broadcast(new SerializableConfiguration(storageConf.unwrapAs(classOf[Configuration])))
+
+  /** Rebuilds the storage configuration on an executor from [[broadcastStorageConf]]'s value. */
+  def storageConfFrom(broadcastConf: Broadcast[SerializableConfiguration]): StorageConfiguration[_] =
+    new HadoopStorageConfiguration(broadcastConf.value.value)
+
+  /**
+   * Resolves a blob reference's external_path to the path that is opened.
+   *
+   * A path is relative when it has no URI scheme and does not start with "/".
+   * <ul>
+   *   <li>Absolute paths are returned unchanged.</li>
+   *   <li>Unmanaged (managed = false or null) relative paths are returned unchanged, so the
+   *       filesystem resolves them against its working directory.</li>
+   *   <li>Managed relative paths are resolved against `tableBasePath`; the result must stay under
+   *       the base path, so a reference whose ".." segments escape the table is rejected.</li>
+   *   <li>Managed relative paths without a known base path are rejected: read_blob() knows the base
+   *       path only when the blob column is read directly from a Hudi table (not from a cached,
+   *       checkpointed or streamed DataFrame); [[readBatched]] takes it as `tableBasePath`.</li>
+   * </ul>
+   *
+   * @param externalPath  The reference's external_path
+   * @param managed       The reference's managed flag (null treated as false)
+   * @param tableBasePath Base path of the Hudi table the reference belongs to, if known
+   * @return The path to open
+   * @throws IllegalArgumentException if a managed relative path escapes the base path, or no base path is known
+   */
+  def resolveReferencePath(externalPath: String, managed: Boolean, tableBasePath: Option[String]): String = {
+    val uri = new StoragePath(externalPath).toUri
+    val isRelative = uri.getScheme == null && !uri.getPath.startsWith(StoragePath.SEPARATOR)
+    if (!isRelative || !managed) {
+      externalPath
+    } else {
+      tableBasePath match {
+        case Some(base) =>
+          val basePath = new StoragePath(base)
+          val resolved = new StoragePath(basePath, externalPath).toString
+          val baseString = basePath.toString
+          val basePrefix = if (baseString.endsWith(StoragePath.SEPARATOR)) baseString else baseString + StoragePath.SEPARATOR
+          if (!resolved.startsWith(basePrefix)) {
+            throw new IllegalArgumentException(
+              s"Managed blob reference '$externalPath' resolves to '$resolved', outside the table base path '$base'")
+          }
+          resolved
+        case None =>
+          throw new IllegalArgumentException(
+            s"Managed blob reference '$externalPath' is relative to its table's base path, which is unknown here. read_blob() resolves it " +
+              s"only when the blob column is read directly from a Hudi table (not from a cached, checkpointed or streamed DataFrame); " +
+              s"BatchedBlobReader.readBatched takes the table base path as tableBasePath")
+      }
+    }
+  }
+
+  /**
    * Read byte ranges from a DataFrame with a Blob column.
    *
    * The struct column must contain the HoodieSchema.Blob structure:
@@ -691,6 +766,8 @@ object BatchedBlobReader {
    * @param lookaheadSize  Rows to buffer for batching (default: 50)
    * @param columnName     Optional column name to resolve. If not provided, searches for column with hudi_blob=true metadata
    * @param keepTempColumn If true, keeps __temp__data column; if false (default), renames it to original column name
+   * @param tableBasePath  Base path of the Hudi table `df` was read from, used to resolve managed relative
+   *                       references (see [[resolveReferencePath]]). Without it such references fail the read.
    * @return DataFrame with struct column + data column
    * @throws IllegalArgumentException if struct column is missing or has wrong schema
    */
@@ -700,7 +777,8 @@ object BatchedBlobReader {
       maxGapBytes: Int = DEFAULT_MAX_GAP_BYTES,
       lookaheadSize: Int = DEFAULT_LOOKAHEAD_SIZE,
       columnName: Option[String] = None,
-      keepTempColumn: Boolean = false): Dataset[Row] = {
+      keepTempColumn: Boolean = false,
+      tableBasePath: Option[String] = None): Dataset[Row] = {
 
     require(maxGapBytes >= 0, "maxGapBytes must be non-negative")
     require(lookaheadSize > 0, "lookaheadSize must be positive")
@@ -725,14 +803,14 @@ object BatchedBlobReader {
     // Create output schema (input + data column)
     val outputSchema = df.schema.add(StructField(DATA_COL, BinaryType, nullable = true))
 
-    // Broadcast storage configuration
-    val broadcastConf = spark.sparkContext.broadcast(storageConf)
+    val broadcastConf = broadcastStorageConf(spark.sparkContext, storageConf)
 
     // Apply mapPartitions
     val result = df.mapPartitions { partition =>
       // Create reader for this partition
+      val partitionConf = storageConfFrom(broadcastConf)
       val reader = new BatchedBlobReader(
-        HoodieStorageUtils.getStorage(_, broadcastConf.value), maxGapBytes, lookaheadSize)
+        HoodieStorageUtils.getStorage(_, partitionConf), maxGapBytes, lookaheadSize, tableBasePath)
 
       // Import implicit instances for Row
       import RowAccessor.rowAccessor
@@ -763,34 +841,68 @@ object BatchedBlobReader {
    * @param storageConf   Storage configuration for file access
    * @param maxGapBytes   Max gap to consider consecutive (default: 4096)
    * @param lookaheadSize Rows to buffer for batching (default: 50)
-   * @param columnName    Optional column name to resolve. If not provided, searches for column with hudi_blob=true metadata
+   * @param columnName    Name of the blob column to read. A name shared by several columns is ambiguous (the
+   *                      lookup picks one of them); callers that know the column's position use [[processRDDAtOrdinal]].
+   * @param tableBasePath Base path of the Hudi table the rows were read from, used to resolve managed relative
+   *                      references (see [[resolveReferencePath]]). Without it such references fail the read.
    * @return RDD with struct column + data column
    * @throws IllegalArgumentException if struct column is missing or has wrong schema
    */
   def processRDD(
       rdd: RDD[InternalRow],
       schema: StructType,
-      broadcastConf: Broadcast[StorageConfiguration[_]],
+      broadcastConf: Broadcast[SerializableConfiguration],
       maxGapBytes: Int = DEFAULT_MAX_GAP_BYTES,
       lookaheadSize: Int = DEFAULT_LOOKAHEAD_SIZE,
-      columnName: String): RDD[InternalRow] = {
+      columnName: String,
+      tableBasePath: Option[String] = None): RDD[InternalRow] = {
+
+    processRDDAtOrdinal(rdd, schema, broadcastConf, maxGapBytes, lookaheadSize, schema.fieldIndex(columnName), tableBasePath)
+  }
+
+  /**
+   * Process RDD[InternalRow] directly, reading the blob column at a given position of `schema`.
+   *
+   * Unlike [[processRDD]], the column is identified by its ordinal rather than its name, so it is
+   * unambiguous when several columns share a name (e.g. a join of two blob tables).
+   *
+   * @param rdd           Input RDD of InternalRows
+   * @param schema        Schema of the input RDD
+   * @param broadcastConf Broadcast storage configuration for file access
+   * @param maxGapBytes   Max gap to consider consecutive (default: 4096)
+   * @param lookaheadSize Rows to buffer for batching (default: 50)
+   * @param structColIdx  Ordinal of the blob column in `schema`
+   * @param tableBasePath Base path of the Hudi table the rows were read from, used to resolve managed relative
+   *                      references (see [[resolveReferencePath]]). Without it such references fail the read.
+   * @return RDD with struct column + data column
+   * @throws IllegalArgumentException if the ordinal is out of range or the column has the wrong schema
+   */
+  def processRDDAtOrdinal(
+      rdd: RDD[InternalRow],
+      schema: StructType,
+      broadcastConf: Broadcast[SerializableConfiguration],
+      maxGapBytes: Int = DEFAULT_MAX_GAP_BYTES,
+      lookaheadSize: Int = DEFAULT_LOOKAHEAD_SIZE,
+      structColIdx: Int,
+      tableBasePath: Option[String] = None): RDD[InternalRow] = {
 
     require(maxGapBytes >= 0, "maxGapBytes must be non-negative")
     require(lookaheadSize > 0, "lookaheadSize must be positive")
+    require(structColIdx >= 0 && structColIdx < schema.length,
+      s"Blob column ordinal $structColIdx is out of range for schema with ${schema.length} fields")
 
-    // Get struct column index
-    val structColIdx = schema.fieldIndex(columnName)
     val structField = schema(structColIdx)
     require(isCompatibleBlobType(structField.dataType),
-      s"Blob column '$columnName' must be compatible with BlobType (type, data, reference struct), found: ${structField.dataType}")
+      s"Blob column '${structField.name}' must be compatible with BlobType (type, data, reference struct), found: ${structField.dataType}")
 
     // Create output schema (input + __temp__data column)
     val outputSchema = schema.add(StructField(DATA_COL, BinaryType, nullable = true))
 
     // Process partitions using InternalRow type classes
     rdd.mapPartitions { partition =>
+      val partitionConf = storageConfFrom(broadcastConf)
       val reader = new BatchedBlobReader(
-        HoodieStorageUtils.getStorage(_, broadcastConf.value), maxGapBytes, lookaheadSize)
+        HoodieStorageUtils.getStorage(_, partitionConf), maxGapBytes, lookaheadSize, tableBasePath)
 
       // Import implicit instances for InternalRow
       import RowAccessor.internalRowAccessor

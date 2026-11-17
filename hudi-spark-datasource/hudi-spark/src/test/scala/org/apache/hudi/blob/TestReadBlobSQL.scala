@@ -105,7 +105,7 @@ class TestReadBlobSQL extends HoodieClientTestBase {
 
   /**
    * The same out-of-line read, but with the blob reference on an object-store scheme while the table
-   * stays local. read_blob() reaches BatchedBlobReader through BatchedBlobReadExec and processRDD,
+   * stays local. read_blob() reaches BatchedBlobReader through BatchedBlobReadExec and processRDDAtOrdinal,
    * which is a separate call site from the readBatched path covered in TestBatchedBlobReader, so
    * storage resolved from a default file:/// URI fails here with
    * IllegalArgumentException: Wrong FS: s3a://..., expected: file:///.
@@ -251,6 +251,33 @@ class TestReadBlobSQL extends HoodieClientTestBase {
     // Verify data content
     val data1 = rows(0).getAs[Array[Byte]]("data")
     assertBytesContent(data1)
+  }
+
+  /**
+   * A join of two blob tables whose blob columns share a name: each read_blob() call returns the bytes of its own side.
+   */
+  @Test
+  def testReadBlobOnBothSidesOfAJoinWithSameNamedColumns(): Unit = {
+    val filePath = createTestFile(tempDir, "same_name_join.bin", 10000)
+
+    def blobView(view: String, offset: Long): Unit =
+      sparkSession.createDataFrame(Seq((1, filePath, offset, 100L)))
+        .toDF("id", "external_path", "offset", "length")
+        .withColumn("file_info", blobStructCol("file_info", col("external_path"), col("offset"), col("length")))
+        .select("id", "file_info")
+        .createOrReplaceTempView(view)
+
+    blobView("blob_left", 0L)
+    blobView("blob_right", 300L)
+
+    val row = sparkSession.sql("""
+      SELECT read_blob(l.file_info) AS left_data, read_blob(r.file_info) AS right_data
+      FROM blob_left l
+      JOIN blob_right r ON l.id = r.id
+    """).collect().head
+
+    assertBytesContent(row.getAs[Array[Byte]]("left_data"), expectedOffset = 0)
+    assertBytesContent(row.getAs[Array[Byte]]("right_data"), expectedOffset = 300)
   }
 
   /**
