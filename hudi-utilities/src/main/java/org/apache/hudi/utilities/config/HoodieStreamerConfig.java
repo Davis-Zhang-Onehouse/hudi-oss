@@ -114,7 +114,8 @@ public class HoodieStreamerConfig extends HoodieConfig {
       .withAlternatives(DELTA_STREAMER_CONFIG_PREFIX + "transformer.class")
       .markAdvanced()
       .sinceVersion("0.14.0")
-      .withDocumentation("Names of transformer classes to apply. The config is specific to HoodieMultiTableStreamer.");
+      .withDocumentation("Names of transformer classes to apply. The config is specific to HoodieMultiTableStreamer; the streamer "
+          + "also hands its own --transformer-class list to the source under this key.");
   public static final ConfigProperty<Boolean> SAMPLE_WRITES_ENABLED = ConfigProperty
       .key(STREAMER_CONFIG_PREFIX + "sample.writes.enabled")
       .defaultValue(false)
@@ -151,4 +152,14 @@ public class HoodieStreamerConfig extends HoodieConfig {
           + "config on an existing table with non-nullable columns is safe - existing data retains its values "
           + "while the schema is updated to allow nulls. "
           + "This is useful for maintaining backwards compatibility when new columns are added via SQL queries.");
+
+  public static final ConfigProperty<Boolean> START_COMMIT_BEFORE_TRANSFORMER = ConfigProperty
+      .key(STREAMER_CONFIG_PREFIX + "start.commit.before.transformer")
+      .defaultValue(false)
+      .markAdvanced()
+      .sinceVersion("1.3.0")
+      .withDocumentation("When true and a transformer is configured, each round with new data starts its commit before "
+          + "transforming and passes the REQUESTED instant to every InstantAwareTransformer; other transformers are called "
+          + "unchanged. A transformer failure rolls the instant back. Required by BlobCopyTransformer. When false (the default), "
+          + "the transformer runs before any instant is started.");
 }

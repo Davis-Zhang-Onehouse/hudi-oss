@@ -133,6 +133,9 @@ public class HoodieTableMetaClient implements Serializable {
   private static final long serialVersionUID = 1L;
   public static final String METADATA_STR = "metadata";
   public static final String METAFOLDER_NAME = ".hoodie";
+  /** Managed out-of-line payloads, referenced relative to the table base path. */
+  public static final String BLOB_FOLDER_NAME = METAFOLDER_NAME + "/.blob";
+
   public static final String TIMELINEFOLDER_NAME = "timeline";
   public static final String BUCKET_INDEX_METAFOLDER_NAME = ".bucket_index";
   public static final String TEMPFOLDER_NAME = METAFOLDER_NAME + StoragePath.SEPARATOR + ".temp";

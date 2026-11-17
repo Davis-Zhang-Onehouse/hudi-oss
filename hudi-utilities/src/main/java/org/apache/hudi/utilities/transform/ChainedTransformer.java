@@ -46,9 +46,10 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
- * A {@link Transformer} to chain other {@link Transformer}s and apply sequentially.
+ * A {@link Transformer} to chain other {@link Transformer}s and apply sequentially. Given an instant, it passes the instant to
+ * each {@link InstantAwareTransformer} of the chain and calls the others as without one.
  */
-public class ChainedTransformer implements Transformer {
+public class ChainedTransformer implements InstantAwareTransformer {
 
   // Delimiter used to separate class name and the property key suffix. The suffix comes first.
   private static final String ID_TRANSFORMER_CLASS_NAME_DELIMITER = ":";
@@ -102,12 +103,38 @@ public class ChainedTransformer implements Transformer {
 
   @Override
   public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties) {
+    return applyChain(jsc, sparkSession, rowDataset, properties, Option.empty());
+  }
+
+  @Override
+  public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties,
+                            String instantTime) {
+    return applyChain(jsc, sparkSession, rowDataset, properties, Option.of(instantTime));
+  }
+
+  /**
+   * Applies the transformers in order.
+   *
+   * @param instantTime the instant of the round, passed to each {@link InstantAwareTransformer}; empty when there is none
+   */
+  protected Dataset<Row> applyChain(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties,
+                                    Option<String> instantTime) {
     Dataset<Row> dataset = rowDataset;
     for (TransformerInfo transformerInfo : transformers) {
-      Transformer transformer = transformerInfo.getTransformer();
-      dataset = transformer.apply(jsc, sparkSession, dataset, transformerInfo.getProperties(properties, transformers));
+      dataset = applyOne(transformerInfo, jsc, sparkSession, dataset, properties, instantTime);
     }
     return dataset;
+  }
+
+  /** Applies one transformer of the chain, with the instant when it is an {@link InstantAwareTransformer} and there is one. */
+  protected Dataset<Row> applyOne(TransformerInfo transformerInfo, JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> dataset,
+                                  TypedProperties properties, Option<String> instantTime) {
+    Transformer transformer = transformerInfo.getTransformer();
+    TypedProperties transformerProps = transformerInfo.getProperties(properties, transformers);
+    if (instantTime.isPresent() && transformer instanceof InstantAwareTransformer) {
+      return ((InstantAwareTransformer) transformer).apply(jsc, sparkSession, dataset, transformerProps, instantTime.get());
+    }
+    return transformer.apply(jsc, sparkSession, dataset, transformerProps);
   }
 
   private void validateIdentifier(String id, Set<String> identifiers, String configuredTransformer) {

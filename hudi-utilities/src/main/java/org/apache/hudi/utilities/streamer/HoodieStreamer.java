@@ -71,6 +71,8 @@ import org.apache.hudi.utilities.ingestion.HoodieIngestionMetrics;
 import org.apache.hudi.utilities.ingestion.HoodieIngestionService;
 import org.apache.hudi.utilities.schema.SchemaProvider;
 import org.apache.hudi.utilities.sources.JsonDFSSource;
+import org.apache.hudi.utilities.sources.RequiredSourceSettings;
+import org.apache.hudi.utilities.sources.SourceContracts;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
@@ -769,8 +771,13 @@ public class HoodieStreamer implements Serializable {
           if (cfg.baseFileFormat == null) {
             cfg.baseFileFormat = "PARQUET"; // default for backward compatibility
           }
+          // the settings the source's contract requires and its table's stored fields are checked first, so that a conflict names
+          // the source; the table is then validated against the settings the job runs with, which StreamSync merges again
+          RequiredSourceSettings requiredSettings = SourceContracts.of(cfg.sourceClassName, properties.get()).requiredSettings(properties.get());
+          TypedProperties jobProps = requiredSettings.apply(properties.get());
+          requiredSettings.checkTable(cfg.targetBasePath, meta.getTableConfig());
           Map<String, String> propsToValidate = new HashMap<>();
-          properties.get().forEach((k, v) -> propsToValidate.put(k.toString(), v.toString()));
+          jobProps.forEach((k, v) -> propsToValidate.put(k.toString(), v.toString()));
           HoodieWriterUtils.validateTableConfig(this.sparkSession, org.apache.hudi.HoodieConversionUtils.mapAsScalaImmutableMap(propsToValidate), meta.getTableConfig());
         } catch (HoodieIOException e) {
           log.warn("Full exception msg {},  msg {}", e.getLocalizedMessage(), e.getMessage());
