@@ -33,7 +33,7 @@ import java.util.function.UnaryOperator;
 
 /**
  * Classifies an OpenAI-compatible provider response into a {@link ProviderResponseKind}: what the client does with
- * the request that drew it.
+ * the request that drew it. The Bedrock and Jina clients classify their own answers.
  */
 public final class ErrorClassifier {
 

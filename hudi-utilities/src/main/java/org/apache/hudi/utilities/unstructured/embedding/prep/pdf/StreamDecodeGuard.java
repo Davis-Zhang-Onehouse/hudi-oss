@@ -32,6 +32,7 @@ import org.apache.pdfbox.cos.COSObjectKey;
 import org.apache.pdfbox.cos.COSStream;
 import org.apache.pdfbox.filter.Filter;
 import org.apache.pdfbox.filter.FilterFactory;
+import org.apache.pdfbox.filter.FlateFilterDecoderStream;
 import org.apache.pdfbox.io.RandomAccessInputStream;
 import org.apache.pdfbox.io.RandomAccessRead;
 import org.apache.pdfbox.pdfparser.PDFStreamParser;
@@ -75,9 +76,9 @@ import java.util.function.Consumer;
  * page. The names come from PDFBox's own content parser ({@link DrawnResources#collect}), run over the page (the same
  * /Contents sequence extraction parses) and over each drawn form, after this guard has checked those streams: the parse
  * is the one extraction does next, so no name PDFBox resolves is missed. It allocates what that extraction parse would.
- * The structure caps of the pre-scan are evaluated on the guard's own decoding and tokenization, which in some malformed
- * content differ from what PDFStreamParser reads (see {@link StreamStructureScanner}); for such content the parse can
- * build more than those caps allow, as extraction itself would. A parse that fails, or a form whose names were not
+ * Page content decoding follows PDFBox's single scalar-Flate fast path; arrays use ordinary filter decoding. The
+ * structure pre-scan has its own tokenization, which can differ from PDFStreamParser on malformed tokens (see
+ * {@link StreamStructureScanner}). A parse that fails, or a form whose names were not
  * kept, checks every entry of the dictionary, as before.
  *
  * <ul>
@@ -116,7 +117,8 @@ import java.util.function.Consumer;
  * one (two forms selecting it through one shared dictionary charge twice, as PDFBox builds a copy for each). Distinct
  * dictionaries sharing a stream charge separately;
  * cached checks charge again for each dictionary and page. Aggregate refusals are never cached as stream failures.
- * Repeated per-use materialization from content operations is outside this static resource admission graph.
+ * Actual font materializations are also charged immediately before extraction applies Tf or gs. Tf follows PDFBox's
+ * indirect-font and direct-resource-name caches; every gs application charges a new copy, including repeated form calls.
  * Type3 own Resources are outside this admission graph; CharProc checks remain unchanged.
  *
  * Multi-filter chains pass through temp files capped at {@code maxDecodedBytes} in the staging dir; heap use is one
@@ -169,6 +171,9 @@ final class StreamDecodeGuard {
   private final Set<COSObjectKey> failed = new HashSet<>();
   /** Streams that failed to decode for a reason other than a cap. */
   private final Set<COSObjectKey> undecodable = new HashSet<>();
+  /** Single scalar-Flate page contents use a different decoder, so its refusals cannot poison ordinary stream views. */
+  private final Set<COSObjectKey> streamingContentFailed = new HashSet<>();
+  private final Set<COSObjectKey> streamingContentUndecodable = new HashSet<>();
   /** What each passed form draws, within {@link #MAX_CACHED_DRAWN_NAMES}. */
   private final Map<COSObjectKey, DrawnResources> drawnByStream = new HashMap<>();
   private long cachedDrawnNames;
@@ -181,6 +186,11 @@ final class StreamDecodeGuard {
   private Set<COSStream> chargedFontStreams;
   private int fontVisits;
   private FontBytes fontBytes;
+  /** Direct Tf fonts are cached by resource instance and name; each form call may create a new resources instance. */
+  private Map<PDResources, Set<COSName>> materializedDirectFonts;
+  /** The page's single scalar-Flate stream, whose parser ignores DecodeParms; null for all other representations. */
+  private COSStream streamingFlateContent;
+  private boolean pageContentsArray;
   /** Per form, per resource dictionary its names resolve in, the shallowest level it was expanded at. */
   private Map<COSStream, Map<COSDictionary, Integer>> formLevels;
   /** Distinct content streams (/Contents or drawn forms) skipped on this page because they cannot be decoded. */
@@ -242,6 +252,9 @@ final class StreamDecodeGuard {
       COSDictionary pageDict = page.getCOSObject();
       COSBase contents = pageDict.getItem(COSName.CONTENTS);
       COSBase resolved = resolve(contents);
+      pageContentsArray = resolved instanceof COSArray;
+      streamingFlateContent = resolved instanceof COSStream && COSName.FLATE_DECODE.equals(((COSStream) resolved).getFilters())
+          ? (COSStream) resolved : null;
       pageOperands = new StreamStructureScanner.Operands("the page content", false, maxDecodedBytes);
       if (resolved instanceof COSStream) {
         checkStream(contents, (COSStream) resolved, false, false, Kind.CONTENT);
@@ -274,6 +287,52 @@ final class StreamDecodeGuard {
       chargedFontStreams = null;
       fontBytes = null;
       pageOperands = null;
+      streamingFlateContent = null;
+    }
+  }
+
+  /** Starts a fresh budget for the font objects extraction actually creates, after static stream admission. */
+  void beginFontMaterializations() {
+    visited = 0;
+    chargedFontObjects = new HashSet<>();
+    materializedDirectFonts = new IdentityHashMap<>();
+    fontVisits = 0;
+    fontBytes = new FontBytes(maxPageFontBytes);
+  }
+
+  /** Releases resource identities after a successful or failed page extraction. */
+  void endFontMaterializations() {
+    chargedFontObjects = null;
+    materializedDirectFonts = null;
+    chargedFontStreams = null;
+    fontBytes = null;
+  }
+
+  /** Called before PDFBox materializes a font; gs does not use PDResources' font cache. */
+  void checkFontOperation(PDResources resources, COSName name, boolean graphicsState) throws IOException {
+    if (resources == null) {
+      return;
+    }
+    COSDictionary entries = dictionary(resources.getCOSObject().getItem(graphicsState ? COSName.EXT_G_STATE : COSName.FONT));
+    if (entries == null) {
+      return;
+    }
+    if (graphicsState) {
+      COSDictionary state = dictionary(entries.getItem(name));
+      COSBase setting = state == null ? null : resolve(state.getItem(COSName.FONT));
+      if (setting instanceof COSArray && ((COSArray) setting).size() > 0) {
+        checkFont(((COSArray) setting).get(0), false);
+      }
+    } else {
+      COSBase font = entries.getItem(name);
+      if (dictionary(font) == null) {
+        return;
+      }
+      if (!(font instanceof COSObject)
+          && !materializedDirectFonts.computeIfAbsent(resources, r -> new HashSet<>()).add(name)) {
+        return;
+      }
+      checkFont(font);
     }
   }
 
@@ -351,12 +410,16 @@ final class StreamDecodeGuard {
   }
 
   private void checkFont(COSBase fontItem) throws IOException {
+    checkFont(fontItem, true);
+  }
+
+  private void checkFont(COSBase fontItem, boolean cacheable) throws IOException {
     COSDictionary font = dictionary(fontItem);
     if (font == null) {
       return;
     }
     COSObjectKey key = fontItem instanceof COSObject ? ((COSObject) fontItem).getKey() : null;
-    if (key != null && !chargedFontObjects.add(key)) {
+    if (cacheable && key != null && !chargedFontObjects.add(key)) {
       return;
     }
     if (++fontVisits > MAX_STREAMS_PER_PAGE) {
@@ -425,11 +488,14 @@ final class StreamDecodeGuard {
     boolean countFont = fontSide && kind != Kind.CONTENT;
     boolean chargeDecoded = false;
     boolean pageContent = kind == Kind.CONTENT && pageOperands != null;
+    boolean streamingContent = pageContent && stream == streamingFlateContent;
+    Set<COSObjectKey> streamFailures = streamingContent ? streamingContentFailed : failed;
+    Set<COSObjectKey> streamUndecodable = streamingContent ? streamingContentUndecodable : undecodable;
     if (key != null) {
-      if (failed.contains(key)) {
+      if (streamFailures.contains(key)) {
         throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "stream " + key + " already failed the decode guard");
       }
-      if (undecodable.contains(key)) {
+      if (streamUndecodable.contains(key)) {
         noteSkippedContent(kind, charProc, key, null);
         return null;                                   // skipped again, as on the page that first met it
       }
@@ -464,13 +530,13 @@ final class StreamDecodeGuard {
         }
         Type1FontCheck.check(spool, stream.getInt(COSName.LENGTH1), stream.getInt(COSName.LENGTH2), "stream " + key);
       }
-      if (pageContent) {
+      if (pageContent && pageContentsArray) {
         pageOperands.write('\n');                    // PDPage.getContentsForRandomAccess puts a newline after each stream
       }
     } catch (PageFailure e) {
       if (key != null && e.code() == PdfFailureCode.DECODE_LIMIT && !(e instanceof FontBudgetRefusal)
           && !(pageContent && e instanceof StreamStructureScanner.Refusal)) {
-        failed.add(key);                               // a sequence-dependent refusal is not a property of the stream
+        streamFailures.add(key);                       // a sequence-dependent refusal is not a property of the stream
       }
       throw e;
     } catch (IOException e) {
@@ -479,7 +545,7 @@ final class StreamDecodeGuard {
         throw round;                                   // a decoder wrapped a scratch disk failure: never the stream's
       }
       if (key != null) {
-        undecodable.add(key);
+        streamUndecodable.add(key);
       }
       if (pageContent) {
         pageOperands = beforeStream;                   // PDFBox parses the page without any byte of this stream
@@ -627,9 +693,12 @@ final class StreamDecodeGuard {
       throws IOException {
     List<Filter> filters = filters(stream, key);
     decodedStreams++;
-    if (filters.isEmpty()) {                           // every checked stream is parsed or copied unfiltered too: read it raw
-      try (InputStream in = stream.createRawInputStream();
-           CountingSink out = new CountingSink(scanner, viewWhenUnfiltered ? Long.MAX_VALUE : maxDecodedBytes, key,
+    boolean streamingFlate = pageOperands != null && stream == streamingFlateContent;
+    if (filters.isEmpty() || streamingFlate) {
+      // PDPage's single scalar-Flate parser streams inflation without Predictor; array contents use Filter.decode below.
+      try (InputStream raw = stream.createRawInputStream();
+           InputStream in = streamingFlate ? new FlateFilterDecoderStream(raw) : raw;
+           CountingSink out = new CountingSink(scanner, viewWhenUnfiltered && filters.isEmpty() ? Long.MAX_VALUE : maxDecodedBytes, key,
                chargeFont ? fontBytes : null)) {
         byte[] buffer = new byte[BUFFER];
         for (int n = in.read(buffer); n >= 0; n = in.read(buffer)) {

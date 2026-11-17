@@ -135,7 +135,8 @@ public class BlobRowBuilder implements Serializable {
   }
 
   private boolean isConfirmedMissing(StoragePath path, IOException failure) {
-    if (!ExceptionUtil.isCausedBy(failure, FileNotFoundException.class)) {
+    if (BlobObjectCopier.isCausedByAccessDenial(failure)
+        || !ExceptionUtil.isCausedBy(failure, FileNotFoundException.class)) {
       return false;
     }
     try {

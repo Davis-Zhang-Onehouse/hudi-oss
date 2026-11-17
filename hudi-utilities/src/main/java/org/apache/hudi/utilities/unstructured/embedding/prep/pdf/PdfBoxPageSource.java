@@ -253,9 +253,18 @@ public final class PdfBoxPageSource implements PageSource {
     // the glyph-text cap is max.page.glyphs, not max.page.chars: text between the two is truncated,
     // text beyond it fails the page
     GuardedPageStripper stripper = new GuardedPageStripper(config.maxPageGlyphs(), config.maxPageGlyphs(),
-        config.maxGraphicsDepth());
+        config.maxGraphicsDepth(), guardEnabled ? guard : null);
     BoundedPageWriter writer = new BoundedPageWriter(config.maxPageChars());
-    stripper.extract(document, page, writer);
+    if (guardEnabled) {
+      guard.beginFontMaterializations();
+    }
+    try {
+      stripper.extract(document, page, writer);
+    } finally {
+      if (guardEnabled) {
+        guard.endFontMaterializations();
+      }
+    }
     return new PageText(writer.text(), writer.truncated());
   }
 

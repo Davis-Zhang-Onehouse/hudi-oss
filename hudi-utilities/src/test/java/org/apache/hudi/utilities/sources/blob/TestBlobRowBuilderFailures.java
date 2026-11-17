@@ -20,6 +20,7 @@ package org.apache.hudi.utilities.sources.blob;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.utilities.sources.helpers.CloudObjectMetadata;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
@@ -44,6 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /** Missing and unreadable sources in the row builder, which stats before it reads and keys rows by source path. */
@@ -131,6 +134,22 @@ class TestBlobRowBuilderFailures {
     conf.set(BlobUnhappyFileSystem.MODE, mode);
     assertThrows(HoodieException.class, () -> builder().buildRow(object(source, 8L)));
     Path file = BucketFolderFileSystem.file(temp.resolve("buckets"), "bucket", "docs/a.pdf");
+    assertArrayEquals(bytes(8), Files.readAllBytes(file), "a platform failure must not mutate source bytes");
+  }
+
+  /** A missing-file wrapper is no proof of absence when it contains an access denial, even if exists answers false. */
+  @ParameterizedTest
+  @ValueSource(strings = {"status", "open"})
+  void nestedDenialWithFalseExistenceRecheckFailsTheRound(String stage) throws Exception {
+    Path file = BucketFolderFileSystem.file(temp.resolve("buckets"), "bucket", NestedDenialFileSystem.DENIED_FILE);
+    Files.createDirectories(file.getParent());
+    Files.write(file, bytes(8));
+    NestedDenialFileSystem.install(conf, temp.resolve("buckets"), stage);
+    String source = "bucketfs://bucket/" + NestedDenialFileSystem.DENIED_FILE;
+
+    HoodieException failure = assertThrows(HoodieException.class, () -> builder().buildRow(object(source, 8L)));
+
+    assertTrue(ExceptionUtil.isCausedBy(failure, AccessDeniedException.class), "the denial remains available to diagnose the failed round");
     assertArrayEquals(bytes(8), Files.readAllBytes(file), "a platform failure must not mutate source bytes");
   }
 

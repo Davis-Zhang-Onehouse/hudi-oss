@@ -24,6 +24,7 @@ import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 
 import javax.imageio.ImageReader;
+import javax.imageio.ImageTypeSpecifier;
 import javax.imageio.metadata.IIOMetadata;
 import javax.imageio.plugins.tiff.BaselineTIFFTagSet;
 import javax.imageio.plugins.tiff.TIFFDirectory;
@@ -48,12 +49,15 @@ import java.io.IOException;
  *       whose decompressor reads it in units and then copies them into one array (LZW, PackBits, CCITT; below one unit the
  *       read is a single array, so 2 x over-counts by at most 1,024,000 B), once for the others (Deflate; JPEG and old JPEG,
  *       whose tables, typically under 1 KiB, are not counted);</li>
+ *   <li>PNG: two packed filter rows and one source row raster, each at the full source width; Adam7 passes
+ *       are no wider than that row, for any supported bit depth and color type;</li>
  *   <li>BMP BI_RLE8 / BI_RLE4: the reader reads the whole compressed bitmap in units and copies them into one array before
  *       decoding a row: 2 x the bitmap size, the info header's imageSize or, when that is 0, bfSize - bfOffBits;</li>
  *   <li>progressive JPEG (SOF2): libjpeg keeps every DCT coefficient of the image: per component
  *       {@code ceil(componentWidth / 8) x ceil(componentHeight / 8)} blocks of 64 two-byte coefficients (native memory);</li>
- *   <li>anything else: 0 (baseline JPEG, PNG, GIF and uncompressed BMP decode row by row into the subsampled
- *       destination).</li>
+ *   <li>BMP: in addition to a compressed bitmap, at most one four-byte-per-pixel source row (including
+ *       alignment), even when the destination is subsampled; GIF: one byte per source-row pixel;</li>
+ *   <li>anything else: 0 (baseline JPEG has no whole-image coefficient buffer).</li>
  * </ul>
  */
 final class DecoderIntermediates {
@@ -94,10 +98,33 @@ final class DecoderIntermediates {
     if ("jpeg".equals(header.getFormat())) {
       return progressiveJpegCoefficients(reader.getImageMetadata(0), header);
     }
+    if ("png".equals(header.getFormat())) {
+      return pngRows(reader, header);
+    }
     if ("bmp".equals(header.getFormat())) {
-      return bmpRleBitmap((ImageInputStream) reader.getInput());
+      return bmpRleBitmap((ImageInputStream) reader.getInput()) + 4L * header.getWidth();
+    }
+    if ("gif".equals(header.getFormat())) {
+      return header.getWidth();
     }
     return 0;
+  }
+
+  /**
+   * The JDK PNG reader holds two filter rows and a packed byte/ushort row raster before subsampling. Read only its
+   * raw sample layout: building the native metadata tree also clones unrelated ancillary-profile payloads.
+   */
+  private static long pngRows(ImageReader reader, ImageHeader header) throws IOException {
+    ImageTypeSpecifier rawType = reader.getRawImageType(0);
+    if (rawType == null) {
+      throw new ImageHeaderException("PNG reader offers no raw image type");
+    }
+    long bitsPerPixel = 0;
+    for (int sampleBits : rawType.getSampleModel(1, 1).getSampleSize()) {
+      bitsPerPixel += sampleBits;
+    }
+    long row = ((long) header.getWidth() * bitsPerPixel + 7) / 8;
+    return 3 * row;
   }
 
   /**

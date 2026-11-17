@@ -47,6 +47,12 @@ public final class ProviderRetryLoop {
     void sleep(long millis) throws InterruptedException;
   }
 
+  /** Potentially blocking request preparation, after the permit wait and before the final deadline check. */
+  @FunctionalInterface
+  public interface Preparation {
+    void prepare() throws InterruptedException;
+  }
+
   /** One attempt of a request. */
   @FunctionalInterface
   public interface Sender<T> {
@@ -111,6 +117,7 @@ public final class ProviderRetryLoop {
   private boolean outageOpen;
   private boolean interrupted;
   private long deadline;
+  private long callStart;
   private int requests;
   private int retries;
   private long rateLimitWaitMillis;
@@ -128,7 +135,8 @@ public final class ProviderRetryLoop {
 
   /** Opens a call: resets its counters and starts its deadline. */
   public void startCall() {
-    deadline = clock.getAsLong() + settings.deadlineMs();
+    callStart = clock.getAsLong();
+    deadline = callStart + settings.deadlineMs();
     requests = 0;
     retries = 0;
     rateLimitWaitMillis = 0;
@@ -138,6 +146,12 @@ public final class ProviderRetryLoop {
   /** The current call's counts. */
   public EmbeddingCallStats stats() {
     return new EmbeddingCallStats(requests, retries, rateLimitWaitMillis);
+  }
+
+  /** The current call's cost; {@code isolationRequests} is reported as bisection requests, {@code promptTokens} -1 if unknown. */
+  public EmbeddingCallStats stats(int isolationRequests, long promptTokens) {
+    return new EmbeddingCallStats(requests, retries, isolationRequests, promptTokens, clock.getAsLong() - callStart,
+        rateLimitWaitMillis);
   }
 
   public boolean outageOpen() {
@@ -181,8 +195,13 @@ public final class ProviderRetryLoop {
 
   /** One request with its retries; a RETRYABLE end counts toward the outage short-circuit, an OK one resets it. */
   public <T> Answer<T> send(Sender<T> sender) {
+    return send(() -> { }, sender);
+  }
+
+  /** Prepares each attempt before checking the deadline and counting its actual send. */
+  public <T> Answer<T> send(Preparation preparation, Sender<T> sender) {
     int requestsBefore = requests;
-    Answer<T> answer = attempts(sender);
+    Answer<T> answer = attempts(preparation, sender);
     if (answer.kind() == ProviderResponseKind.OK) {
       consecutiveFailures = 0;
     } else if (answer.kind() == ProviderResponseKind.RETRYABLE && !answer.isInterrupted() && requests > requestsBefore) {
@@ -198,7 +217,7 @@ public final class ProviderRetryLoop {
     return answer;
   }
 
-  private <T> Answer<T> attempts(Sender<T> sender) {
+  private <T> Answer<T> attempts(Preparation preparation, Sender<T> sender) {
     String lastError = null;
     for (int attempt = 1; attempt <= settings.retryMaxAttempts(); attempt++) {
       String notSent = notSentReason();
@@ -207,6 +226,9 @@ public final class ProviderRetryLoop {
       }
       try {
         rateLimitWaitMillis += rateLimiter.acquire(remainingMillis());
+        if (!pastDeadline()) {
+          preparation.prepare();
+        }
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         return Answer.interrupted(lastError == null ? INTERRUPTED : lastError + " (" + INTERRUPTED + ")");

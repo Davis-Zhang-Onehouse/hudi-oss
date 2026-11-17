@@ -18,8 +18,11 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
 
+import org.apache.pdfbox.contentstream.operator.Operator;
+import org.apache.pdfbox.cos.COSBase;
 import org.apache.pdfbox.cos.COSDictionary;
 import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSNumber;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.graphics.form.PDFormXObject;
@@ -29,6 +32,7 @@ import org.apache.pdfbox.text.TextPosition;
 
 import java.io.IOException;
 import java.io.Writer;
+import java.util.List;
 
 /**
  * Extracts ONE page under the page caps of the in-JVM page source. A FRESH instance per page: PDFBox's
@@ -52,6 +56,7 @@ final class GuardedPageStripper extends PDFTextStripper {
   private final int maxGlyphs;
   private final int maxChars;
   private final int maxDepth;
+  private final StreamDecodeGuard fontGuard;
   private long glyphs;
   private long chars;
   private int markedDepth;
@@ -59,6 +64,11 @@ final class GuardedPageStripper extends PDFTextStripper {
   private int outerStates;
 
   GuardedPageStripper(int maxGlyphs, int maxChars, int maxDepth) {
+    this(maxGlyphs, maxChars, maxDepth, null);
+  }
+
+  GuardedPageStripper(int maxGlyphs, int maxChars, int maxDepth, StreamDecodeGuard fontGuard) {
+    this.fontGuard = fontGuard;
     this.maxGlyphs = maxGlyphs;
     this.maxChars = maxChars;
     this.maxDepth = maxDepth;
@@ -75,6 +85,19 @@ final class GuardedPageStripper extends PDFTextStripper {
     this.document = document;
     this.output = out;
     processPage(page);
+  }
+
+  @Override
+  protected void processOperator(Operator operator, List<COSBase> operands) throws IOException {
+    if (fontGuard != null && !operands.isEmpty() && operands.get(0) instanceof COSName) {
+      String operation = operator.getName();
+      if ("gs".equals(operation)) {
+        fontGuard.checkFontOperation(getResources(), (COSName) operands.get(0), true);
+      } else if ("Tf".equals(operation) && operands.size() >= 2 && operands.get(1) instanceof COSNumber) {
+        fontGuard.checkFontOperation(getResources(), (COSName) operands.get(0), false);
+      }
+    }
+    super.processOperator(operator, operands);
   }
 
   @Override

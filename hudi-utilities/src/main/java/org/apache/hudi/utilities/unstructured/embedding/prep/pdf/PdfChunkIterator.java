@@ -261,12 +261,13 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
       end(lost() ? held.withStatusDetail(lossSummary()) : held);
       return;
     }
-    boolean pagesFailed = stats.pagesFailed + stats.glyphLimited + stats.decodeLimited + stats.graphicsLimited > 0;
+    boolean pagesLost = stats.pagesFailed + stats.pagesTruncated + stats.glyphLimited + stats.decodeLimited
+        + stats.graphicsLimited > 0;
     if (pageLimitHit) {
       // the pages past max.pages were never read, so the file is not known to have no text
       end(PdfChunk.marker(meta.sourcePathSha(), tokenizerId, PdfChunk.Status.FAILED, PdfFailureCode.PAGE_LIMIT.name()
           + ": no text in the first " + config.maxPages() + " pages, " + lossSummary()));
-    } else if (pagesFailed) {
+    } else if (pagesLost) {
       end(PdfChunk.marker(meta.sourcePathSha(), tokenizerId, PdfChunk.Status.FAILED, PdfFailureCode.ALL_PAGES_FAILED.name()
           + ": no page yielded text, " + lossSummary()));
     } else {

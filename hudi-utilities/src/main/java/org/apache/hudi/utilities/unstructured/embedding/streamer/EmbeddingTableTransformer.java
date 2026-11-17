@@ -264,8 +264,9 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
 
   /**
    * The schema of the rows the round writes: the latest writer schema of an existing table ({@code table}) without its meta
-   * fields, every column beyond the base ones nullable (prep writes null in a column it does not make), with the active model's
-   * VECTOR column added under {@code prep_and_compute} when the table does not have it yet; else the configuration's
+   * fields, every column beyond the base ones nullable (prep writes null in a column it does not make), with the nullable
+   * prepared-image BLOB column added when missing and the active model's VECTOR column added under
+   * {@code prep_and_compute} when the table does not have it yet; else the configuration's
    * ({@link EmbeddingTableSchema#build}).
    */
   static StructType outputSchema(EmbeddingTableConfig config, Option<StructType> table, Option<EmbeddingModelSpec> model) {
@@ -280,6 +281,11 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
         .map(field -> EmbeddingTableSchema.BASE_COLUMNS.contains(field.name()) || field.nullable() ? field
             : new StructField(field.name(), field.dataType(), true, field.metadata()))
         .collect(Collectors.toList());
+    // Tables created before image preparation lack this base column. Append its nullable BLOB field before prep's
+    // projection runs, so old text rows read NULL and new image rows retain their stored input in either mode.
+    if (fields.stream().noneMatch(field -> field.name().equalsIgnoreCase(EmbeddingTableSchema.PREPARED_IMAGE))) {
+      fields.add(EmbeddingTableSchema.preparedImageField());
+    }
     if (model.isPresent()) {
       StructField vector = EmbeddingTableSchema.vectorField(model.get());
       if (fields.stream().noneMatch(field -> field.name().equals(vector.name()))) {
@@ -349,7 +355,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
           instant, model.getName(), parallelism, counters.getRowsEmbedded().value(), counters.getRowsPermanent().value());
       if (!PrepRound.errorTableEnabled(props)) {
         // counted in the persisted output, not the accumulators: a retried compute task adds to those again
-        long permanent = embedded.filter(functions.col(ComputeRound.ERROR_WORKING_COLUMN).isNotNull()).count();
+        long permanent = embedded.filter(ComputeRound.errorColumn(embedded).isNotNull()).count();
         if (permanent > 0) {
           throw ComputeRound.permanentWithoutErrorTable(model, target, permanent);
         }
