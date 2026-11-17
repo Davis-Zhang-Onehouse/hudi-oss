@@ -43,12 +43,12 @@ import java.util.Set;
 
 /**
  * What the job of {@link UnstructuredDataSource} requires, all of it read from its mode ({@link UnstructuredMode}): the settings
- * it runs with, the mode's transformer in every round, the schema guard last in the chain, and the check of the chain and the
- * schemas against the table's contract.
+ * it runs with, the mode's transformer in every round with the other mode's refused, the schema guard last in the chain, and the
+ * check of the chain and the schemas against the table's contract.
  */
 public class UnstructuredSourceContract implements SourceContract {
 
-  /** The key generators of the job's table: the complex one (partitioned) and the non-partitioned one. */
+  /** The key generators of both jobs' tables: the complex one (partitioned) and the non-partitioned one. */
   private static final List<String> KEY_GENERATORS = Arrays.asList(ComplexKeyGenerator.class.getName(),
       NonpartitionedKeyGenerator.class.getName());
 
@@ -122,7 +122,7 @@ public class UnstructuredSourceContract implements SourceContract {
     return Option.of(mode.requiredTransformer());
   }
 
-  /** None while the blob job is the only one ({@link UnstructuredMode#excludedTransformers}). */
+  /** The other job's transformer. */
   @Override
   public Set<Class<? extends Transformer>> excludedTransformers() {
     return mode.excludedTransformers();

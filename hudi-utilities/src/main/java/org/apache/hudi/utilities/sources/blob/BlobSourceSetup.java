@@ -28,11 +28,11 @@ import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourcePolicy;
 
 /**
- * Construction-time validation of the job of {@link UnstructuredDataSource}, the blob job ({@link UnstructuredMode}). It only
- * checks the job's properties and changes none of them. The settings the job runs with (start-commit-before-transformer, the
- * record key) are the source's contract's ({@link UnstructuredSourceContract#requiredSettings}), merged in by the streamer before
- * the source is built; this checks the others, and refuses a value the job cannot run with, naming the setting and the source
- * with its mode.
+ * Construction-time validation of the job of {@link UnstructuredDataSource}, the blob job or the embedding job
+ * ({@link UnstructuredMode}). It only checks the job's properties and changes none of them. The settings each job runs with
+ * (start-commit-before-transformer, the record key) are the source's contract's
+ * ({@link UnstructuredSourceContract#requiredSettings}), merged in by the streamer before the source is built; this checks the
+ * others, and refuses a value the job cannot run with, naming the setting and the source with its mode.
  */
 public final class BlobSourceSetup {
 
