@@ -93,9 +93,39 @@ public final class RequestRateLimiter {
     return settings == null ? unlimited() : new RequestRateLimiter(settings.requestsPerSecond, settings.burst, clockMillis, sleeper);
   }
 
+  /**
+   * Checks the binding's rate-limit keys, so a bad value fails the run at start, before any provider call.
+   *
+   * @throws EmbeddingClientConfigException naming the key: a rate that is not a finite number above 0, a burst that is not an
+   *     integer of 1 or more, or a burst set without a rate
+   */
+  public static void validate(EmbeddingModelSpec spec, TypedProperties props) {
+    settings(spec, props);
+  }
+
   /** Whether a rate is set; an unlimited limiter never waits. */
   public boolean isLimited() {
     return burst > 0;
+  }
+
+  /** The configured steady rate in requests per second, 0 when unlimited. */
+  public double requestsPerSecond() {
+    return requestsPerSecond;
+  }
+
+  /** The bucket capacity, 0 when unlimited. */
+  public int burst() {
+    return burst;
+  }
+
+  /**
+   * Takes one token, waiting until the bucket holds one.
+   *
+   * @return the milliseconds waited for the token, 0 when one was available (always 0 when unlimited)
+   * @throws InterruptedException when interrupted while waiting; no token is taken then
+   */
+  public long acquire() throws InterruptedException {
+    return acquire(Long.MAX_VALUE);
   }
 
   /**
@@ -132,6 +162,12 @@ public final class RequestRateLimiter {
     }
     // a clock stepped back restarts the refill from now instead of freezing it until the old time comes round again
     refilledAt = now;
+  }
+
+  @Override
+  public String toString() {
+    return isLimited() ? "RequestRateLimiter{requestsPerSecond=" + requestsPerSecond() + ", burst=" + burst + "}"
+        : "RequestRateLimiter{unlimited}";
   }
 
   /** The validated settings, or null when no rate is set. */

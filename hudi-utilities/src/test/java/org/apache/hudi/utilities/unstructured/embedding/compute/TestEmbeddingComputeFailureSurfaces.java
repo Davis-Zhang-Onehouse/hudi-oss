@@ -22,22 +22,36 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.compute.openai.OpenAiClientConfig;
+import org.apache.hudi.utilities.unstructured.embedding.compute.openai.OpenAiCompatibleEmbeddingClient;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.util.LongAccumulator;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -66,6 +80,7 @@ public class TestEmbeddingComputeFailureSurfaces {
     static final AtomicInteger CLOSES = new AtomicInteger();
     static volatile RuntimeException failure;
     static volatile boolean failInit;
+    static volatile EmbeddingClient delegate;
 
     @Override
     public void init(EmbeddingModelSpec spec, TypedProperties props) {
@@ -82,6 +97,9 @@ public class TestEmbeddingComputeFailureSurfaces {
     @Override
     public List<EmbeddingResult> embed(List<EmbeddingInput> inputs) throws Exception {
       CALLS.incrementAndGet();
+      if (delegate != null) {
+        return delegate.embed(inputs);
+      }
       if (failure != null) {
         throw failure;
       }
@@ -141,6 +159,7 @@ public class TestEmbeddingComputeFailureSurfaces {
     FailingClient.CLOSES.set(0);
     FailingClient.failure = null;
     FailingClient.failInit = false;
+    FailingClient.delegate = null;
     Iterator<Row> source = Arrays.asList(RowFactory.create("s", 101L, 17L, "text", 0L, "alpha", null, null, null),
         RowFactory.create("s", 101L, 17L, "text", 1L, "beta", null, null, null),
         RowFactory.create("s", 101L, 17L, "text", 2L, "gamma", null, null, null)).iterator();
@@ -202,6 +221,59 @@ public class TestEmbeddingComputeFailureSurfaces {
         () -> drain(new EmbeddingProviderUnavailableException("down")));
     assertTrue(failure.getMessage().contains("EMBED-COMPUTE-PROVIDER-UNAVAILABLE"), failure.getMessage());
     assertEquals(1, FailingClient.CALLS.get());
+  }
+
+  @Test
+  public void sourceVersionsSharingAChunkReachOneProviderRequest(@TempDir Path temp) throws Exception {
+    Path credential = temp.resolve("openai.key");
+    Files.write(credential, "fake-version-key".getBytes(StandardCharsets.UTF_8));
+    ObjectMapper mapper = new ObjectMapper();
+    try (StubHttpTransport<StubHttpTransport.Exchange> server = new StubHttpTransport<>(exchange -> exchange, request -> {
+      try {
+        JsonNode texts = mapper.readTree(request.body).get("input");
+        ArrayNode data = mapper.createArrayNode();
+        for (int i = 0; i < texts.size(); i++) {
+          int offset = 4 * Arrays.asList("alpha", "beta", "gamma").indexOf(texts.get(i).asText());
+          data.addObject().put("index", i).set("embedding", mapper.valueToTree(new int[] {offset + 1, offset + 2, offset + 3, offset + 4}));
+        }
+        return new StubHttpTransport.Response(200, Collections.emptyMap(), mapper.writeValueAsBytes(Collections.singletonMap("data", data)));
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    })) {
+      TypedProperties providerProps = props();
+      String prefix = EmbeddingTableConfig.MODEL_PREFIX + "m1";
+      providerProps.setProperty(prefix + OpenAiClientConfig.ENDPOINT_SUFFIX, server.url() + "/v1");
+      providerProps.setProperty(prefix + OpenAiClientConfig.CREDENTIAL_FILE_SUFFIX, credential.toString());
+      EmbeddingClient provider = new OpenAiCompatibleEmbeddingClient();
+      provider.init(new EmbeddingModelSpec("m1", "emb_m1", 4, null, "openai", "text-embedding-3-small"), providerProps);
+      List<Row> prepared = Arrays.asList(
+          RowFactory.create("s", 101L, 17L, "text", 0L, "alpha", null, null, null),
+          RowFactory.create("s", 102L, 17L, "text", 0L, "beta", null, null, null),
+          RowFactory.create("s", 101L, 18L, "text", 0L, "gamma", null, null, null));
+      FailingClient.failure = null;
+      FailingClient.failInit = false;
+      FailingClient.delegate = provider;
+      List<Row> out = new ArrayList<>();
+      try (MicroBatchEmbeddingIterator iterator = new MicroBatchEmbeddingIterator(prepared.iterator(), model(), props(), SCHEMA, 8, counters())) {
+        iterator.forEachRemaining(out::add);
+      } finally {
+        FailingClient.delegate = null;
+        provider.close();
+      }
+      assertEquals(3, out.size());
+      for (int i = 0; i < prepared.size(); i++) {
+        for (int column = 0; column < 6; column++) {
+          assertEquals(prepared.get(i).get(column), out.get(i).get(column));
+        }
+        assertArrayEquals(new float[] {1 + 4 * i, 2 + 4 * i, 3 + 4 * i, 4 + 4 * i}, (float[]) out.get(i).get(7));
+        assertNull(out.get(i).get(8));
+      }
+      assertEquals(1, server.requests().size());
+      assertEquals("/v1/embeddings", server.requests().get(0).path);
+      JsonNode sent = new ObjectMapper().readTree(server.requests().get(0).body);
+      assertEquals(new ObjectMapper().readTree("[\"alpha\",\"beta\",\"gamma\"]"), sent.get("input"));
+    }
   }
 
   @Test
