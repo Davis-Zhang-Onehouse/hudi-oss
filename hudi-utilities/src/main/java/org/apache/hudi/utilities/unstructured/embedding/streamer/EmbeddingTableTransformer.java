@@ -34,6 +34,7 @@ import org.apache.hudi.utilities.unstructured.embedding.compute.ComputeCounters;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ComputeRound;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientFactory;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
+import org.apache.hudi.utilities.unstructured.embedding.prep.VideoFrameHeapCheck;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenizerFactory;
 
@@ -71,7 +72,8 @@ import java.util.stream.Collectors;
  *   work; a refusal rolls the instant back): the table's version; under
  *   {@code prep_only} no model and no compute setting; under {@code prep_and_compute} exactly one active model, whose column and
  *   dimensions name and size the VECTOR column (an existing table's column of that name has the model's dimensions), with a
- *   loadable client; no Spark speculation; the prep extension allow-list; the preprocessors' configuration;</li>
+ *   loadable client; no Spark speculation; the prep extension allow-list; the preprocessors' configuration; when the job preps
+ *   video, that the executor heap holds its frame decodes ({@link VideoFrameHeapCheck});</li>
  *   <li>takes the output schema: an existing table's latest writer schema without meta fields, its columns beyond the base
  *   ones nullable, with the model's column added
  *   when missing; else {@link EmbeddingTableSchema#build}, which has no VECTOR column under {@code prep_only};</li>
@@ -193,6 +195,10 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
     try {
       PrepRound.checkPrepFileExtensions(config, registry);
       registry.validateConfig(props, TokenizerFactory.create(props));
+      if (VideoFrameHeapCheck.prepsVideo(config, registry)) {
+        // the executor heap must hold the frame decodes of a video: refused before any Spark work
+        VideoFrameHeapCheck.check(config, spark.sparkContext().getConf());
+      }
     } finally {
       registry.close();
     }
