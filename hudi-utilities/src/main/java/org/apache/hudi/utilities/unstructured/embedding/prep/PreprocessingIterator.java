@@ -22,9 +22,14 @@ import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.exception.HoodieException;
-import org.apache.hudi.utilities.sources.blob.BlobTableConfig;
+import org.apache.hudi.exception.HoodieIOException;
+import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
+import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingPayloadWriteException;
+import org.apache.hudi.utilities.unstructured.embedding.input.PayloadDestination;
+import org.apache.hudi.utilities.unstructured.embedding.input.PreparedInputs;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
@@ -69,8 +74,9 @@ import scala.collection.JavaConverters;
  *       chunks to keep the {@link Chunk} contract (modality, payload and frame index), which the shipped preprocessors' tests
  *       hold them to;</li>
  *   <li>it stores a chunk's payload in {@code prepared_image}: a source payload as the source row's own blob value, unchanged (inline
- *       bytes, or the reference to the object), a derived one inline up to the source's inline threshold; a derived one above
- *       the threshold or not of its declared size fails that chunk;</li>
+ *       bytes, or the reference to the object), a derived one through the input store ({@link PreparedInputs}): inline up to
+ *       {@code hoodie.unstructured.embedding.input.inline.max.bytes}, above it written out of line under the embedding table
+ *       and referenced; a derived one not of its declared size fails that chunk; a failure to write its file fails the round;</li>
  *   <li>no silent loss on a key collision: every id it assigns is above the last id of the same (file, modality), else
  *       the file fails (a repeated key within a file is refused here, never dropped by the writer);</li>
  *   <li>a chunk whose payload cannot be stored fails that chunk only: chunk 0 fails its file-modality, whose later chunks are
@@ -119,8 +125,10 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   private final int modelColumnCount;
   private final List<String> userPartitionColumns;
   private final ChunkIdScheme chunkIds;
-  /** The largest derived payload stored inline in {@code prepared_image}: the source's own inline threshold. */
+  /** The largest derived payload stored inline in {@code prepared_image}: the input store's inline threshold. */
   private final long payloadInlineMaxBytes;
+  /** Stores derived payloads, inline or out of line under the embedding table; null without a payload destination. */
+  private final PreparedInputs preparedInputs;
   /** Where failed and empty files go: never into the rows this iterator returns. */
   private final Consumer<PrepSideOutput> sideOutputs;
   /** The side outputs of an iterator built without a sink (tests); null otherwise. */
@@ -152,12 +160,29 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   private Throwable failedWith;
 
   /**
+   * An iterator with no payload destination: a derived payload above the input store's inline threshold fails its chunk.
+   *
+   * @param instant               the prep instant; with no payload destination nothing is written under it, so this constructor
+   *                              does not read it (it keeps the same leading arguments as the one with a destination)
    * @param sideOutputs           receives every failed or empty file as it is met; null to keep them in memory
    *                              ({@link #getSideOutputs()})
    */
-  public PreprocessingIterator(Iterator<Row> blobRows, EmbeddingTableConfig config, BlobBytesSource bytesSource,
+  public PreprocessingIterator(Iterator<Row> blobRows, EmbeddingTableConfig config, String instant, BlobBytesSource bytesSource,
                                PreprocessorRegistry registry, Tokenizer tokenizer, PrepCounters counters,
                                Consumer<PrepSideOutput> sideOutputs) {
+    this(blobRows, config, instant, bytesSource, registry, tokenizer, counters, sideOutputs, null);
+  }
+
+  /**
+   * @param instant               the prep instant the rows are written at, named by every payload file
+   * @param sideOutputs           receives every failed or empty file as it is met; null to keep them in memory
+   *                              ({@link #getSideOutputs()})
+   * @param destination           where a derived payload above the input store's inline threshold is written as it is prepared;
+   *                              null for none
+   */
+  public PreprocessingIterator(Iterator<Row> blobRows, EmbeddingTableConfig config, String instant, BlobBytesSource bytesSource,
+                               PreprocessorRegistry registry, Tokenizer tokenizer, PrepCounters counters,
+                               Consumer<PrepSideOutput> sideOutputs, PayloadDestination destination) {
     this.collectedSideOutputs = sideOutputs == null ? new ArrayList<>() : null;
     this.sideOutputs = sideOutputs == null ? collectedSideOutputs::add : sideOutputs;
     this.blobRows = blobRows;
@@ -169,7 +194,8 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
     this.modelColumnCount = config.models().size() * EmbeddingTableSchema.COLUMNS_PER_MODEL;
     this.userPartitionColumns = EmbeddingTableSchema.userPartitionColumns(config.getProps());
     this.chunkIds = new SequentialChunkIdScheme();
-    this.payloadInlineMaxBytes = BlobTableConfig.inlineMaxBytes(config.getProps());
+    this.payloadInlineMaxBytes = EmbeddingInputConfig.inlineMaxBytes(config.getProps());
+    this.preparedInputs = destination == null ? null : new PreparedInputs(config.getProps(), instant, destination);
     TaskContext taskContext = TaskContext.get();
     if (taskContext != null) {
       taskContext.addTaskCompletionListener((TaskCompletionListener) context -> close());
@@ -239,7 +265,7 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
         // the id first: a chunk whose payload cannot be stored fails alone, under its own id
         chunkId = chunkIdOf(chunk);
         try {
-          preparedImage = preparedImage(chunk);
+          preparedImage = preparedImage(chunk, chunkId);
         } catch (PreprocessingException e) {
           failChunk(chunk, chunkId, e);
           return;
@@ -438,12 +464,16 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
 
   /**
    * The {@code prepared_image} value of {@code chunk}: null without a payload; the source row's own blob value, unchanged, for a
-   * source payload (inline bytes, or the reference to the object); the payload's bytes inline for a derived one.
+   * source payload (inline bytes, or the reference to the object); for a derived one, its bytes inline up to the input store's
+   * inline threshold, above it a managed reference to the file the input store wrote ({@link PreparedInputs}).
    *
-   * @throws PreprocessingException a content failure of this chunk: a derived payload above the inline threshold, or one whose
-   *     bytes cannot be read or differ in size from the declared one
+   * @throws PreprocessingException a content failure of this chunk: a payload whose bytes cannot be read or differ in size
+   *     from the declared one, or a derived payload above the inline threshold of an iterator with no payload destination
+   * @throws EmbeddingPayloadWriteException when the payload file cannot be written: a round failure
+   *     ({@link PrepFailures#roundFailure})
+   * @throws PrepPlatformException when the input store's per-task inline ceiling refuses its threshold: a round failure
    */
-  private Row preparedImage(Chunk chunk) {
+  private Row preparedImage(Chunk chunk, long chunkId) {
     if (chunk.getPayload() == null) {
       return null;
     }
@@ -451,9 +481,25 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
       return currentBlob;
     }
     long size = chunk.getPayloadSizeBytes();
+    if (preparedInputs != null) {
+      try {
+        return preparedInputs.prepare(rowName(chunk, chunkId), null, chunk.getPayloadContentType(), chunk.getPayload(), size);
+      } catch (IllegalArgumentException | HoodieIOException e) {
+        // a payload not of its declared size, of an unstored type, or unreadable: this chunk's content, unless the read met a
+        // round failure (a source a later run can still read)
+        PrepFailures.rethrowRoundFailure(e);
+        throw new PreprocessingException("Payload of chunk " + fileChunks + " could not be stored: " + e.getMessage(), e);
+      } catch (EmbeddingPayloadWriteException e) {
+        throw e;
+      } catch (HoodieValidationException e) {
+        // the task's inline ceiling refused the threshold: the job's configuration, never this file's content; the round fails
+        throw new PrepPlatformException("The input store could not store the payload of " + rowName(chunk, chunkId) + ": "
+            + e.getMessage(), e);
+      }
+    }
     if (size > payloadInlineMaxBytes) {
       throw new PreprocessingException("Payload of chunk " + fileChunks + " is " + size + " bytes, above the inline threshold "
-          + BlobTableConfig.INLINE_MAX_BYTES.key() + "=" + payloadInlineMaxBytes + ": a derived input is stored inline only");
+          + EmbeddingInputConfig.INLINE_MAX_BYTES.key() + "=" + payloadInlineMaxBytes + ", and this prep has no payload destination");
     }
     byte[] bytes = new byte[(int) size];
     try (InputStream in = chunk.getPayload().open()) {
@@ -475,6 +521,12 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
       throw new PreprocessingException("Payload of chunk " + fileChunks + " could not be read: " + e.getMessage(), e);
     }
     return RowFactory.create(HoodieSchema.Blob.INLINE, bytes, null);
+  }
+
+  /** The row a chunk's payload belongs to, by its record key fields, for the input store's failure messages. */
+  private String rowName(Chunk chunk, long chunkId) {
+    return "source_path_sha=" + currentFile.getSourcePathSha() + " source_modification_time=" + currentFile.getSourceModificationTime()
+        + " source_file_size=" + currentFile.getFileSize() + " modality=" + chunk.getModality() + " chunk_id=" + chunkId;
   }
 
   /** The row of {@code chunk}, in {@link EmbeddingTableSchema#build} column order. */

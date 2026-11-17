@@ -62,8 +62,7 @@ public interface FilePreprocessor {
 
   /**
    * Whether this preprocessor's chunks may carry a payload, a model input the embedding table stores in {@code prepared_image}
-   * (an image's or a video frame's bytes). A preprocessor that emits a payload declares it, which the shipped preprocessors'
-   * tests check; the framework does not read it.
+   * (an image's or a video frame's bytes). A preprocessor that emits a payload must declare it; the framework does not check.
    * Default false: text preprocessors store no input.
    */
   default boolean storesInputs() {

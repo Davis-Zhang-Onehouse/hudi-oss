@@ -77,7 +77,7 @@ public class UnstructuredSourceContract implements SourceContract {
   /**
    * The settings the job runs with: the round's instant handed to the job's transformer, which writes every row under it
    * ({@code hoodie.streamer.start.commit.before.transformer=true}); the record key of the job's table
-   * ({@link UnstructuredMode#keyColumns}) with a key generator of {@link #KEY_GENERATORS}; the blob job's out-of-line markers while
+   * ({@link UnstructuredMode#keyColumns}) with a key generator of {@link #KEY_GENERATORS}; the out-of-line markers while
    * {@code hoodie.write.out.of.line.markers.enable} is true; the job's Parquet config injector and defaults
    * ({@link UnstructuredMode#addSettings}); and the job's other checks ({@link #validateJob}) on the merged properties.
    *
@@ -90,10 +90,7 @@ public class UnstructuredSourceContract implements SourceContract {
         .requireFields(KeyGeneratorOptions.RECORDKEY_FIELD_NAME, mode.keyColumns(), HoodieTableConfig.RECORDKEY_FIELDS)
         .check(UnstructuredSourceContract::checkKeyGenerator)
         .check((sourceName, merged) -> validateJob(merged));
-    if (mode == UnstructuredMode.BLOB) {
-      settings = OutOfLineWriter.requireMarkers(settings, jobProps);
-    }
-    return mode.addSettings(settings).build();
+    return mode.addSettings(OutOfLineWriter.requireMarkers(settings, jobProps)).build();
   }
 
   /**

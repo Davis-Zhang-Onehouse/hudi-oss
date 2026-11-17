@@ -250,7 +250,7 @@ public class TestImageInputPrepRows {
   private PreprocessingIterator iterator(TypedProperties props, BlobBytesSource source, Row... rows) {
     PrepCounters counters = new PrepCounters(new LongAccumulator(), new LongAccumulator(), new LongAccumulator(),
         new LongAccumulator(), new LongAccumulator());
-    return new PreprocessingIterator(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), source,
+    return new PreprocessingIterator(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), "001", source,
         new PreprocessorRegistry(props), new WordCountTokenizer(), counters, null);
   }
 

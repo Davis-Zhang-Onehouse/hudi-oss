@@ -103,9 +103,43 @@ public class TestStoredImageOutcomes {
     EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class,
         () -> drain(config, props, schema, nullCounters, storedInputs(), row(schema, "a0", inline(png)), row(schema, "b0", null)));
     assertTrue(e.getMessage().startsWith("EMBED-COMPUTE-NO-STORED-IMAGE"), e.getMessage());
-    assertTrue(e.getMessage().contains("b0"), e.getMessage());
+    assertTrue(e.getMessage().contains("source_path_sha=b0 source_modification_time=1000 source_file_size=1 modality=image chunk_id=0"),
+        e.getMessage());
     assertEquals(0L, nullCounters.getRowsPermanent().value());
     assertEquals(0L, nullCounters.getBatchesOk().value() + nullCounters.getBatchesFailed().value(), "no client call");
+  }
+
+  /**
+   * A stored input the input store wrote into the embedding table's own {@code .hoodie/.blob} folder is a managed reference
+   * RELATIVE to the table base: compute, reading {@code prepared_image} with the table's base path, opens it there (in its range of
+   * a larger file) and embeds the image it holds, giving the vector of the same image stored inline.
+   */
+  @Test
+  public void managedRelativeStoredInputIsReadUnderTheTableBaseAndEmbedded() throws Exception {
+    TypedProperties props = props();
+    EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
+    StructType schema = schema(config);
+    byte[] png = ImageFixtures.image("png", 1200, 900);
+    byte[] padded = new byte[png.length + 7];
+    System.arraycopy(png, 0, padded, 5, png.length);
+    String relative = ".hoodie/.blob/p1/frames.bin";
+    Path table = base.resolve("table");
+    Files.createDirectories(table.resolve(".hoodie/.blob/p1"));
+    Files.write(table.resolve(relative), padded);
+    ComputeCounters counters = counters();
+    List<Row> out = drain(config, props, schema, counters,
+        new BlobBytesSource(table.toUri().toString(), HadoopFSUtils.getStorageConf(new Configuration())),
+        row(schema, "r0", managedRelative(relative, 5L, png.length)), row(schema, "i0", inline(png)));
+    PreparedImage expected = new ImagePreparer(config.imagePreprocessing()).prepare(ImageFixtures.source(png));
+    float[] vector = DummyMultimodalEmbeddingClient.vectorForImage(expected.getEncoded(), DIM);
+    assertEquals(2, out.size());
+    for (Row row : out) {
+      assertEquals(EMBEDDED, outcome(row, schema, config), row.getString(schema.fieldIndex(EmbeddingTableSchema.SOURCE_PATH_SHA)));
+      assertArrayEquals(vector, (float[]) row.get(schema.fieldIndex(config.model(MODEL).getColumn())),
+          "the relative stored input embeds as the same image stored inline");
+    }
+    assertEquals(2L, counters.getRowsEmbedded().value());
+    assertEquals(0L, counters.getRowsPermanent().value());
   }
 
   /**
@@ -288,6 +322,12 @@ public class TestStoredImageOutcomes {
   /** An out-of-line stored input: the unmanaged reference to the source file, with no range, as the source row carries it. */
   private static Row reference(Path file) {
     Row reference = new GenericRowWithSchema(new Object[] {file.toUri().toString(), null, null, false}, REFERENCE);
+    return new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.OUT_OF_LINE, null, reference}, BLOB);
+  }
+
+  /** A managed out-of-line stored input relative to the embedding table's base, with its range, as the input store writes it. */
+  private static Row managedRelative(String relativePath, long offset, long length) {
+    Row reference = new GenericRowWithSchema(new Object[] {relativePath, offset, length, true}, REFERENCE);
     return new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.OUT_OF_LINE, null, reference}, BLOB);
   }
 

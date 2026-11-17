@@ -32,6 +32,7 @@ import org.apache.hudi.utilities.unstructured.storage.StorageReferenceRules;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.hudi.blob.BatchedBlobReader;
 
 import java.io.ByteArrayInputStream;
 import java.io.EOFException;
@@ -48,16 +49,24 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
 
+import scala.Option;
+
 /**
  * Opens the bytes of one source row's {@code blob} value as a stream, never materializing an
  * out-of-line file in memory.
  * <ul>
  *   <li>{@code INLINE}: a stream over {@code blob.data};</li>
- *   <li>{@code OUT_OF_LINE}: the object at {@code reference.external_path}, which must be absolute (have a scheme or start with
- *       '/'): the embedding job reads objects where the source announced them, and no table base path resolves a relative one;
- *       restricted to {@code [offset, offset + length)} when those are set.</li>
+ *   <li>{@code OUT_OF_LINE}: the object at {@code reference.external_path} when it is absolute (has a scheme or starts with '/');
+ *       restricted to {@code [offset, offset + length)} when those are set. A relative path is resolved only by a source built
+ *       with a table base path (compute reading the embedding table's {@code prepared_image}, which the input store writes into
+ *       the table's own {@code .hoodie/.blob} folder): a managed reference ({@code managed} true, or null, which this source
+ *       counts as managed) resolves against the base as {@code read_blob()} resolves a managed one
+ *       ({@link BatchedBlobReader#resolveReferencePath}) and must stay inside it;
+ *       an unmanaged ({@code managed=false}) relative one has no defined base and is refused. A source without a base path (prep
+ *       reading source objects where the source announced them) refuses every relative path.</li>
  * </ul>
- * A path is opened on the storage for its own {@code scheme://authority} (one storage per scheme+authority, cached).
+ * An absolute path is opened on the storage for its own {@code scheme://authority} (one storage per scheme+authority, cached); a
+ * relative one on the base-path storage.
  *
  * <p>Opening an OUT_OF_LINE blob (resolving its storage, opening and seeking to its range) is retried in-commit under the
  * source's {@link TransientRetry} when it fails transiently ({@link #isTransient}): any storage failure except the file's own
@@ -69,17 +78,42 @@ public class BlobBytesSource implements Serializable {
 
   private static final long serialVersionUID = 1L;
   private static final int READ_BUFFER_BYTES = 64 * 1024;
+  // null: no table to resolve a relative path against, so every relative path is refused
+  private final String tableBasePath;
   private final StorageConfiguration<?> storageConf;
   private final TransientRetry openRetry;
+  private transient HoodieStorage baseStorage;
   private transient Map<String, HoodieStorage> storageBySchemeAuthority;
 
-  /** A source that tries each open once ({@link TransientRetry#NONE}). */
+  /** A source of absolute paths only, that tries each open once ({@link TransientRetry#NONE}). */
   public BlobBytesSource(StorageConfiguration<?> storageConf) {
     this(storageConf, TransientRetry.NONE);
   }
 
-  /** @param openRetry the in-commit retry of a transient failure to open an OUT_OF_LINE blob */
+  /**
+   * A source of absolute paths only: a relative {@code external_path} is refused.
+   *
+   * @param openRetry the in-commit retry of a transient failure to open an OUT_OF_LINE blob
+   */
   public BlobBytesSource(StorageConfiguration<?> storageConf, TransientRetry openRetry) {
+    this(null, storageConf, openRetry);
+  }
+
+  /**
+   * A source that resolves a managed relative path against {@code tableBasePath} and tries each open once
+   * ({@link TransientRetry#NONE}).
+   */
+  public BlobBytesSource(String tableBasePath, StorageConfiguration<?> storageConf) {
+    this(tableBasePath, storageConf, TransientRetry.NONE);
+  }
+
+  /**
+   * @param tableBasePath the base path of the table whose managed references are relative to it, or null for a source of
+   *     absolute paths only
+   * @param openRetry the in-commit retry of a transient failure to open an OUT_OF_LINE blob
+   */
+  public BlobBytesSource(String tableBasePath, StorageConfiguration<?> storageConf, TransientRetry openRetry) {
+    this.tableBasePath = tableBasePath;
     this.storageConf = storageConf;
     this.openRetry = openRetry;
   }
@@ -115,7 +149,8 @@ public class BlobBytesSource implements Serializable {
    *
    * @param blob the {@code blob} column value (a struct with fields type, data, reference)
    * @throws BlobReferenceException for a malformed row or reference: a null blob, INLINE without data, an unknown type,
-   *     OUT_OF_LINE without a reference or with an empty, unparseable or relative path, a range
+   *     OUT_OF_LINE without a reference or with an empty or unparseable path, a relative one this source does not resolve
+   *     (no table base path, {@code managed=false}, or escaping the base), a range
    *     {@code read_blob()} refuses (offset and length not both set or both null, or either negative; checked before any
    *     storage access), or a reference whose storage cannot be built for its own fault (an unserved scheme, an invalid or
    *     missing required authority, an out-of-range port)
@@ -134,7 +169,7 @@ public class BlobBytesSource implements Serializable {
   }
 
   private InputStream openRange(ParsedBlob blob) throws IOException {
-    HoodieStorage pathStorage = storageFor(blob.path);
+    HoodieStorage pathStorage = storageFor(blob.path, blob.absolute);
     SeekableDataInputStream in = openChecked(pathStorage, blob.path);
     try {
       if (blob.offset != null && blob.offset > 0) {
@@ -174,7 +209,7 @@ public class BlobBytesSource implements Serializable {
   }
 
   private SeekableBlob openSeekableRange(ParsedBlob blob) throws IOException {
-    HoodieStorage pathStorage = storageFor(blob.path);
+    HoodieStorage pathStorage = storageFor(blob.path, blob.absolute);
     long base = blob.offset == null ? 0L : blob.offset;
     long size;
     try {
@@ -214,7 +249,7 @@ public class BlobBytesSource implements Serializable {
       if (data == null) {
         throw new BlobReferenceException("INLINE blob has null data");
       }
-      return new ParsedBlob(data, null, null, null);
+      return new ParsedBlob(data, null, false, null, null);
     }
     if (!HoodieSchema.Blob.OUT_OF_LINE.equals(type)) {
       throw new BlobReferenceException("Unsupported blob storage type: " + type);
@@ -223,7 +258,9 @@ public class BlobBytesSource implements Serializable {
     if (reference == null) {
       throw new BlobReferenceException("OUT_OF_LINE blob has null reference");
     }
-    StoragePath path = resolve(reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_PATH));
+    String externalPath = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_PATH);
+    checkUnmanagedIsAbsolute(reference, externalPath);
+    StoragePath path = resolve(externalPath);
     Long offset = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_OFFSET);
     Long length = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_LENGTH);
     if ((offset == null) != (length == null)) {
@@ -233,19 +270,24 @@ public class BlobBytesSource implements Serializable {
     if (offset != null && (offset < 0 || length < 0)) {
       throw new BlobReferenceException("OUT_OF_LINE blob " + path + " has an invalid range: offset " + offset + ", length " + length);
     }
-    return new ParsedBlob(null, path, offset, length);
+    return new ParsedBlob(null, path, isAbsolute(externalPath), offset, length);
   }
 
-  /** A parsed {@code blob} struct: {@code data} for INLINE, else the resolved OUT_OF_LINE path and its checked range. */
+  /**
+   * A parsed {@code blob} struct: {@code data} for INLINE, else the resolved OUT_OF_LINE path, whether its {@code external_path}
+   * was absolute (a relative one is opened on the base-path storage), and its checked range.
+   */
   private static final class ParsedBlob {
     private final byte[] data;
     private final StoragePath path;
+    private final boolean absolute;
     private final Long offset;
     private final Long length;
 
-    private ParsedBlob(byte[] data, StoragePath path, Long offset, Long length) {
+    private ParsedBlob(byte[] data, StoragePath path, boolean absolute, Long offset, Long length) {
       this.data = data;
       this.path = path;
+      this.absolute = absolute;
       this.offset = offset;
       this.length = length;
     }
@@ -337,20 +379,43 @@ public class BlobBytesSource implements Serializable {
   }
 
   /**
-   * The path of an {@code external_path}, which must be absolute: the embedding job reads an object where its source row names it,
-   * and nothing resolves a relative path.
+   * The path of an {@code external_path}: an absolute one as it is; a relative one, as a managed reference, against the table base
+   * path exactly as {@code read_blob()} resolves it ({@link BatchedBlobReader#resolveReferencePath}), so compute and
+   * {@code read_blob()} open the same file. Without a base path, nothing resolves a relative path: the embedding job then reads an
+   * object only where its source row names it.
    *
-   * @throws BlobReferenceException for an empty, unparseable or relative path
+   * @throws BlobReferenceException for an empty or unparseable path, a relative one without a base path, or one escaping the base
+   *     (e.g. {@code ../x})
    */
   public StoragePath resolve(String externalPath) throws IOException {
     if (externalPath == null || externalPath.isEmpty()) {
       throw new BlobReferenceException("OUT_OF_LINE blob has empty external_path");
     }
-    if (!isAbsolute(externalPath)) {
+    if (isAbsolute(externalPath)) {
+      return new StoragePath(externalPath);
+    }
+    if (tableBasePath == null) {
       throw new BlobReferenceException("OUT_OF_LINE blob has a relative external_path '" + externalPath + "'; the embedding job "
           + "reads an object only by its absolute path");
     }
-    return new StoragePath(externalPath);
+    try {
+      return new StoragePath(BatchedBlobReader.resolveReferencePath(externalPath, true, Option.apply(tableBasePath)));
+    } catch (IllegalArgumentException e) {
+      throw new BlobReferenceException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * With a table base path, an unmanaged reference points at a file outside the table and must carry an absolute path: a relative
+   * one has no defined base, so it is refused rather than resolved against the table ({@code read_blob()} would resolve it against
+   * its working directory). Without a base path, {@link #resolve} refuses every relative path.
+   */
+  private void checkUnmanagedIsAbsolute(Row reference, String externalPath) throws IOException {
+    Boolean managed = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_IS_MANAGED);
+    if (tableBasePath != null && Boolean.FALSE.equals(managed) && externalPath != null && !externalPath.isEmpty() && !isAbsolute(externalPath)) {
+      throw new BlobReferenceException("OUT_OF_LINE blob with managed=false has a relative external_path '" + externalPath
+          + "'; an unmanaged reference must be absolute");
+    }
   }
 
   /** A scheme or a leading slash makes a path absolute, as {@code read_blob()} tests it. */
@@ -364,12 +429,19 @@ public class BlobBytesSource implements Serializable {
   }
 
   /**
-   * The storage that serves {@code path}: the storage for the path's own {@code scheme://authority}. A scheme outside the served set ({@link StorageReferenceRules#isServedScheme})
+   * The storage that serves {@code path}: the base-path storage for a relative {@code external_path}, else the storage for the
+   * path's own {@code scheme://authority}. A scheme outside the served set ({@link StorageReferenceRules#isServedScheme})
    * or an invalid URI/authority rejected during construction is a malformed reference. Other construction failures, a served
    * scheme whose file system is missing included, are storage errors, so prep can fail the round and retry the input.
    */
-  private HoodieStorage storageFor(StoragePath path) throws IOException {
+  private HoodieStorage storageFor(StoragePath path, boolean absolute) throws IOException {
     try {
+      if (!absolute) {
+        if (baseStorage == null) {
+          baseStorage = HoodieStorageUtils.getStorage(tableBasePath, storageConf);
+        }
+        return baseStorage;
+      }
       if (storageBySchemeAuthority == null) {
         storageBySchemeAuthority = new HashMap<>();
       }
