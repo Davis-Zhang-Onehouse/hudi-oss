@@ -35,6 +35,7 @@ import org.apache.hudi.utilities.config.HoodieIncrSourceConfig;
 import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig;
 import org.apache.hudi.utilities.ingestion.HoodieIngestionMetrics;
+import org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector;
 import org.apache.hudi.utilities.sources.blob.BlobTableConfig;
 import org.apache.hudi.utilities.sources.blob.BlobTableSchema;
 import org.apache.hudi.utilities.sources.blob.BucketFolderFileSystem;
@@ -159,6 +160,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
     props.setProperty(UnstructuredSourceConfig.MODE.key(), "blob");
     props.setProperty(UnstructuredSourceConfig.CLOUD.key(), "s3");
     props.setProperty(HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key(), "true");
+    props.setProperty(HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key(), BlobParquetConfigInjector.class.getName());
     props.setProperty(HoodieIncrSourceConfig.HOODIE_SRC_BASE_PATH.key(), eventsPath());
     props.setProperty(S3EventsHoodieIncrSourceConfig.S3_FS_PREFIX.key(), BucketFolderFileSystem.SCHEME);
     props.setProperty(BlobTableConfig.INLINE_MAX_BYTES.key(), String.valueOf(INLINE_MAX));
@@ -452,6 +454,34 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
+  public void existenceCheckTrueSkipsMissingAndFalseAttemptsRead() throws Exception {
+    commit(put(BUCKET, "exists.pdf", 10), created(BUCKET, "missing.pdf", 10, T0));
+    TypedProperties checked = props();
+    checked.setProperty(CloudSourceConfig.ENABLE_EXISTS_CHECK.key(), "true");
+    Round result = round(source(checked), Option.empty(), Long.MAX_VALUE);
+    assertEquals(keys("exists.pdf"), keys(result));
+    assertEquals(commits().get(0) + "#missing.pdf", result.checkpointKey());
+    TypedProperties unchecked = props();
+    unchecked.setProperty(CloudSourceConfig.ENABLE_EXISTS_CHECK.key(), "false");
+    Round attempted = round(source(unchecked), Option.empty(), Long.MAX_VALUE);
+    assertEquals(keys("exists.pdf", "missing.pdf"), keys(attempted));
+    assertEquals(commits().get(0) + "#missing.pdf", attempted.checkpointKey());
+    Row existing = attempted.rows.get(BUCKET + "/exists.pdf");
+    Row missing = attempted.rows.get(BUCKET + "/missing.pdf");
+    assertEquals("bucketfs://landing/exists.pdf", existing.getAs(BlobTableSchema.SOURCE_FILE_PATH));
+    assertEquals("b22f795efdfc08eb787b39c97adc3f70", existing.getAs(BlobTableSchema.SOURCE_PATH_SHA));
+    assertEquals("bucketfs://landing/missing.pdf", missing.getAs(BlobTableSchema.SOURCE_FILE_PATH));
+    assertEquals("7f66659272b5cb966e094a7d819825f5", missing.getAs(BlobTableSchema.SOURCE_PATH_SHA));
+    assertEquals(10L, missing.<Long>getAs(BlobTableSchema.SOURCE_FILE_SIZE), "a gone object keeps its announced size");
+    assertEquals(0L, missing.<Long>getAs(BlobTableSchema.SOURCE_MODIFICATION_TIME), "a gone object has no observed modification time");
+    org.junit.jupiter.api.Assertions.assertNull(missing.getAs(BlobTableSchema.BLOB));
+    assertEquals(java.nio.file.Files.getLastModifiedTime(BucketFolderFileSystem.file(objects(), BUCKET, "exists.pdf")).toMillis(),
+        existing.<Long>getAs(BlobTableSchema.SOURCE_MODIFICATION_TIME));
+    Row blob = existing.getAs(BlobTableSchema.BLOB);
+    org.junit.jupiter.api.Assertions.assertArrayEquals(bytes(10), (byte[]) blob.get(1));
+  }
+
+  @Test
   public void configuredPathPartitionFieldsPreserveMetadata() {
     commit(put(BUCKET, "country=US/source_file_name=ignored/a.pdf", 10));
     TypedProperties props = props();
@@ -566,6 +596,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
       Set<String> declared = new TreeSet<>(new UnstructuredSourceContract(jobProps).requiredSettings(modeAndCloud).apply(modeAndCloud)
           .stringPropertyNames());
       declared.removeAll(modeAndCloud.stringPropertyNames());
+      declared.addAll(Arrays.asList(HoodieWriteConfig.MARKERS_TYPE.key(), HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE.key()));
       GuardedProperties guarded = new GuardedProperties(declared);
       for (String key : jobProps.stringPropertyNames()) {
         if (!declared.contains(key)) {

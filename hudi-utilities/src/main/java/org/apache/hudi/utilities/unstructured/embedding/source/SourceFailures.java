@@ -18,10 +18,9 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.source;
 
-import org.apache.hadoop.security.AccessControlException;
+import org.apache.hudi.utilities.sources.blob.BlobObjectCopier;
 
 import java.io.FileNotFoundException;
-import java.nio.file.AccessDeniedException;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
@@ -43,14 +42,15 @@ public final class SourceFailures {
 
   /**
    * Whether {@code failure}'s cause chain says the file itself is at fault: its source is gone or short, or its row malformed. An
-   * access denial anywhere in the chain (java.nio.file.AccessDeniedException: a 403, a KMS denial, a file there but unreadable;
-   * Hadoop's AccessControlException) is never the file's fault, even when it carries the storage's FileNotFoundException.
+   * access denial anywhere in the chain ({@link BlobObjectCopier#isAccessDenial}: java.nio.file.AccessDeniedException, which is
+   * a 403, a KMS denial or a file there but unreadable; Hadoop's AccessControlException; the GCS connector's 403 response,
+   * unless it names a rate-limit reason) is never the file's fault, even when it carries the storage's FileNotFoundException.
    */
   public static boolean isContentFailure(Throwable failure) {
     boolean content = false;
     Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
     for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
-      if (cause instanceof AccessDeniedException || cause instanceof AccessControlException) {
+      if (BlobObjectCopier.isAccessDenial(cause)) {
         return false;
       }
       content |= cause instanceof FileNotFoundException || cause instanceof BlobTruncatedException

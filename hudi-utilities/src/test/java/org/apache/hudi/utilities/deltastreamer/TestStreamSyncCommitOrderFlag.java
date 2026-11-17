@@ -48,7 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * {@code hoodie.streamer.start.commit.before.transformer} in StreamSync: off (the default), an {@link InstantAwareTransformer}
  * is called through the plain apply before any instant exists; on, StreamSync starts the commit first and
- * passes the REQUESTED instant, which is the instant the round then commits.
+ * passes the INFLIGHT instant, which is the instant the round then commits.
  */
 @Tag("functional")
 public class TestStreamSyncCommitOrderFlag extends HoodieDeltaStreamerTestBase {
@@ -122,7 +122,7 @@ public class TestStreamSyncCommitOrderFlag extends HoodieDeltaStreamerTestBase {
   }
 
   @Test
-  void flagOnPassesTheRequestedInstantThatTheRoundCommits() throws Exception {
+  void flagOnPassesTheInflightInstantThatTheRoundCommits() throws Exception {
     String tableBasePath = basePath + "/commit_order_flag_on";
     syncOnce(config(tableBasePath, true));
 
@@ -131,7 +131,7 @@ public class TestStreamSyncCommitOrderFlag extends HoodieDeltaStreamerTestBase {
     List<HoodieInstant> pending = PENDING_AT_APPLY.get(0);
     assertEquals(1, pending.size(), pending.toString());
     assertEquals(instant, pending.get(0).requestedTime(), "the pending instant is the one passed to the transformer");
-    assertEquals(HoodieInstant.State.REQUESTED, pending.get(0).getState(), "the instant is REQUESTED at apply");
+    assertEquals(HoodieInstant.State.INFLIGHT, pending.get(0).getState(), "the instant is INFLIGHT at apply");
     assertEquals(Collections.singletonList(instant), completedCommits(tableBasePath), "the round committed that instant");
     assertEquals(SQL_SOURCE_NUM_RECORDS, sqlContext.read().format("hudi").load(tableBasePath).count());
   }

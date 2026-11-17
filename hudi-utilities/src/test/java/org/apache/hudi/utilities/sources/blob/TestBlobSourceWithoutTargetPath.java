@@ -161,7 +161,7 @@ public class TestBlobSourceWithoutTargetPath extends UtilitiesTestBase {
 
   @ParameterizedTest
   @ValueSource(strings = {"COPY_ON_WRITE", "MERGE_ON_READ"})
-  public void requestedInstantReachesTheTransformerAndIsCommitted(String tableType) throws Exception {
+  public void inflightInstantReachesTheTransformerAndIsCommitted(String tableType) throws Exception {
     BlobJobHarness harness = BlobJobHarness.under(tempDir.resolve("landing")).install(jsc.hadoopConfiguration());
     String table = tempDir.resolve("table").toUri().toString();
     HoodieStreamer.Config cfg = BlobJobHarness.streamerConfig(table);
@@ -187,7 +187,7 @@ public class TestBlobSourceWithoutTargetPath extends UtilitiesTestBase {
       assertNotNull(receivedInstant);
       assertEquals(1, pendingAtApply.size(), pendingAtApply.toString());
       assertEquals(receivedInstant, pendingAtApply.get(0).requestedTime());
-      assertEquals(HoodieInstant.State.REQUESTED, pendingAtApply.get(0).getState());
+      assertEquals(HoodieInstant.State.INFLIGHT, pendingAtApply.get(0).getState());
       received.add(receivedInstant);
     }
 

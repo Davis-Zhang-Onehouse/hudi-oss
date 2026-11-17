@@ -25,6 +25,7 @@ import org.apache.hudi.io.SeekableDataInputStream;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.utilities.sources.blob.BlobObjectCopier;
 import org.apache.hudi.utilities.unstructured.retry.TransientRetry;
 import org.apache.hudi.utilities.unstructured.storage.StorageReferenceRules;
 
@@ -85,8 +86,9 @@ public class BlobBytesSource implements Serializable {
 
   /**
    * Whether {@code failure} of an open is transient: a storage failure ({@link IOException} in its cause chain) that is neither the
-   * file's own ({@link SourceFailures#isContentFailure}) nor an access denial ({@link AccessDeniedException}: a 403 or a KMS
-   * denial; Hadoop's {@link AccessControlException}: an HDFS permission check) nor a served scheme's missing file system
+   * file's own ({@link SourceFailures#isContentFailure}) nor an access denial ({@link BlobObjectCopier#isAccessDenial}:
+   * {@link AccessDeniedException}, a 403 or a KMS denial; Hadoop's {@link AccessControlException}, an HDFS permission check; the
+   * GCS connector's 403 response, except one that names a rate-limit reason) nor a served scheme's missing file system
    * ({@link UnsupportedFileSystemException}, or a {@link ClassNotFoundException} of its configured implementation: a connector
    * jar absent) — platform failures, which retrying in-commit cannot help.
    */
@@ -97,10 +99,10 @@ public class BlobBytesSource implements Serializable {
     boolean storageFailure = false;
     Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
     for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
-      if (cause instanceof AccessDeniedException || cause instanceof AccessControlException
-          || cause instanceof UnsupportedFileSystemException || cause instanceof ClassNotFoundException
-          || cause instanceof NoClassDefFoundError) {
-        // a 403 / KMS denial (S3A), an HDFS permission check or a missing file system: a platform failure, never retried in the round
+      if (BlobObjectCopier.isAccessDenial(cause) || cause instanceof UnsupportedFileSystemException
+          || cause instanceof ClassNotFoundException || cause instanceof NoClassDefFoundError) {
+        // a 403 / KMS denial (S3A or the GCS connector), an HDFS permission check or a missing file system: a platform failure,
+        // never retried in the round
         return false;
       }
       storageFailure |= cause instanceof IOException;

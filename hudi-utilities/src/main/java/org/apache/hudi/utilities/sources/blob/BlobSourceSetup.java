@@ -20,17 +20,22 @@ package org.apache.hudi.utilities.sources.blob;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.HoodieRecord.HoodieRecordType;
+import org.apache.hudi.common.table.HoodieTableVersion;
+import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.utilities.UtilHelpers;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredMode;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourcePolicy;
 
+import org.apache.spark.SparkConf;
+
 /**
  * Construction-time validation of the job of {@link UnstructuredDataSource}, the blob job or the embedding job
  * ({@link UnstructuredMode}). It only checks the job's properties and changes none of them. The settings each job runs with
- * (start-commit-before-transformer, the record key) are the source's contract's
+ * (start-commit-before-transformer, the record key, the blob job's markers and Parquet config injector) are the source's contract's
  * ({@link UnstructuredSourceContract#requiredSettings}), merged in by the streamer before the source is built; this checks the
  * others, and refuses a value the job cannot run with, naming the setting and the source with its mode.
  */
@@ -47,9 +52,13 @@ public final class BlobSourceSetup {
    * {@code source}, the source with its mode.
    *
    * @throws IllegalArgumentException    when a setting has a value the job cannot run with
+   * @throws HoodieValidationException   when the job's table version is below the tables' floor (9)
    */
   public static TypedProperties validate(TypedProperties props, UnstructuredMode mode, String source) {
     UnstructuredSourcePolicy.fileExtensions(props, source);
+
+    BlobInlineCeiling.inlineMaxBytes(props);
+
     // A large object's reference has no path until the copy transformer fills it, and only encoding the record with the table
     // schema refuses it; the row writer and Spark records skip that encoding, so they would commit a reference left unfilled.
     if (props.getBoolean(ROW_WRITER_ENABLE, false)) {
@@ -60,7 +69,31 @@ public final class BlobSourceSetup {
       throw new IllegalArgumentException("Spark records are not supported by " + source + "; blob rows are written "
           + "as Avro records: remove the Spark merger from " + HoodieWriteConfig.RECORD_MERGE_IMPL_CLASSES.key());
     }
+    // both tables are at table version 9 or above; the embedding transformer also checks an existing table's version, which
+    // needs the table's path, at its first round
+    checkTableVersion(props, source);
     mode.validate(props, source);
     return props;
+  }
+
+  /** Checks the driver inline ceiling at fetch, before any source task or instant. */
+  public static void check(TypedProperties props, SparkConf sparkConf) {
+    BlobInlineCeiling.checkOnDriver(props, sparkConf);
+  }
+
+  /** Refuses a job's {@code hoodie.write.table.version} below the version-9 floor of both jobs' tables before any source bytes are read. */
+  static void checkTableVersion(TypedProperties props, String source) {
+    int minimum = HoodieTableVersion.NINE.versionCode();
+    int version;
+    try {
+      version = ConfigUtils.getIntWithAltKeys(props, HoodieWriteConfig.WRITE_TABLE_VERSION);
+    } catch (NumberFormatException failure) {
+      throw new HoodieValidationException(source + " refuses " + HoodieWriteConfig.WRITE_TABLE_VERSION.key() + "="
+          + props.getProperty(HoodieWriteConfig.WRITE_TABLE_VERSION.key()) + ": not a table version; unset it or set " + minimum + " or above");
+    }
+    if (version < minimum) {
+      throw new HoodieValidationException(source + " refuses " + HoodieWriteConfig.WRITE_TABLE_VERSION.key() + "="
+          + version + ": blob and embedding tables are at table version " + minimum + " or above; unset it or set " + minimum + " or above");
+    }
   }
 }

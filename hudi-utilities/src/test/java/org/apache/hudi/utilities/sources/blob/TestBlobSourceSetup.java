@@ -23,6 +23,7 @@ import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.OverwriteWithLatestMerger;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
@@ -83,6 +84,42 @@ public class TestBlobSourceSetup {
     assertTrue(refused.getMessage().contains(BlobTableConfig.COPY_BUFFER_BYTES.key()), refused.getMessage());
   }
 
+  /** Both jobs' tables are at table version 9 or above: a lower or non-numeric job version is refused before any read. */
+  @ParameterizedTest
+  @CsvSource({"BLOB,6", "BLOB,8", "BLOB,invalid", "EMBEDDING,6", "EMBEDDING,8", "EMBEDDING,invalid"})
+  public void unsupportedJobTableVersionIsRefused(UnstructuredMode job, String version) {
+    TypedProperties props = job(job);
+    props.setProperty(HoodieWriteConfig.WRITE_TABLE_VERSION.key(), version);
+    HoodieValidationException failure = assertThrows(HoodieValidationException.class, () -> BlobSourceSetup.validate(props, job, UnstructuredDataSource.name(job)));
+    assertTrue(failure.getMessage().contains(HoodieWriteConfig.WRITE_TABLE_VERSION.key() + "=" + version), failure.getMessage());
+    assertTrue(failure.getMessage().contains("9 or above"), failure.getMessage());
+  }
+
+  /** Version 9 and above, or no version (Hudi's current one), pass for both jobs. */
+  @ParameterizedTest
+  @EnumSource(UnstructuredMode.class)
+  public void supportedJobTableVersionIsAccepted(UnstructuredMode job) {
+    BlobSourceSetup.validate(job(job), job, UnstructuredDataSource.name(job));
+    TypedProperties nine = job(job);
+    nine.setProperty(HoodieWriteConfig.WRITE_TABLE_VERSION.key(), "9");
+    BlobSourceSetup.validate(nine, job, UnstructuredDataSource.name(job));
+  }
+
+  /** The copy buffer and copy retry settings drive the blob job's out-of-line copies only. */
+  @ParameterizedTest
+  @ValueSource(strings = {"hoodie.blob.table.copy.buffer.bytes", "hoodie.blob.table.copy.retry.max.attempts",
+      "hoodie.blob.table.copy.retry.backoff.ms"})
+  public void copySettingsAreValidatedForTheBlobJobOnly(String key) {
+    TypedProperties embedding = job(UnstructuredMode.EMBEDDING);
+    embedding.setProperty(key, "-1");
+    BlobSourceSetup.validate(embedding, UnstructuredMode.EMBEDDING, UnstructuredDataSource.name(UnstructuredMode.EMBEDDING));
+    TypedProperties blob = job(UnstructuredMode.BLOB);
+    blob.setProperty(key, "-1");
+    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(blob, UnstructuredMode.BLOB, UnstructuredDataSource.name(UnstructuredMode.BLOB)));
+    assertEquals("BlobSourceConfigException", failure.getClass().getSimpleName());
+    assertTrue(failure.getMessage().contains(key), failure.getMessage());
+  }
+
   /** The row writer never encodes a row with the table schema, so it would commit a reference the copy transformer missed. */
   @ParameterizedTest
   @EnumSource(UnstructuredMode.class)
@@ -117,10 +154,12 @@ public class TestBlobSourceSetup {
       "BLOB|hoodie.streamer.write.row.writer.enable|true",
       "BLOB|hoodie.streamer.source.cloud.data.datafile.format|parquet",
       "BLOB|hoodie.blob.table.file.extensions|parquet",
+      "BLOB|hoodie.write.table.version|8",
       "BLOB|hoodie.write.record.merge.custom.implementation.classes|org.apache.hudi.OverwriteWithLatestSparkRecordMerger",
       "EMBEDDING|hoodie.streamer.write.row.writer.enable|true",
       "EMBEDDING|hoodie.streamer.source.cloud.data.datafile.format|parquet",
       "EMBEDDING|hoodie.blob.table.file.extensions|parquet",
+      "EMBEDDING|hoodie.write.table.version|8",
       "EMBEDDING|hoodie.write.record.merge.custom.implementation.classes|org.apache.hudi.OverwriteWithLatestSparkRecordMerger"})
   public void refusalNamesTheJobsSourceClass(UnstructuredMode job, String key, String value) {
     TypedProperties props = job(job);

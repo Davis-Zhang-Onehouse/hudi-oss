@@ -159,7 +159,7 @@ public class HoodieStreamerConfig extends HoodieConfig {
       .markAdvanced()
       .sinceVersion("1.3.0")
       .withDocumentation("When true and a transformer is configured, each round with new data starts its commit before "
-          + "transforming and passes the REQUESTED instant to every InstantAwareTransformer; other transformers are called "
+          + "transforming and passes the INFLIGHT instant to every InstantAwareTransformer; other transformers are called "
           + "unchanged. A transformer failure rolls the instant back. Required by BlobCopyTransformer. When false (the default), "
           + "the transformer runs before any instant is started.");
 }

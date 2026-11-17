@@ -880,9 +880,9 @@ public class StreamSync implements Serializable, Closeable {
 
   /**
    * {@link HoodieStreamerConfig#START_COMMIT_BEFORE_TRANSFORMER}: builds the write client from the table schema if there is
-   * none yet, then starts the commit of the round.
+   * none yet, then starts the commit and moves it to INFLIGHT before the transformer writes marked files.
    *
-   * @return the REQUESTED instant, held until the round's write takes it
+   * @return the INFLIGHT instant, held until the round's write takes it
    */
   private String startCommitBeforeTransformer(HoodieTableMetaClient metaClient) {
     // an earlier attempt of this round (readFromSource retries a source timeout) may still hold an instant
@@ -896,6 +896,9 @@ public class StreamSync implements Serializable, Closeable {
     }
     String instantTime = startCommit(metaClient, !autoGenerateRecordKeys);
     instantStartedBeforeTransformer = Option.of(instantTime);
+    String commitActionType = CommitUtils.getCommitActionType(cfg.operation, HoodieTableType.valueOf(cfg.tableType));
+    metaClient.getActiveTimeline().transitionRequestedToInflight(
+        metaClient.createNewInstant(HoodieInstant.State.REQUESTED, commitActionType, instantTime), Option.empty());
     return instantTime;
   }
 
@@ -992,6 +995,9 @@ public class StreamSync implements Serializable, Closeable {
     }
     hoodieConfig.setValue(HoodieWriteConfig.KEYGENERATOR_CLASS_NAME.key(), HoodieSparkKeyGeneratorFactory.getKeyGeneratorClassName(props));
     hoodieConfig.setValue("path", cfg.targetBasePath);
+    if (startCommitBeforeTransformer) {
+      hoodieConfig.setValue(HoodieWriteConfig.ALLOW_MULTI_WRITE_ON_SAME_INSTANT_ENABLE, "true");
+    }
     return HoodieSparkSqlWriter.getBulkInsertRowConfig(writerSchema != HoodieSchema.NULL_SCHEMA ? Option.of(writerSchema) : Option.empty(),
         hoodieConfig, cfg.targetBasePath, cfg.targetTableName);
   }
@@ -1024,32 +1030,30 @@ public class StreamSync implements Serializable, Closeable {
       WriteClientWriteResult writeClientWriteResult = writeToSink(inputBatch, instantTime, useRowWriter, metaClient);
       Map<String, List<String>> partitionToReplacedFileIds = writeClientWriteResult.getPartitionToReplacedFileIds();
       JavaRDD<WriteStatus> writeStatusRDD = writeClientWriteResult.getWriteStatusRDD();
-      Option<JavaRDD<WriteStatus>> errorTableWriteStatusRDDOpt = Option.empty();
-      if (errorTableWriter.isPresent() && isErrorTableWriteUnificationEnabled) {
-        errorTableWriteStatusRDDOpt = errorTableWriter.map(w -> w.upsert(instantTime, getLatestCommittedInstant()));
-      }
-
-      Map<String, String> checkpointCommitMetadata = extractCheckpointMetadata(inputBatch, props, writeClient.getConfig().getWriteVersion().versionCode(), cfg);
       AtomicLong totalSuccessfulRecords = new AtomicLong(0);
-      Option<String> latestCommittedInstant = getLatestCommittedInstant();
-      String commitActionType = CommitUtils.getCommitActionType(cfg.operation, HoodieTableType.valueOf(cfg.tableType));
-
-      // Pre-commit orchestration (issue #18750): the legacy HoodieStreamerWriteStatusValidator
-      // ran inside writeClient.commit() via the WriteStatusValidator callback and combined three
-      // concerns — count records, commit the error table, and gate on write errors. Each is now
-      // an explicit step here before writeClient.commit(), so the writer no longer receives a
-      // callback. Step order is deliberate (see comments below).
-      //
-      // The RDD is cached once and the write statuses are collected once on the driver. Both the
-      // count/error-logging steps and writeClient.commit() consume the materialized partitions
-      // rather than re-evaluating the upstream DAG. shouldUnpersist tracks whether we engaged the
-      // cache here so the finally block knows to release it.
       boolean shouldUnpersist = writeStatusRDD.getStorageLevel().equals(StorageLevel.NONE());
       if (shouldUnpersist) {
         writeStatusRDD.cache();
       }
       boolean success;
       try {
+        Option<JavaRDD<WriteStatus>> errorTableWriteStatusRDDOpt = Option.empty();
+        if (errorTableWriter.isPresent() && isErrorTableWriteUnificationEnabled) {
+          errorTableWriteStatusRDDOpt = errorTableWriter.map(w -> w.upsert(instantTime, getLatestCommittedInstant()));
+        }
+
+        Map<String, String> checkpointCommitMetadata = extractCheckpointMetadata(inputBatch, props, writeClient.getConfig().getWriteVersion().versionCode(), cfg);
+        Option<String> latestCommittedInstant = getLatestCommittedInstant();
+        String commitActionType = CommitUtils.getCommitActionType(cfg.operation, HoodieTableType.valueOf(cfg.tableType));
+
+        // Pre-commit orchestration (issue #18750): counting records, committing the error table and
+        // gating on write errors are explicit steps here, before writeClient.commit(), and the writer
+        // receives no write-status callback. Step order is deliberate (see comments below).
+        //
+        // The RDD is cached once and the write statuses are collected once on the driver. Both the
+        // count/error-logging steps and writeClient.commit() consume the materialized partitions
+        // rather than re-evaluating the upstream DAG. shouldUnpersist tracks whether we engaged the
+        // cache here so the finally block knows to release it.
         List<WriteStatus> writeStatuses = writeStatusRDD.collect();
         boolean validatorsConfigured = !StringUtils.isNullOrEmpty(props.getString(
             HoodiePreCommitValidatorConfig.VALIDATOR_CLASS_NAMES.key(),
@@ -1454,6 +1458,10 @@ public class StreamSync implements Serializable, Closeable {
             .withRecordMergeImplClasses(cfg.recordMergeImplClasses)
             .forTable(cfg.targetTableName)
             .withProps(props);
+    if (startCommitBeforeTransformer) {
+      // The row write replaces the inflight file already created for the transformer.
+      builder.withAllowMultiWriteOnSameInstant(true);
+    }
     // Merge strategy id can be NULL.
     if (!StringUtils.isNullOrEmpty(cfg.recordMergeStrategyId)) {
       builder.withRecordMergeStrategyId(cfg.recordMergeStrategyId);

@@ -32,7 +32,7 @@ import org.apache.spark.sql.SparkSession;
  * A {@link Transformer} that can be given the instant the round writes to.
  *
  * <p>With {@code hoodie.streamer.start.commit.before.transformer} on, the streamer starts the commit (the instant is
- * REQUESTED and, under LAZY failed-writes cleaning, has a heartbeat) before it transforms, and calls
+ * INFLIGHT and, under LAZY failed-writes cleaning, has a heartbeat) before it transforms, and calls
  * {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)} with that instant.
  * With the flag off the streamer calls the plain {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties)}
  * before any instant exists.
@@ -47,7 +47,7 @@ public interface InstantAwareTransformer extends Transformer {
    * @param sparkSession Spark Session
    * @param rowDataset   Source DataSet
    * @param properties   Config properties
-   * @param instantTime  the REQUESTED instant of the round
+   * @param instantTime  the INFLIGHT instant of the round
    * @return Transformed Dataset
    */
   @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)

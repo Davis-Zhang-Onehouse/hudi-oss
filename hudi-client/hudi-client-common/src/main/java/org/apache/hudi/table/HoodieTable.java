@@ -779,7 +779,10 @@ public abstract class HoodieTable<T, I, K, O> implements Serializable {
    * Returns the possible invalid data file name with given marker files.
    */
   protected Set<String> getInvalidDataPaths(WriteMarkers markers) throws IOException {
-    return markers.createdAndMergedDataPaths(context, config.getFinalizeWriteParallelism());
+    // Managed blobs have rollback markers but are not data-file write stats.
+    return markers.createdAndMergedDataPaths(context, config.getFinalizeWriteParallelism()).stream()
+        .filter(path -> !path.startsWith(HoodieTableMetaClient.BLOB_FOLDER_NAME + "/"))
+        .collect(Collectors.toSet());
   }
 
   /**

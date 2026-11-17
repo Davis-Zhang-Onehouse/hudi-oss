@@ -32,6 +32,7 @@ import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.SourceContracts;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobCopyTransformer;
+import org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector;
 import org.apache.hudi.utilities.sources.blob.BlobTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
@@ -44,6 +45,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -51,10 +53,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TestUnstructuredSourceContract {
 
   private static final String START_COMMIT = HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key();
+  private static final String INJECTOR = HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key();
   private static final String CODEC = HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME.key();
   private static final String BLOOM = HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED.key();
   private static final String RECORD_KEY = KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key();
   private static final String KEY_GENERATOR = HoodieWriteConfig.KEYGENERATOR_CLASS_NAME.key();
+  private static final String MARKERS = HoodieWriteConfig.MARKERS_TYPE.key();
+  private static final String ROLLBACK = HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE.key();
   private static final String BLOB_KEY = "source_path_sha,source_modification_time,source_file_size";
   private static final String EMBEDDING_KEY = BLOB_KEY + ",modality,chunk_id";
 
@@ -106,11 +111,21 @@ class TestUnstructuredSourceContract {
     Map<String, String> blob = new TreeMap<>();
     blob.put(START_COMMIT, "true");
     blob.put(RECORD_KEY, BLOB_KEY);
+    blob.put(MARKERS, "TIMELINE_SERVER_BASED");
+    blob.put(ROLLBACK, "true");
+    blob.put(INJECTOR, BlobParquetConfigInjector.class.getName());
     blob.put(CODEC, "uncompressed");
     blob.put(BLOOM, "false");
     UnstructuredSourceContract contract = contract("blob");
     assertEquals(blob, settingsOfAnEmptyJob(contract));
     assertKeyGenerators(contract);
+
+    TypedProperties markersOff = mode("blob");
+    markersOff.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    markersOff.setProperty(MARKERS, "DIRECT");
+    TypedProperties merged = contract.requiredSettings(markersOff).apply(markersOff);
+    assertEquals("DIRECT", merged.getString(MARKERS), "with out-of-line markers off, the markers are the job's");
+    assertFalse(merged.containsKey(ROLLBACK));
 
     TypedProperties own = mode("blob");
     own.setProperty(CODEC, "zstd");
@@ -173,7 +188,10 @@ class TestUnstructuredSourceContract {
       props.setProperty(RECORD_KEY, "blob".equals(mode) ? BLOB_KEY : EMBEDDING_KEY);
       props.setProperty(KEY_GENERATOR, ComplexKeyGenerator.class.getName());
       props.setProperty(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key(), "source_file_extension");
+      props.setProperty(MARKERS, "TIMELINE_SERVER_BASED");
+      props.setProperty(ROLLBACK, "true");
       if ("blob".equals(mode)) {
+        props.setProperty(INJECTOR, BlobParquetConfigInjector.class.getName());
         props.setProperty(CODEC, "uncompressed");
         props.setProperty(BLOOM, "false");
       }
@@ -189,6 +207,7 @@ class TestUnstructuredSourceContract {
   @Test
   void jobChecksRunWithTheMerge() {
     String[][] cases = {
+        {HoodieWriteConfig.WRITE_TABLE_VERSION.key(), "6", "UnstructuredDataSource (mode blob) refuses " + HoodieWriteConfig.WRITE_TABLE_VERSION.key() + "=6"},
         {EmbeddingTableConfig.MODE.key(), EmbeddingTableConfig.MODE_PREP_ONLY,
             "UnstructuredDataSource (mode blob) refuses hoodie.unstructured.embedding.mode=prep_only"},
     };
@@ -213,6 +232,11 @@ class TestUnstructuredSourceContract {
     startCommit.setProperty(START_COMMIT, "false");
     assertEquals("UnstructuredDataSource (mode blob) requires " + START_COMMIT + "=true, configured: false",
         refusal(contract("blob"), startCommit));
+    TypedProperties injector = new TypedProperties();
+    injector.setProperty(INJECTOR, "com.example.JobInjector");
+    assertEquals("UnstructuredDataSource (mode blob) requires " + INJECTOR + "=" + BlobParquetConfigInjector.class.getName()
+        + " (a job's own injector goes under " + BlobParquetConfigInjector.DELEGATE_CLASS + ", and runs first), configured: "
+        + "com.example.JobInjector", refusal(contract("blob"), injector));
     TypedProperties blobKey = new TypedProperties();
     blobKey.setProperty(RECORD_KEY, BLOB_KEY);
     assertEquals("UnstructuredDataSource (mode embedding) requires " + RECORD_KEY + "=" + EMBEDDING_KEY + " (these fields, in this order),"

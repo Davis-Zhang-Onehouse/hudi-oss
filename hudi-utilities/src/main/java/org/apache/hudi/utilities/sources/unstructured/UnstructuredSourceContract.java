@@ -32,6 +32,7 @@ import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobSourceSetup;
 import org.apache.hudi.utilities.transform.Transformer;
+import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter;
 
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.SparkSession;
@@ -76,7 +77,8 @@ public class UnstructuredSourceContract implements SourceContract {
   /**
    * The settings the job runs with: the round's instant handed to the job's transformer, which writes every row under it
    * ({@code hoodie.streamer.start.commit.before.transformer=true}); the record key of the job's table
-   * ({@link UnstructuredMode#keyColumns}) with a key generator of {@link #KEY_GENERATORS}; the job's Parquet defaults
+   * ({@link UnstructuredMode#keyColumns}) with a key generator of {@link #KEY_GENERATORS}; the blob job's out-of-line markers while
+   * {@code hoodie.write.out.of.line.markers.enable} is true; the job's Parquet config injector and defaults
    * ({@link UnstructuredMode#addSettings}); and the job's other checks ({@link #validateJob}) on the merged properties.
    *
    * @param jobProps the job's own properties, read only
@@ -88,15 +90,19 @@ public class UnstructuredSourceContract implements SourceContract {
         .requireFields(KeyGeneratorOptions.RECORDKEY_FIELD_NAME, mode.keyColumns(), HoodieTableConfig.RECORDKEY_FIELDS)
         .check(UnstructuredSourceContract::checkKeyGenerator)
         .check((sourceName, merged) -> validateJob(merged));
+    if (mode == UnstructuredMode.BLOB) {
+      settings = OutOfLineWriter.requireMarkers(settings, jobProps);
+    }
     return mode.addSettings(settings).build();
   }
 
   /**
    * Reads the job and the cloud, refuses a key of the other cloud, and validates the job's other properties
-   * ({@link BlobSourceSetup#validate}); returns {@code props} unchanged. The streamer runs it with the merge, before it builds
-   * anything or creates the table, and the source again as it is built: one copy of the checks.
+   * ({@link BlobSourceSetup#validate}), the table-version floor among them; returns {@code props} unchanged. The streamer runs it
+   * with the merge, before it builds anything or creates the table, and the source again as it is built: one copy of the checks.
    *
    * @throws IllegalArgumentException          naming the setting and {@code UnstructuredDataSource (mode ...)}
+   * @throws org.apache.hudi.exception.HoodieValidationException when the job's table version is below the tables' floor (9)
    */
   public static TypedProperties validateJob(TypedProperties props) {
     UnstructuredMode mode = UnstructuredMode.from(props);
