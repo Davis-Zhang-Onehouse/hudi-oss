@@ -75,6 +75,8 @@ public final class EmbeddingTableSchema {
   public static final String AUX_INPUT_HEIGHT = "input_height";
   /** Aux key of a row carrying {@link #PREPARED_IMAGE}: the logic that made the stored input from the source. */
   public static final String AUX_INPUT_LOGIC = "input_logic";
+  /** Aux key of a video frame row: the frame's dense kept-frame index, which is also its chunk_id. */
+  public static final String AUX_FRAME_INDEX = "frame_index";
   public static final int MAX_ERROR_CHARS = 1024;
 
   /**
