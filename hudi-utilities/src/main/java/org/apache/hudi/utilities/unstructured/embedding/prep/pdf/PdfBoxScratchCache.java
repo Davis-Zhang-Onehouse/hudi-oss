@@ -38,8 +38,8 @@ import java.io.IOException;
  *       PDFBox's document cannot swallow it and fall back to an unbounded heap cache, as it does for an {@link IOException};</li>
  *   <li>an {@link IOException} a cache buffer raises from beneath PDFBox (the JDK's file I/O: its top stack frame is outside
  *       PDFBox) is the local disk: {@link PrepPlatformException};</li>
- *   <li>an {@link IOException} PDFBox raises itself (e.g. a closed buffer) passes through unchanged and stays the file's
- *       failure.</li>
+ *   <li>an {@link IOException} PDFBox raises itself (its storage cap, a page past the cap or a closed buffer) passes through
+ *       unchanged: the cap is reached by what the file asks PDFBox to keep, and stays the file's failure.</li>
  * </ul>
  * The first platform failure is kept ({@link #failure()}), so the caller can fail the round even where PDFBox catches the
  * exception on its way out.
@@ -89,8 +89,8 @@ final class PdfBoxScratchCache implements StreamCacheCreateFunction {
   /**
    * Returns {@code e} for the caller to rethrow when PDFBox raised it itself; throws it as the recorded platform failure when it
    * came from beneath PDFBox. An exception with no stack trace cannot be told apart, and is the platform's; a JVM
-   * run with stack traces switched off ({@code -XX:-StackTraceInThrowable}) would so turn PDFBox's own IOExceptions into a
-   * platform failure, and is not supported.
+   * run with stack traces switched off ({@code -XX:-StackTraceInThrowable}) would so turn PDFBox's own cap into a platform
+   * failure, and is not supported.
    */
   private IOException classify(String message, IOException e) {
     StackTraceElement[] trace = e.getStackTrace();

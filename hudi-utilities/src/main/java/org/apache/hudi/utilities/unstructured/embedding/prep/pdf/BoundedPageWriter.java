@@ -20,18 +20,54 @@ package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
 
 import java.io.Writer;
 
-/** Collects all the extracted text of one PDF page, with no size bound, for the streaming chunk packer. */
+/**
+ * The stripper's output for one page, keeping at most {@code maxChars} chars (first check):
+ * the rest is dropped at a code-point boundary and the page is marked truncated.
+ */
 final class BoundedPageWriter extends Writer {
-  private final StringBuilder text = new StringBuilder();
 
-  @Override
-  public void write(char[] buffer, int offset, int length) {
-    text.append(buffer, offset, length);
+  private final int maxChars;
+  private final StringBuilder text = new StringBuilder();
+  private boolean truncated;
+
+  BoundedPageWriter(int maxChars) {
+    this.maxChars = maxChars;
   }
 
   @Override
-  public void write(String value, int offset, int length) {
-    text.append(value, offset, offset + length);
+  public void write(char[] buffer, int offset, int length) {
+    if (truncated) {
+      return;
+    }
+    int room = maxChars - text.length();
+    if (length <= room) {
+      text.append(buffer, offset, length);
+      return;
+    }
+    int keep = room;
+    if (keep > 0 && Character.isHighSurrogate(buffer[offset + keep - 1])) {
+      keep--;                                          // never keep half of a surrogate pair
+    }
+    text.append(buffer, offset, keep);
+    truncated = true;
+  }
+
+  @Override
+  public void write(String s, int offset, int length) {
+    if (truncated) {
+      return;
+    }
+    int room = maxChars - text.length();
+    if (length <= room) {
+      text.append(s, offset, offset + length);
+      return;
+    }
+    int keep = room;
+    if (keep > 0 && Character.isHighSurrogate(s.charAt(offset + keep - 1))) {
+      keep--;
+    }
+    text.append(s, offset, offset + keep);
+    truncated = true;
   }
 
   @Override
@@ -44,5 +80,9 @@ final class BoundedPageWriter extends Writer {
 
   String text() {
     return text.toString();
+  }
+
+  boolean truncated() {
+    return truncated;
   }
 }

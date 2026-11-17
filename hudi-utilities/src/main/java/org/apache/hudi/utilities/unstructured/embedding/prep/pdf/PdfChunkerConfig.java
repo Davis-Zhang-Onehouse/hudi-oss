@@ -24,7 +24,12 @@ import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.text.Tokenizer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Arrays;
 import java.util.IllformedLocaleException;
+import java.util.List;
 import java.util.Locale;
 
 import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.CHUNK_MAX_TOKENS;
@@ -32,6 +37,14 @@ import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableCon
 import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.CHUNK_NORMALIZE_DEHYPHENATE;
 import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.CHUNK_SENTENCE_LOCALE;
 import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.CHUNK_WINDOW_MAX_CHARS;
+import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.PDF_MAX_DECODED_STREAM_BYTES;
+import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.PDF_MAX_GRAPHICS_DEPTH;
+import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.PDF_MAX_INPUT_BYTES;
+import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.PDF_MAX_PAGES;
+import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.PDF_MAX_PAGE_CHARS;
+import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.PDF_MAX_PAGE_FONT_BYTES;
+import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.PDF_MAX_PAGE_GLYPHS;
+import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.PDF_PREFIX;
 
 /**
  * The validated chunker configuration plus the resolved {@link Tokenizer}, built from the
@@ -40,11 +53,16 @@ import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableCon
  */
 public final class PdfChunkerConfig {
 
+  private static final Logger LOG = LoggerFactory.getLogger(PdfChunkerConfig.class);
   /** OpenAI's per-input limit is 8192; JTokkit lists 8191, the stricter value. */
   static final int MAX_TOKENS_UPPER = 8191;
   static final int MAX_TOKENS_LOWER = 16;
   static final int WINDOW_LOWER = 256;
   static final int WINDOW_UPPER = 65_536;
+  static final int MAX_GRAPHICS_DEPTH_LOWER = 16;
+  /** Every {@code hoodie.unstructured.pdf.*} key; any other key under that prefix is a configuration error. */
+  static final List<String> PDF_KEYS = Arrays.asList(PDF_MAX_INPUT_BYTES.key(), PDF_MAX_PAGES.key(), PDF_MAX_PAGE_CHARS.key(),
+      PDF_MAX_PAGE_GLYPHS.key(), PDF_MAX_DECODED_STREAM_BYTES.key(), PDF_MAX_PAGE_FONT_BYTES.key(), PDF_MAX_GRAPHICS_DEPTH.key());
 
   private final Tokenizer tokenizer;
   private final int maxTokens;
@@ -52,9 +70,18 @@ public final class PdfChunkerConfig {
   private final int maxWords;
   private final int windowChars;
   private final Locale locale;
+  private final long maxInputBytes;
+  private final int maxPages;
+  private final int maxPageChars;
+  private final int maxPageGlyphs;
+  private final long maxDecodedStreamBytes;
+  private final long maxPageFontBytes;
+  private final int maxGraphicsDepth;
+  private final boolean aboveEnvelope;
 
   private PdfChunkerConfig(TypedProperties props, Tokenizer tokenizer) {
     this.tokenizer = tokenizer;
+    rejectUnknownPdfKeys(props);
     EmbeddingTableConfig table = EmbeddingTableConfig.from(props);
     this.maxTokens = range(CHUNK_MAX_TOKENS.key(), table.chunkMaxTokens(), MAX_TOKENS_LOWER, MAX_TOKENS_UPPER);
     this.overlapTokens = table.chunkOverlapTokens();
@@ -70,6 +97,39 @@ public final class PdfChunkerConfig {
     if (!dehyphenate.equalsIgnoreCase("false")) {
       throw new IllegalArgumentException("Config " + CHUNK_NORMALIZE_DEHYPHENATE.key() + "=" + dehyphenate
           + ": only false is supported");
+    }
+    this.maxInputBytes = positive(PDF_MAX_INPUT_BYTES.key(),
+        longValue(props, PDF_MAX_INPUT_BYTES, EmbeddingTableConfig.DEFAULT_PDF_MAX_INPUT_BYTES));
+    this.maxPages = (int) positive(PDF_MAX_PAGES.key(), intValue(props, PDF_MAX_PAGES, EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGES));
+    this.maxPageChars = intValue(props, PDF_MAX_PAGE_CHARS, EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_CHARS);
+    if (maxPageChars < windowChars) {
+      throw invalid(PDF_MAX_PAGE_CHARS.key(), maxPageChars, ">= " + CHUNK_WINDOW_MAX_CHARS.key() + " (" + windowChars + ")");
+    }
+    this.maxPageGlyphs = intValue(props, PDF_MAX_PAGE_GLYPHS, EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_GLYPHS);
+    if (maxPageGlyphs < maxPageChars) {
+      throw invalid(PDF_MAX_PAGE_GLYPHS.key(), maxPageGlyphs, ">= " + PDF_MAX_PAGE_CHARS.key() + " (" + maxPageChars + ")");
+    }
+    this.maxDecodedStreamBytes = positive(PDF_MAX_DECODED_STREAM_BYTES.key(),
+        longValue(props, PDF_MAX_DECODED_STREAM_BYTES, EmbeddingTableConfig.DEFAULT_PDF_MAX_DECODED_STREAM_BYTES));
+    this.maxPageFontBytes = positive(PDF_MAX_PAGE_FONT_BYTES.key(),
+        longValue(props, PDF_MAX_PAGE_FONT_BYTES, EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_FONT_BYTES));
+    this.maxGraphicsDepth = intValue(props, PDF_MAX_GRAPHICS_DEPTH, EmbeddingTableConfig.DEFAULT_PDF_MAX_GRAPHICS_DEPTH);
+    if (maxGraphicsDepth < MAX_GRAPHICS_DEPTH_LOWER) {
+      throw invalid(PDF_MAX_GRAPHICS_DEPTH.key(), maxGraphicsDepth, ">= " + MAX_GRAPHICS_DEPTH_LOWER);
+    }
+    // every memory cap above its benchmarked default leaves the envelope
+    this.aboveEnvelope = maxInputBytes > EmbeddingTableConfig.DEFAULT_PDF_MAX_INPUT_BYTES
+        || maxPages > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGES
+        || maxPageChars > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_CHARS
+        || maxPageGlyphs > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_GLYPHS
+        || maxDecodedStreamBytes > EmbeddingTableConfig.DEFAULT_PDF_MAX_DECODED_STREAM_BYTES
+        || maxPageFontBytes > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_FONT_BYTES
+        || maxGraphicsDepth > EmbeddingTableConfig.DEFAULT_PDF_MAX_GRAPHICS_DEPTH;
+    if (aboveEnvelope) {
+      LOG.warn("PDF caps above the benchmarked envelope ({}={}, {}={}, {}={}, {}={}, {}={}, {}={}, {}={}): memory is not qualified "
+          + "for such files", PDF_MAX_INPUT_BYTES.key(), maxInputBytes, PDF_MAX_PAGES.key(), maxPages,
+          PDF_MAX_PAGE_CHARS.key(), maxPageChars, PDF_MAX_PAGE_GLYPHS.key(), maxPageGlyphs, PDF_MAX_DECODED_STREAM_BYTES.key(),
+          maxDecodedStreamBytes, PDF_MAX_PAGE_FONT_BYTES.key(), maxPageFontBytes, PDF_MAX_GRAPHICS_DEPTH.key(), maxGraphicsDepth);
     }
   }
 
@@ -133,6 +193,53 @@ public final class PdfChunkerConfig {
     return locale;
   }
 
+  public long maxInputBytes() {
+    return maxInputBytes;
+  }
+
+  public int maxPages() {
+    return maxPages;
+  }
+
+  public int maxPageChars() {
+    return maxPageChars;
+  }
+
+  public int maxPageGlyphs() {
+    return maxPageGlyphs;
+  }
+
+  public long maxDecodedStreamBytes() {
+    return maxDecodedStreamBytes;
+  }
+
+  /** Aggregate decoded font bytes charged per font dictionary on one page. */
+  public long maxPageFontBytes() {
+    return maxPageFontBytes;
+  }
+
+  public int maxGraphicsDepth() {
+    return maxGraphicsDepth;
+  }
+
+  /** Whether any {@code pdf.max.*} cap exceeds its benchmarked default (a WARN was logged). */
+  public boolean aboveEnvelope() {
+    return aboveEnvelope;
+  }
+
+  /**
+   * Refuses unknown PDF keys that extraction would otherwise ignore. A change to a valid preprocessing setting is not detected;
+   * use a new table for a different preprocessing style.
+   */
+  private static void rejectUnknownPdfKeys(TypedProperties props) {
+    for (String key : props.stringPropertyNames()) {
+      if (key.startsWith(PDF_PREFIX) && !PDF_KEYS.contains(key)) {
+        throw new IllegalArgumentException("Unknown config " + key + " (known " + PDF_PREFIX + "* keys: "
+            + String.join(", ", PDF_KEYS) + ")");
+      }
+    }
+  }
+
   private static int intValue(TypedProperties props, ConfigProperty<?> property, int defaultValue) {
     String raw = ConfigUtils.getStringWithAltKeys(props, property, String.valueOf(defaultValue));
     try {
@@ -142,9 +249,25 @@ public final class PdfChunkerConfig {
     }
   }
 
+  private static long longValue(TypedProperties props, ConfigProperty<?> property, long defaultValue) {
+    String raw = ConfigUtils.getStringWithAltKeys(props, property, String.valueOf(defaultValue));
+    try {
+      return Long.parseLong(raw);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("Config " + property.key() + " must be an integer, got '" + raw + "'", e);
+    }
+  }
+
   private static int range(String key, int value, int lower, int upper) {
     if (value < lower || value > upper) {
       throw invalid(key, value, "in " + lower + ".." + upper);
+    }
+    return value;
+  }
+
+  private static long positive(String key, long value) {
+    if (value <= 0) {
+      throw invalid(key, value, "> 0");
     }
     return value;
   }

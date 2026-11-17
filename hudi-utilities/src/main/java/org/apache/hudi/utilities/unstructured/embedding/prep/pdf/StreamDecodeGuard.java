@@ -1,0 +1,861 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
+
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PrepFailures;
+import org.apache.hudi.utilities.unstructured.embedding.source.PrepPlatformException;
+
+import org.apache.pdfbox.contentstream.PDContentStream;
+import org.apache.pdfbox.cos.COSArray;
+import org.apache.pdfbox.cos.COSBase;
+import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSObject;
+import org.apache.pdfbox.cos.COSObjectKey;
+import org.apache.pdfbox.cos.COSStream;
+import org.apache.pdfbox.filter.Filter;
+import org.apache.pdfbox.filter.FilterFactory;
+import org.apache.pdfbox.io.RandomAccessInputStream;
+import org.apache.pdfbox.io.RandomAccessRead;
+import org.apache.pdfbox.pdfparser.PDFStreamParser;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDResources;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.util.Matrix;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Consumer;
+
+/**
+ * The decoded-size pre-check of the in-JVM page source: before a page is extracted, decodes once, through a
+ * counting sink, exactly the streams PDFBox 3.0.8 text extraction reads for that page — content streams, form XObjects
+ * (recursively, levels 1..50), and the fonts named in {@code /Font} or an {@code /ExtGState}'s {@code /Font}: their font
+ * files, {@code /ToUnicode}, a CMap {@code /Encoding}, Type0 descendants' font files and {@code /CIDToGIDMap}, and every
+ * Type3 {@code /CharProcs} entry.
+ *
+ * <p>Only the resources the content draws are checked, as only those are read by PDFBox: the forms named by a
+ * {@code Do}, the fonts named by a {@code Tf} and the ExtGStates named by a {@code gs} in the page's /Contents (resolved in
+ * {@link PDPage#getResources()}, so inherited resources are covered when drawn) and, recursively, in each drawn form
+ * (resolved in the form's own /Resources, or in its caller's when it has none, as PDFStreamEngine does). An entry a
+ * page lists but never draws, such as an oversized form or font shared through inherited resources, does not fail the
+ * page. The names come from PDFBox's own content parser ({@link DrawnResources#collect}), run over the page (the same
+ * /Contents sequence extraction parses) and over each drawn form, after this guard has checked those streams: the parse
+ * is the one extraction does next, so no name PDFBox resolves is missed. It allocates what that extraction parse would.
+ * The structure caps of the pre-scan are evaluated on the guard's own decoding and tokenization, which in some malformed
+ * content differ from what PDFStreamParser reads (see {@link StreamStructureScanner}); for such content the parse can
+ * build more than those caps allow, as extraction itself would. A parse that fails, or a form whose names were not
+ * kept, checks every entry of the dictionary, as before.
+ *
+ * <ul>
+ *   <li>a stream decoding to more than {@code maxDecodedBytes} fails the page with {@code DECODE_LIMIT}, and so do, without
+ *       decoding, an image codec ({@code DCT}, {@code JPX}, {@code JBIG2}, {@code CCITTFax}) in a checked stream and a
+ *       Flate/LZW predictor whose {@code /DecodeParms} row exceeds {@value #MAX_PREDICTOR_ROW_BYTES} bytes (PDFBox allocates
+ *       two such rows before the first byte is decoded);</li>
+ *   <li>a stream that fails to decode for any other reason is skipped, as PDFBox skips it: PDFBox marks a font whose
+ *       font file, ToUnicode, CMap encoding, CIDToGIDMap or CharProc fails to decode damaged and never materialises
+ *       that stream, leaves out a /Contents stream that fails to decode ("malformed substream of content stream
+ *       skipped"), and only warns when a form drawn by {@code Do} fails; the page scanner forgets the bytes such a
+ *       /Contents stream fed it. A page that loses a /Contents stream or a drawn form this way is logged once at WARN
+ *       with the page number and the skipped streams, since its extracted text may be incomplete;</li>
+ *   <li>more than {@value #MAX_STREAMS_PER_PAGE} distinct unchecked non-CharProc streams on one page, or more than
+ *       {@value #MAX_CHAR_PROCS_PER_FONT} CharProcs in one Type3 font, fail the page with {@code PAGE_ERROR} — a cap never
+ *       silently skips;</li>
+ *   <li>indirect streams are cached per document by {@link COSObjectKey} in a PASSED, a FAILED and an UNDECODABLE set
+ *       bounded by the streams visited; a form is re-expanded only when reached at a shallower level than
+ *       before.</li>
+ * </ul>
+ * Every checked stream PDFBox parses is also pre-scanned, while it is decoded (and read raw when unfiltered), by a
+ * {@link StreamStructureScanner} chosen by its {@link Kind}: a content stream, form or CharProc for the operands PDFBox
+ * keeps between operators, the elements of one array operand and the bytes of one string or inline-image body (held to
+ * {@code maxDecodedBytes} even in an unfiltered stream, as PDFBox copies such a body onto the heap), a ToUnicode or CMap
+ * encoding for its bfrange span, an embedded Type1 font file for its declared /Subrs count (only /Subrs: fontbox's
+ * readCharStrings does not preallocate by the declared /CharStrings count). A scanner past its cap fails the page with
+ * {@code DECODE_LIMIT} (structures that expand while PARSED pass the decoded-size cap). The streams of a
+ * page's /Contents array are scanned as the one sequence PDFBox parses: one operand scanner, a newline fed after each stream
+ * (PDPage's DELIMITER), every stream scanned on every page that lists it, and nothing cached from such a scan, because
+ * its outcome depends on its neighbours. PDFBox decodes every filtered stream of a /Contents array onto the heap and
+ * holds them together while the page is parsed, so their decoded lengths, one per listing, share {@code maxDecodedBytes}
+ * too.
+ *
+ * Heap-copied font streams also share a page-local decoded-byte budget. Each indirect font dictionary charges once
+ * per page, while direct dictionaries charge per occurrence: each time the walk of a drawn resource dictionary reaches
+ * one (two forms selecting it through one shared dictionary charge twice, as PDFBox builds a copy for each). Distinct
+ * dictionaries sharing a stream charge separately;
+ * cached checks charge again for each dictionary and page. Aggregate refusals are never cached as stream failures.
+ * Repeated per-use materialization from content operations is outside this static resource admission graph.
+ * Type3 own Resources are outside this admission graph; CharProc checks remain unchanged.
+ *
+ * Multi-filter chains pass through temp files capped at {@code maxDecodedBytes} in the staging dir; heap use is one
+ * buffer. A temp file that cannot be created, written or read back is the executor's local disk, not the page: it is a
+ * {@link PrepPlatformException} ({@link ScratchFiles}), never a {@code PAGE_ERROR}, and fails the round (class P).
+ * One instance per document, used by one thread.
+ */
+final class StreamDecodeGuard {
+
+  private static final Logger LOG = LoggerFactory.getLogger(StreamDecodeGuard.class);
+
+  static final int MAX_STREAMS_PER_PAGE = 4096;
+  static final int MAX_CHAR_PROCS_PER_FONT = 1024;
+  /** PDFBox stops expanding forms below this nesting level, so deeper forms are never decoded by it. */
+  static final int MAX_FORM_LEVEL = 50;
+  /**
+   * Drawn-resource names kept for cached forms per document (each cached form counts at least 1); a form whose names
+   * were not kept checks every resource when it is met again.
+   */
+  static final int MAX_CACHED_DRAWN_NAMES = 65_536;
+  /** Skipped stream keys named in one page's WARN line. */
+  static final int MAX_LOGGED_SKIPS = 8;
+  /** Characters of one decode error kept in that line. */
+  static final int MAX_LOGGED_ERROR_CHARS = 160;
+  private static final int BUFFER = 64 * 1024;
+  /** Filters that run PDFBox's Predictor, which allocates two rows sized from /DecodeParms before decoding. */
+  private static final Set<COSName> PREDICTOR_FILTERS = new HashSet<>(Arrays.asList(COSName.FLATE_DECODE,
+      COSName.FLATE_DECODE_ABBREVIATION, COSName.LZW_DECODE, COSName.LZW_DECODE_ABBREVIATION));
+  /** Largest predictor row accepted; a legitimate content, font or CMap stream needs a few KiB at most. */
+  static final int MAX_PREDICTOR_ROW_BYTES = 1 << 20;
+  /** Image codecs allocate whole rasters before a byte reaches a sink; none is legitimate in a checked stream. */
+  private static final Set<COSName> IMAGE_CODECS = new HashSet<>(Arrays.asList(COSName.DCT_DECODE,
+      COSName.DCT_DECODE_ABBREVIATION, COSName.JPX_DECODE, COSName.JBIG2_DECODE, COSName.CCITTFAX_DECODE,
+      COSName.CCITTFAX_DECODE_ABBREVIATION));
+
+  private final long maxDecodedBytes;
+  private final long maxPageFontBytes;
+  private final File tempDir;
+  /** What PDFBox parses a stream's decoded bytes as; picks the structure pre-scan. */
+  enum Kind {
+    CONTENT, CMAP, TYPE1,
+    /**
+     * Not pre-scanned, but copied onto the heap whole, filtered or not: CIDToGIDMap (PDCIDFont.readCIDToGIDMap)
+     * and FontFile2/FontFile3, whose views fontbox's TTFParser and CFFParser copy into one byte[].
+     */
+    OPAQUE_COPIED
+  }
+
+  private final Map<COSObjectKey, EnumMap<Kind, Long>> passed = new HashMap<>();
+  private final Set<COSObjectKey> failed = new HashSet<>();
+  /** Streams that failed to decode for a reason other than a cap. */
+  private final Set<COSObjectKey> undecodable = new HashSet<>();
+  /** What each passed form draws, within {@link #MAX_CACHED_DRAWN_NAMES}. */
+  private final Map<COSObjectKey, DrawnResources> drawnByStream = new HashMap<>();
+  private long cachedDrawnNames;
+  private final Consumer<String> warn;
+  private long decodedStreams;
+
+  // per page
+  private int visited;
+  private Set<COSObjectKey> chargedFontObjects;
+  private Set<COSStream> chargedFontStreams;
+  private int fontVisits;
+  private FontBytes fontBytes;
+  /** Per form, per resource dictionary its names resolve in, the shallowest level it was expanded at. */
+  private Map<COSStream, Map<COSDictionary, Integer>> formLevels;
+  /** Distinct content streams (/Contents or drawn forms) skipped on this page because they cannot be decoded. */
+  private int skippedContent;
+  private Set<COSObjectKey> skippedContentKeys;
+  /** The first {@link #MAX_LOGGED_SKIPS} of them, for the log. */
+  private List<String> skippedContentNames;
+  private StreamStructureScanner.Operands pageOperands;
+  /** Decoded bytes of the filtered /Contents streams of the page so far, each listing counted. */
+  private long pageContentBytes;
+
+  StreamDecodeGuard(long maxDecodedBytes, File tempDir) {
+    this(maxDecodedBytes, EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_FONT_BYTES, tempDir);
+  }
+
+  StreamDecodeGuard(long maxDecodedBytes, long maxPageFontBytes, File tempDir) {
+    this(maxDecodedBytes, maxPageFontBytes, tempDir, LOG::warn);
+  }
+
+  /** @param warn where the once-per-page WARN about skipped undecodable content goes */
+  StreamDecodeGuard(long maxDecodedBytes, long maxPageFontBytes, File tempDir, Consumer<String> warn) {
+    this.maxDecodedBytes = maxDecodedBytes;
+    this.maxPageFontBytes = maxPageFontBytes;
+    this.tempDir = tempDir;
+    this.warn = warn;
+  }
+
+  /** Streams decoded so far (each indirect stream at most once per document). */
+  long decodedStreams() {
+    return decodedStreams;
+  }
+
+  /** Content streams whose drawn names are cached for the rest of the document. */
+  int cachedDrawnStreams() {
+    return drawnByStream.size();
+  }
+
+  /** {@link #checkPage(PDPage, int)} for a page whose number is not known; its log names no page number. */
+  void checkPage(PDPage page) {
+    checkPage(page, 0);
+  }
+
+  /**
+   * @param pageNumber the page's 1-based number in the document, for the log; 0 when not known
+   * @throws PageFailure {@code DECODE_LIMIT} or {@code PAGE_ERROR} when the page must not be extracted
+   * @throws PrepPlatformException when a temp file of the guard cannot be created, written or read back
+   */
+  void checkPage(PDPage page, int pageNumber) {
+    visited = 0;
+    pageContentBytes = 0;
+    chargedFontObjects = new HashSet<>();
+    fontVisits = 0;
+    fontBytes = new FontBytes(maxPageFontBytes);
+    formLevels = new IdentityHashMap<>();
+    skippedContent = 0;
+    skippedContentKeys = new HashSet<>();
+    skippedContentNames = new ArrayList<>();
+    try {
+      COSDictionary pageDict = page.getCOSObject();
+      COSBase contents = pageDict.getItem(COSName.CONTENTS);
+      COSBase resolved = resolve(contents);
+      pageOperands = new StreamStructureScanner.Operands("the page content", false, maxDecodedBytes);
+      if (resolved instanceof COSStream) {
+        checkStream(contents, (COSStream) resolved, false, false, Kind.CONTENT);
+      } else if (resolved instanceof COSArray) {
+        COSArray array = (COSArray) resolved;
+        for (int i = 0; i < array.size(); i++) {
+          COSBase item = array.get(i);
+          COSBase stream = resolve(item);
+          if (stream instanceof COSStream) {
+            checkStream(item, (COSStream) stream, false, false, Kind.CONTENT);
+          }
+        }
+      }
+      pageOperands.finish();
+      pageOperands = null;
+      DrawnResources drawn = drawnBy(page);
+      if (page.getResources() != null) {
+        walkResources(page.getResources().getCOSObject(), 0, drawn);
+      }
+      warnSkippedContent(pageNumber);
+    } catch (PageFailure | PrepPlatformException e) {
+      throw e;
+    } catch (IOException | RuntimeException e) {
+      throw new PageFailure(PdfFailureCode.PAGE_ERROR, "decode guard: " + e.getClass().getName() + ": " + e.getMessage(), e);
+    } finally {
+      formLevels = null;
+      skippedContentKeys = null;
+      skippedContentNames = null;
+      chargedFontObjects = null;
+      chargedFontStreams = null;
+      fontBytes = null;
+      pageOperands = null;
+    }
+  }
+
+  /**
+   * Checks the entries of {@code resources} that {@code drawn} names: forms (recursively), fonts, and ExtGState fonts.
+   */
+  private void walkResources(COSDictionary resources, int level, DrawnResources drawn) throws IOException {
+    COSDictionary xobjects = dictionary(resources.getItem(COSName.XOBJECT));
+    if (xobjects != null && level < MAX_FORM_LEVEL) {
+      for (COSName name : xobjects.keySet()) {
+        if (!drawn.draws(DrawnResources.Category.XOBJECT, name)) {
+          continue;
+        }
+        COSBase item = xobjects.getItem(name);
+        COSBase xobject = resolve(item);
+        if (xobject instanceof COSStream && COSName.FORM.equals(((COSStream) xobject).getCOSName(COSName.SUBTYPE))) {
+          visitForm(item, (COSStream) xobject, level + 1, resources);
+        }
+      }
+    }
+    COSDictionary fonts = dictionary(resources.getItem(COSName.FONT));
+    if (fonts != null) {
+      for (COSName name : fonts.keySet()) {
+        if (drawn.draws(DrawnResources.Category.FONT, name)) {
+          checkFont(fonts.getItem(name));
+        }
+      }
+    }
+    COSDictionary states = dictionary(resources.getItem(COSName.EXT_G_STATE));
+    if (states != null) {
+      for (COSName name : states.keySet()) {
+        if (!drawn.draws(DrawnResources.Category.EXT_G_STATE, name)) {
+          continue;
+        }
+        COSDictionary state = dictionary(states.getItem(name));
+        COSBase font = state == null ? null : resolve(state.getItem(COSName.FONT));
+        if (font instanceof COSArray && ((COSArray) font).size() > 0) {
+          checkFont(((COSArray) font).get(0));
+        }
+      }
+    }
+  }
+
+  /**
+   * @param callerResources the resources the {@code Do} was resolved in, which the form's names resolve in too when it
+   *                        has no /Resources key (a /Resources key that is not a dictionary resolves nothing)
+   */
+  private void visitForm(COSBase item, COSStream form, int level, COSDictionary callerResources) throws IOException {
+    COSDictionary own = dictionary(form.getItem(COSName.RESOURCES));
+    if (own == null && form.containsKey(COSName.RESOURCES)) {
+      // PDFormXObject#getResources: a /Resources that is not a dictionary gives empty resources, so nothing resolves
+      checkStream(item, form, false, false, Kind.CONTENT);
+      return;
+    }
+    COSDictionary resources = own != null ? own : callerResources;
+    Map<COSDictionary, Integer> levels = formLevels.computeIfAbsent(form, f -> new IdentityHashMap<>());
+    Integer seen = levels.get(resources);
+    if (seen != null && seen <= level) {
+      return;                                          // already expanded in these resources at this level or a shallower one
+    }
+    levels.put(resources, level);
+    DrawnResources drawn = checkStream(item, form, false, false, Kind.CONTENT);
+    if (drawn != null) {
+      walkResources(resources, level, drawn);
+    }
+  }
+
+  private void warnSkippedContent(int pageNumber) {
+    if (skippedContent == 0) {
+      return;
+    }
+    warn.accept((pageNumber > 0 ? "PDF page " + pageNumber : "A PDF page") + ": skipped " + skippedContent + " content stream(s) that cannot be decoded "
+        + skippedContentNames + (skippedContent > skippedContentNames.size() ? " ..." : "")
+        + "; text they draw is missing from this page's extraction");
+  }
+
+  private void checkFont(COSBase fontItem) throws IOException {
+    COSDictionary font = dictionary(fontItem);
+    if (font == null) {
+      return;
+    }
+    COSObjectKey key = fontItem instanceof COSObject ? ((COSObject) fontItem).getKey() : null;
+    if (key != null && !chargedFontObjects.add(key)) {
+      return;
+    }
+    if (++fontVisits > MAX_STREAMS_PER_PAGE) {
+      throw new PageFailure(PdfFailureCode.PAGE_ERROR, "more than " + MAX_STREAMS_PER_PAGE
+          + " font dictionary visits on one page");
+    }
+    // A distinct dictionary may create a distinct font copy even when it references an already-checked stream.
+    chargedFontStreams = Collections.newSetFromMap(new IdentityHashMap<>());
+    try {
+      checkFontFiles(dictionary(font.getItem(COSName.FONT_DESC)));
+      checkOptionalStream(font.getItem(COSName.TO_UNICODE), Kind.CMAP);
+      checkOptionalStream(font.getItem(COSName.ENCODING), Kind.CMAP);
+      COSBase descendants = resolve(font.getItem(COSName.DESCENDANT_FONTS));
+      if (descendants instanceof COSArray) {
+        COSArray array = (COSArray) descendants;
+        for (int i = 0; i < array.size(); i++) {
+          COSDictionary descendant = dictionary(array.get(i));
+          if (descendant != null) {
+            checkFontFiles(dictionary(descendant.getItem(COSName.FONT_DESC)));
+            checkOptionalStream(descendant.getItem(COSName.CID_TO_GID_MAP), Kind.OPAQUE_COPIED);
+          }
+        }
+      }
+      COSDictionary charProcs = dictionary(font.getItem(COSName.CHAR_PROCS));
+      if (charProcs != null) {
+        if (charProcs.size() > MAX_CHAR_PROCS_PER_FONT) {
+          throw new PageFailure(PdfFailureCode.PAGE_ERROR, "Type3 font with " + charProcs.size() + " CharProcs, more than "
+              + MAX_CHAR_PROCS_PER_FONT);
+        }
+        for (COSName name : charProcs.keySet()) {
+          COSBase item = charProcs.getItem(name);
+          COSBase proc = resolve(item);
+          if (proc instanceof COSStream) {
+            checkStream(item, (COSStream) proc, true, true, Kind.CONTENT);
+          }
+        }
+      }
+    } finally {
+      chargedFontStreams = null;
+    }
+  }
+
+  private void checkFontFiles(COSDictionary descriptor) throws IOException {
+    if (descriptor != null) {
+      checkOptionalStream(descriptor.getItem(COSName.FONT_FILE), Kind.TYPE1);
+      checkOptionalStream(descriptor.getItem(COSName.FONT_FILE2), Kind.OPAQUE_COPIED);
+      checkOptionalStream(descriptor.getItem(COSName.FONT_FILE3), Kind.OPAQUE_COPIED);
+    }
+  }
+
+  private void checkOptionalStream(COSBase item, Kind kind) throws IOException {
+    COSBase resolved = resolve(item);
+    if (resolved instanceof COSStream) {
+      checkStream(item, (COSStream) resolved, false, true, kind);
+    }
+  }
+
+  /**
+   * @return for a content stream that is not part of the page's /Contents, what it draws (null when it is skipped as
+   *     undecodable, as PDFBox draws nothing from it); null for other kinds and for the page's /Contents, whose drawn
+   *     resources the shared page scanner collects
+   */
+  private DrawnResources checkStream(COSBase item, COSStream stream, boolean charProc, boolean fontSide, Kind kind)
+      throws IOException {
+    COSObjectKey key = item instanceof COSObject ? ((COSObject) item).getKey() : stream.getKey();
+    boolean countFont = fontSide && kind != Kind.CONTENT;
+    boolean chargeDecoded = false;
+    boolean pageContent = kind == Kind.CONTENT && pageOperands != null;
+    if (key != null) {
+      if (failed.contains(key)) {
+        throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "stream " + key + " already failed the decode guard");
+      }
+      if (undecodable.contains(key)) {
+        noteSkippedContent(kind, charProc, key, null);
+        return null;                                   // skipped again, as on the page that first met it
+      }
+      EnumMap<Kind, Long> kinds = passed.get(key);
+      if (countFont && firstFontStreamVisit(stream)) {
+        if (kinds != null) {
+          fontBytes.add(kinds.values().iterator().next());
+        } else {
+          chargeDecoded = true;
+        }
+      }
+      if (!pageContent && kinds != null && kinds.containsKey(kind)) {
+        return kind == Kind.CONTENT ? drawnByStream.getOrDefault(key, DrawnResources.everything()) : null;
+      }
+    }
+    if (key == null && countFont && firstFontStreamVisit(stream)) {
+      chargeDecoded = true;
+    }
+    if (!charProc && ++visited > MAX_STREAMS_PER_PAGE) {
+      throw new PageFailure(PdfFailureCode.PAGE_ERROR, "more than " + MAX_STREAMS_PER_PAGE + " streams to check on one page");
+    }
+    StreamStructureScanner.Scanner scanner = pageContent ? pageOperands : scanner(kind, key);
+    StreamStructureScanner.Operands beforeStream = pageContent ? pageOperands.copy() : null;
+    File spool = kind == Kind.TYPE1 ? ScratchFiles.createTempFile(tempDir.toPath(), "guard-type1-", ".bin") : null;
+    long length;
+    try {
+      if (spool == null) {
+        length = decodeCounting(stream, key, scanner, kind == Kind.CONTENT, chargeDecoded);
+      } else {
+        try (OutputStream out = new BufferedOutputStream(ScratchFiles.newOutputStream(spool.toPath()), BUFFER)) {
+          length = decodeCounting(stream, key, out, false, chargeDecoded);
+        }
+        Type1FontCheck.check(spool, stream.getInt(COSName.LENGTH1), stream.getInt(COSName.LENGTH2), "stream " + key);
+      }
+      if (pageContent) {
+        pageOperands.write('\n');                    // PDPage.getContentsForRandomAccess puts a newline after each stream
+      }
+    } catch (PageFailure e) {
+      if (key != null && e.code() == PdfFailureCode.DECODE_LIMIT && !(e instanceof FontBudgetRefusal)
+          && !(pageContent && e instanceof StreamStructureScanner.Refusal)) {
+        failed.add(key);                               // a sequence-dependent refusal is not a property of the stream
+      }
+      throw e;
+    } catch (IOException e) {
+      RuntimeException round = PrepFailures.roundFailure(e);
+      if (round != null) {
+        throw round;                                   // a decoder wrapped a scratch disk failure: never the stream's
+      }
+      if (key != null) {
+        undecodable.add(key);
+      }
+      if (pageContent) {
+        pageOperands = beforeStream;                   // PDFBox parses the page without any byte of this stream
+      }
+      noteSkippedContent(kind, charProc, key, e);
+      return null;                                     // skipped, as PDFBox skips it
+    } finally {
+      delete(spool);
+    }
+    if (pageContent && !filters(stream, key).isEmpty()) {
+      pageContentBytes += length;                      // after the catch: a sum refusal is not a property of the stream
+      if (pageContentBytes > maxDecodedBytes) {
+        throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "the filtered /Contents streams of the page decode to more than "
+            + maxDecodedBytes + " bytes together");
+      }
+    }
+    if (key != null && !pageContent) {
+      passed.computeIfAbsent(key, k -> new EnumMap<>(Kind.class)).put(kind, length);
+    }
+    if (kind != Kind.CONTENT || pageContent || charProc) {
+      return null;                                     // a CharProc's names are never resolved here
+    }
+    DrawnResources drawn = drawnBy(new FormContent(stream));
+    long cost = Math.max(1, drawn.size());             // an entry with no names still holds memory
+    if (key != null && cachedDrawnNames + cost <= MAX_CACHED_DRAWN_NAMES) {
+      cachedDrawnNames += cost;
+      drawnByStream.put(key, drawn);
+    }
+    return drawn;
+  }
+
+  /**
+   * The resources {@code content} hands to Do, Tf and gs, read by PDFBox's own parser; every resource when it cannot be
+   * parsed. A scratch-disk failure is not the page's and fails the round, as in {@link #checkStream}. Called only after
+   * this guard has checked the streams it parses (decoded size; structure caps as the pre-scan tokenizes them).
+   */
+  private static DrawnResources drawnBy(PDContentStream content) {
+    try {
+      return DrawnResources.collect(new PDFStreamParser(content));
+    } catch (PrepPlatformException e) {
+      throw e;                                         // the executor's scratch disk, never the page
+    } catch (IOException e) {
+      RuntimeException round = PrepFailures.roundFailure(e);
+      if (round != null) {
+        throw round;
+      }
+      return DrawnResources.everything();
+    } catch (RuntimeException e) {
+      RuntimeException round = PrepFailures.roundFailure(e);
+      if (round != null) {
+        throw round;                                   // an unchecked wrapper around a scratch-disk failure
+      }
+      return DrawnResources.everything();
+    }
+  }
+
+  /**
+   * A form's content as PDFormXObject#getContentsForRandomAccess reads it (a view of the stream), without constructing a
+   * PDFormXObject, whose constructor writes /Type and /Subtype into the form dictionary.
+   */
+  private static final class FormContent implements PDContentStream {
+    private final COSStream stream;
+
+    FormContent(COSStream stream) {
+      this.stream = stream;
+    }
+
+    @Override
+    public InputStream getContents() throws IOException {
+      return new RandomAccessInputStream(getContentsForRandomAccess());
+    }
+
+    @Override
+    public RandomAccessRead getContentsForRandomAccess() throws IOException {
+      return stream.createView();
+    }
+
+    @Override
+    public PDResources getResources() {
+      return null;                                     // the parser reads no resources
+    }
+
+    @Override
+    public PDRectangle getBBox() {
+      return null;
+    }
+
+    @Override
+    public Matrix getMatrix() {
+      return new Matrix();
+    }
+  }
+
+  /** A /Contents stream or a drawn form PDFBox leaves out of the page; CharProcs and font streams lose no page text. */
+  private void noteSkippedContent(Kind kind, boolean charProc, COSObjectKey key, IOException cause) {
+    if (kind != Kind.CONTENT || charProc || (key != null && !skippedContentKeys.add(key))) {
+      return;                                          // a stream listed or drawn again on this page is named once
+    }
+    if (++skippedContent <= MAX_LOGGED_SKIPS) {
+      String error = cause == null ? "cannot be decoded" : cause.getClass().getSimpleName() + ": " + cause.getMessage();
+      if (error.length() > MAX_LOGGED_ERROR_CHARS) {
+        error = error.substring(0, MAX_LOGGED_ERROR_CHARS) + "...";
+      }
+      skippedContentNames.add((key == null ? "a direct stream" : "stream " + key) + " (" + error + ")");
+    }
+  }
+
+  private boolean firstFontStreamVisit(COSStream stream) {
+    if (!chargedFontStreams.add(stream)) {
+      return false;
+    }
+    if (chargedFontStreams.size() > MAX_STREAMS_PER_PAGE) {
+      throw new PageFailure(PdfFailureCode.PAGE_ERROR, "more than " + MAX_STREAMS_PER_PAGE
+          + " distinct font streams in one font dictionary");
+    }
+    return true;
+  }
+
+  private StreamStructureScanner.Scanner scanner(Kind kind, COSObjectKey key) {
+    String where = "stream " + key;
+    switch (kind) {
+      case CONTENT:
+        return new StreamStructureScanner.Operands(where, maxDecodedBytes);
+      case CMAP:
+        return new StreamStructureScanner.CMapRanges(where);
+      case TYPE1: // spooled, then checked by Type1FontCheck
+      case OPAQUE_COPIED:
+        return null;
+      default:
+        throw new UnsupportedOperationException("no pre-scan for stream kind " + kind);
+    }
+  }
+
+  /**
+   * Decodes {@code stream} into counting sinks, following PDFBox's filter-list semantics (Filter.java:241-310); the last
+   * stage feeds {@code scanner} when there is one.
+   *
+   * @param viewWhenUnfiltered whether PDFBox reads this stream unfiltered as a view on the staged file (content streams),
+   * so its raw bytes are scanned without the decoded-size cap on the whole stream; font files, CMaps and CIDToGIDMaps are
+   *                           copied onto the heap whole by PDFBox or fontbox, so they keep the cap filtered or not
+   *
+   */
+  private long decodeCounting(COSStream stream, COSObjectKey key, OutputStream scanner, boolean viewWhenUnfiltered,
+                              boolean chargeFont)
+      throws IOException {
+    List<Filter> filters = filters(stream, key);
+    decodedStreams++;
+    if (filters.isEmpty()) {                           // every checked stream is parsed or copied unfiltered too: read it raw
+      try (InputStream in = stream.createRawInputStream();
+           CountingSink out = new CountingSink(scanner, viewWhenUnfiltered ? Long.MAX_VALUE : maxDecodedBytes, key,
+               chargeFont ? fontBytes : null)) {
+        byte[] buffer = new byte[BUFFER];
+        for (int n = in.read(buffer); n >= 0; n = in.read(buffer)) {
+          out.write(buffer, 0, n);
+        }
+        return out.count;
+      }
+    }
+    for (int i = 0; i < filters.size(); i++) {
+      refuseHugePredictorRow(stream, names(stream).get(i), i, key);
+    }
+    File previous = null;
+    File next = null;
+    long finalLength = 0;
+    try {
+      for (int i = 0; i < filters.size(); i++) {
+        boolean last = i == filters.size() - 1;
+        next = last ? null : ScratchFiles.createTempFile(tempDir.toPath(), "guard-", ".bin");
+        try (InputStream in = previous == null ? stream.createRawInputStream()
+                : new BufferedInputStream(ScratchFiles.newInputStream(previous.toPath()), BUFFER);
+             CountingSink out = new CountingSink(next == null ? scanner
+                 : new BufferedOutputStream(ScratchFiles.newOutputStream(next.toPath()), BUFFER), maxDecodedBytes, key,
+                 last && chargeFont ? fontBytes : null)) {
+          filters.get(i).decode(in, out, stream, i);
+          if (last) {
+            finalLength = out.count;
+          }
+        }
+        delete(previous);
+        previous = next;
+        next = null;
+      }
+    } finally {
+      delete(previous);
+      delete(next);                                    // the intermediate of a filter that failed
+    }
+    return finalLength;
+  }
+
+  /** The filter names in the order {@link #filters} keeps them (duplicates reduced). */
+  private static List<COSName> names(COSStream stream) {
+    COSBase names = stream.getFilters();
+    List<COSName> result = new ArrayList<>();
+    if (names instanceof COSName) {
+      result.add((COSName) names);
+    } else if (names instanceof COSArray) {
+      COSArray array = (COSArray) names;
+      List<Filter> seen = new ArrayList<>();
+      for (int i = 0; i < array.size(); i++) {
+        COSName name = (COSName) array.get(i);
+        try {
+          Filter filter = FilterFactory.INSTANCE.getFilter(name);
+          if (!seen.contains(filter)) {
+            seen.add(filter);
+            result.add(name);
+          }
+        } catch (IOException e) {
+          result.add(name);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Refuses, without decoding, a Flate/LZW stage whose predictor row (computed as PDFBox's Predictor computes it, in int
+   * arithmetic) is negative or above {@link #MAX_PREDICTOR_ROW_BYTES}.
+   */
+  private static void refuseHugePredictorRow(COSStream stream, COSName filter, int index, COSObjectKey key) {
+    if (!PREDICTOR_FILTERS.contains(filter)) {
+      return;
+    }
+    COSDictionary params = decodeParams(stream, index);
+    if (params.getInt(COSName.PREDICTOR, 1) <= 1) {
+      return;
+    }
+    int colors = Math.min(params.getInt(COSName.COLORS, 1), 32);
+    int bitsPerComponent = params.getInt(COSName.BITS_PER_COMPONENT, 8);
+    int columns = params.getInt(COSName.COLUMNS, 1);
+    int row = (columns * (colors * bitsPerComponent) + 7) / 8;      // Predictor.calculateRowLength
+    long exact = ((long) columns * colors * bitsPerComponent + 7) / 8;
+    if (row < 0 || row > MAX_PREDICTOR_ROW_BYTES || exact > MAX_PREDICTOR_ROW_BYTES) {
+      throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "predictor row of stream " + key + " is " + exact
+          + " bytes, above " + MAX_PREDICTOR_ROW_BYTES + " (refused without decoding)");
+    }
+  }
+
+  /** The DecodeParms of filter {@code index}, resolved as PDFBox's Filter.getDecodeParams resolves them. */
+  private static COSDictionary decodeParams(COSStream stream, int index) {
+    COSBase filter = stream.getDictionaryObject(COSName.F, COSName.FILTER);
+    COSBase params = stream.getDictionaryObject(COSName.DP, COSName.DECODE_PARMS);
+    if (filter instanceof COSName && params instanceof COSDictionary) {
+      return (COSDictionary) params;
+    }
+    if (filter instanceof COSArray && params instanceof COSArray && index < ((COSArray) params).size()) {
+      COSBase atIndex = ((COSArray) params).getObject(index);
+      if (atIndex instanceof COSDictionary) {
+        return (COSDictionary) atIndex;
+      }
+    }
+    return new COSDictionary();
+  }
+
+  /** The stream's filters with duplicates reduced as PDFBox reduces them. */
+  private static List<Filter> filters(COSStream stream, COSObjectKey key) throws IOException {
+    COSBase names = stream.getFilters();
+    List<Filter> filters = new ArrayList<>();
+    if (names instanceof COSName) {
+      refuseImageCodec((COSName) names, key);
+      filters.add(FilterFactory.INSTANCE.getFilter((COSName) names));
+    } else if (names instanceof COSArray) {
+      COSArray array = (COSArray) names;
+      for (int i = 0; i < array.size(); i++) {
+        COSBase name = array.get(i);
+        if (!(name instanceof COSName)) {
+          throw new IOException("Forbidden type in filter array: " + (name == null ? "null" : name.getClass().getName()));
+        }
+        refuseImageCodec((COSName) name, key);
+        Filter filter = FilterFactory.INSTANCE.getFilter((COSName) name);
+        if (!filters.contains(filter)) {
+          filters.add(filter);
+        }
+      }
+    }
+    return filters;
+  }
+
+  private static void refuseImageCodec(COSName filter, COSObjectKey key) {
+    if (IMAGE_CODECS.contains(filter)) {
+      throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "image codec " + filter.getName() + " in a text-extraction stream "
+          + key + " (refused without decoding)");
+    }
+  }
+
+  private static COSBase resolve(COSBase base) {
+    return base instanceof COSObject ? ((COSObject) base).getObject() : base;
+  }
+
+  private static COSDictionary dictionary(COSBase base) {
+    COSBase resolved = resolve(base);
+    return resolved instanceof COSDictionary ? (COSDictionary) resolved : null;
+  }
+
+  private static void delete(File file) {
+    if (file != null && !file.delete() && file.exists()) {
+      file.deleteOnExit();
+    }
+  }
+
+  /** Page-local admission counter; a refusal must never be cached as a stream failure. */
+  static final class FontBytes {
+    private final long budget;
+    private long sum;
+
+    FontBytes(long budget) {
+      this.budget = budget;
+    }
+
+    void add(long bytes) {
+      if (bytes > budget - sum) {
+        String attempted = bytes > Long.MAX_VALUE - sum ? "overflow (> Long.MAX_VALUE)" : Long.toString(sum + bytes);
+        throw new FontBudgetRefusal("page font bytes budget=" + budget + " sum=" + attempted);
+      }
+      sum += bytes;
+    }
+  }
+
+  private static final class FontBudgetRefusal extends PageFailure {
+    FontBudgetRefusal(String message) {
+      super(PdfFailureCode.DECODE_LIMIT, message);
+    }
+  }
+
+  /** Counts decoded bytes, optionally passing them on; throws once more than the cap have arrived. */
+  private static final class CountingSink extends OutputStream {
+    private final OutputStream next;
+    private final long cap;
+    private final COSObjectKey key;
+    private long count;
+    private final FontBytes fontBytes;
+
+    CountingSink(OutputStream next, long cap, COSObjectKey key, FontBytes fontBytes) {
+      this.next = next;
+      this.cap = cap;
+      this.key = key;
+      this.fontBytes = fontBytes;
+    }
+
+    @Override
+    public void write(int b) throws IOException {
+      add(1);
+      if (next != null) {
+        next.write(b);
+      }
+    }
+
+    @Override
+    public void write(byte[] b, int off, int len) throws IOException {
+      add(len);
+      if (next != null) {
+        next.write(b, off, len);
+      }
+    }
+
+    private void add(long n) {
+      if (n > cap - count) {
+        throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "stream " + key + " decodes to more than " + cap + " bytes");
+      }
+      if (fontBytes != null) {
+        fontBytes.add(n);
+      }
+      count += n;
+    }
+
+    @Override
+    public void flush() throws IOException {
+      if (next != null) {
+        next.flush();
+      }
+    }
+
+    @Override
+    public void close() throws IOException {
+      if (next != null) {
+        next.close();
+      }
+    }
+  }
+}

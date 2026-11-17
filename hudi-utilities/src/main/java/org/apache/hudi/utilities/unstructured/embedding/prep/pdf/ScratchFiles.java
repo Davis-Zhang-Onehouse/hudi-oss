@@ -20,13 +20,15 @@ package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
 
 import org.apache.hudi.utilities.unstructured.embedding.source.PrepPlatformException;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * The PDF chunker's local scratch files (the staged input), whose I/O failures are the executor's
+ * The PDF chunker's local scratch files (the staged input, the decode guard's spools), whose I/O failures are the executor's
  * local disk (full, unwritable, gone), never the file being chunked: each is a {@link PrepPlatformException} (a platform failure), which
  * fails the round instead of quarantining the file, or every file on that disk. The streams are unbuffered views whose
  * failures are unchecked, so a decoder that swallows or reclassifies {@link IOException}s cannot turn them into a page failure.
@@ -34,6 +36,15 @@ import java.nio.file.Path;
 final class ScratchFiles {
 
   private ScratchFiles() {
+  }
+
+  /** A new empty temp file in {@code dir}. */
+  static File createTempFile(Path dir, String prefix, String suffix) {
+    try {
+      return Files.createTempFile(dir, prefix, suffix).toFile();
+    } catch (IOException | RuntimeException e) {
+      throw failure("cannot create a scratch file in " + dir, e);
+    }
   }
 
   /** Writes {@code path}, created or truncated. */
@@ -76,6 +87,44 @@ final class ScratchFiles {
       public void close() {
         try {
           out.close();
+        } catch (IOException e) {
+          throw failure("closing the scratch file " + path + " failed", e);
+        }
+      }
+    };
+  }
+
+  /** Reads {@code path}, a scratch file this chunker wrote. */
+  static InputStream newInputStream(Path path) {
+    InputStream in;
+    try {
+      in = Files.newInputStream(path);
+    } catch (IOException | RuntimeException e) {
+      throw failure("cannot read the scratch file " + path, e);
+    }
+    return new InputStream() {
+      @Override
+      public int read() {
+        try {
+          return in.read();
+        } catch (IOException e) {
+          throw failure("reading the scratch file " + path + " failed", e);
+        }
+      }
+
+      @Override
+      public int read(byte[] b, int off, int len) {
+        try {
+          return in.read(b, off, len);
+        } catch (IOException e) {
+          throw failure("reading the scratch file " + path + " failed", e);
+        }
+      }
+
+      @Override
+      public void close() {
+        try {
+          in.close();
         } catch (IOException e) {
           throw failure("closing the scratch file " + path + " failed", e);
         }
