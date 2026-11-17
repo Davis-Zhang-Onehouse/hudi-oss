@@ -1,0 +1,108 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.hudi.utilities.unstructured.embedding.text;
+
+/**
+ * Counts tokens the way the target embedding model would, so chunks are cut below its input limit
+ * (a configurable tokenizer computes the token count of the current chunk).
+ * Implementations need a public no-arg constructor.
+ */
+public interface Tokenizer {
+
+  int countTokens(String text);
+
+  /** Stable identity of this tokenizer; recorded in the preprocessing style text as {@code tokenizer=<id>}. */
+  String id();
+
+  /** What {@link #countTokens} counts. */
+  TokenUnit unit();
+
+  /**
+   * An end index {@code e} of {@code text} with {@code countTokens(text.substring(0, e)) <= maxTokens}, never inside a
+   * surrogate pair: {@code text.length()} when the whole text fits, 0 when no code point does. Counts need not be
+   * monotone in the prefix length (BPE), so the result is a CHECKED large end, not promised to be the largest: a binary
+   * search over code-point boundaries that only ever moves its lower bound to an end it has counted within the limit.
+   */
+  default int prefixEndWithin(String text, int maxTokens) {
+    if (text == null || text.isEmpty() || maxTokens <= 0) {
+      return 0;
+    }
+    if (countTokens(text) <= maxTokens) {
+      return text.length();
+    }
+    int fits = 0;
+    int exceeds = text.length();
+    while (true) {
+      int mid = codePointBoundary(text, (fits + exceeds) >>> 1);
+      if (mid <= fits) {
+        mid = text.offsetByCodePoints(fits, 1);
+      }
+      if (mid >= exceeds) {
+        return fits;
+      }
+      if (countTokens(text.substring(0, mid)) <= maxTokens) {
+        fits = mid;
+      } else {
+        exceeds = mid;
+      }
+    }
+  }
+
+  /**
+   * A start index {@code s} of {@code text} with {@code countTokens(text.substring(s)) <= maxTokens}, never inside a
+   * surrogate pair: 0 when the whole text fits, {@code text.length()} when no code point does. Like
+   * {@link #prefixEndWithin} a checked small start, not promised to be the smallest.
+   */
+  default int suffixStartWithin(String text, int maxTokens) {
+    if (text == null || text.isEmpty()) {
+      return 0;
+    }
+    if (maxTokens <= 0) {
+      return text.length();
+    }
+    if (countTokens(text) <= maxTokens) {
+      return 0;
+    }
+    int exceeds = 0;
+    int fits = text.length();
+    while (true) {
+      int mid = codePointBoundary(text, (exceeds + fits) >>> 1);
+      if (mid <= exceeds) {
+        mid = text.offsetByCodePoints(exceeds, 1);
+      }
+      if (mid >= fits) {
+        return fits;
+      }
+      if (countTokens(text.substring(mid)) <= maxTokens) {
+        fits = mid;
+      } else {
+        exceeds = mid;
+      }
+    }
+  }
+
+  /** {@code index}, or one char earlier when {@code index} falls between the two halves of a surrogate pair. */
+  static int codePointBoundary(String text, int index) {
+    if (index > 0 && index < text.length() && Character.isLowSurrogate(text.charAt(index))
+        && Character.isHighSurrogate(text.charAt(index - 1))) {
+      return index - 1;
+    }
+    return index;
+  }
+}
