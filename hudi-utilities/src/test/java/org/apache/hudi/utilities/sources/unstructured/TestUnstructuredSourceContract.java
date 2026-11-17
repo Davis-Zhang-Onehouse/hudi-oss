@@ -34,6 +34,7 @@ import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobCopyTransformer;
 import org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector;
 import org.apache.hudi.utilities.sources.blob.BlobTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingParquetConfigInjector;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingTableTransformer;
@@ -140,8 +141,9 @@ class TestUnstructuredSourceContract {
     Map<String, String> embedding = new TreeMap<>();
     embedding.put(START_COMMIT, "true");
     embedding.put(RECORD_KEY, EMBEDDING_KEY);
+    embedding.put(INJECTOR, EmbeddingParquetConfigInjector.class.getName());
     UnstructuredSourceContract contract = contract("embedding");
-    assertEquals(embedding, settingsOfAnEmptyJob(contract), "no injector, codec or bloom filter");
+    assertEquals(embedding, settingsOfAnEmptyJob(contract), "no codec or bloom filter");
     assertKeyGenerators(contract);
     assertEquals(BLOB_KEY, String.join(",", BlobTableSchema.KEY_COLUMNS));
     assertEquals(EMBEDDING_KEY, String.join(",", EmbeddingTableSchema.KEY_COLUMNS));
@@ -188,10 +190,11 @@ class TestUnstructuredSourceContract {
       props.setProperty(RECORD_KEY, "blob".equals(mode) ? BLOB_KEY : EMBEDDING_KEY);
       props.setProperty(KEY_GENERATOR, ComplexKeyGenerator.class.getName());
       props.setProperty(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key(), "source_file_extension");
+      props.setProperty(INJECTOR, "blob".equals(mode) ? BlobParquetConfigInjector.class.getName()
+          : EmbeddingParquetConfigInjector.class.getName());
       props.setProperty(MARKERS, "TIMELINE_SERVER_BASED");
       props.setProperty(ROLLBACK, "true");
       if ("blob".equals(mode)) {
-        props.setProperty(INJECTOR, BlobParquetConfigInjector.class.getName());
         props.setProperty(CODEC, "uncompressed");
         props.setProperty(BLOOM, "false");
       }
@@ -234,9 +237,9 @@ class TestUnstructuredSourceContract {
         refusal(contract("blob"), startCommit));
     TypedProperties injector = new TypedProperties();
     injector.setProperty(INJECTOR, "com.example.JobInjector");
-    assertEquals("UnstructuredDataSource (mode blob) requires " + INJECTOR + "=" + BlobParquetConfigInjector.class.getName()
-        + " (a job's own injector goes under " + BlobParquetConfigInjector.DELEGATE_CLASS + ", and runs first), configured: "
-        + "com.example.JobInjector", refusal(contract("blob"), injector));
+    assertEquals("UnstructuredDataSource (mode embedding) requires " + INJECTOR + "=" + EmbeddingParquetConfigInjector.class.getName()
+        + " (a job's own injector goes under " + EmbeddingParquetConfigInjector.DELEGATE_CLASS + ", and runs first), configured: "
+        + "com.example.JobInjector", refusal(contract("embedding"), injector));
     TypedProperties blobKey = new TypedProperties();
     blobKey.setProperty(RECORD_KEY, BLOB_KEY);
     assertEquals("UnstructuredDataSource (mode embedding) requires " + RECORD_KEY + "=" + EMBEDDING_KEY + " (these fields, in this order),"

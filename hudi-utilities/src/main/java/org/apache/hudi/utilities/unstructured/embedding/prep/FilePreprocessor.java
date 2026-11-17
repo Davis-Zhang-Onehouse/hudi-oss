@@ -61,6 +61,16 @@ public interface FilePreprocessor {
       throws IOException;
 
   /**
+   * Whether this preprocessor's chunks may carry a payload, a model input the embedding table stores in {@code prepared_image}
+   * (an image's or a video frame's bytes). A preprocessor that emits a payload declares it, which the shipped preprocessors'
+   * tests check; the framework does not read it.
+   * Default false: text preprocessors store no input.
+   */
+  default boolean storesInputs() {
+    return false;
+  }
+
+  /**
    * Validates this preprocessor's configuration on the DRIVER before the job reads any file, so a bad key fails the job
    * once instead of failing every file as an isolated error.
    *

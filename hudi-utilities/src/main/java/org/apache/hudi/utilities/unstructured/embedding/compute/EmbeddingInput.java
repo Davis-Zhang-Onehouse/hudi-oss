@@ -18,10 +18,15 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.compute;
 
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
+
 import java.io.Serializable;
 
 /**
- * The five-column source version key and text passed to an embedding client.
+ * One embedding-table row handed to an {@link EmbeddingClient}, with its five-column source version key. A text row carries
+ * {@code text} and no bytes. An image row (modality {@code image}) carries its STORED input, {@link #storedImage()} over the
+ * row's {@code prepared_image}, and for a {@link MultimodalEmbeddingClient} the compute flow's bounded, in-memory resize of it
+ * into the model input, {@link #image()}.
  */
 public class EmbeddingInput implements Serializable {
 
@@ -33,6 +38,9 @@ public class EmbeddingInput implements Serializable {
   private final long chunkId;
   private final String modality;
   private final String text;
+  /** The row's stored input ({@code prepared_image}); null when it has none (text rows). */
+  private final transient BlobBytesSupplier stored;
+  private final transient PreparedImageSupplier image;
 
   /** A standalone provider input without source version metadata; both version fields default to zero. */
   public EmbeddingInput(String sourcePathSha, long chunkId, String modality, String text) {
@@ -41,12 +49,35 @@ public class EmbeddingInput implements Serializable {
 
   /** An embedding row's full source version identity, in key-column order, and its prepared text. */
   public EmbeddingInput(String sourcePathSha, long sourceModificationTime, long sourceFileSize, String modality, long chunkId, String text) {
+    this(sourcePathSha, sourceModificationTime, sourceFileSize, modality, chunkId, text, null, null);
+  }
+
+  private EmbeddingInput(String sourcePathSha, long sourceModificationTime, long sourceFileSize, String modality, long chunkId,
+                         String text, BlobBytesSupplier stored, PreparedImageSupplier image) {
     this.sourcePathSha = sourcePathSha;
     this.sourceModificationTime = sourceModificationTime;
     this.sourceFileSize = sourceFileSize;
     this.chunkId = chunkId;
     this.modality = modality;
     this.text = text;
+    this.stored = stored;
+    this.image = image;
+  }
+
+  /**
+   * The input of an image row: {@code stored} opens the row's {@code prepared_image}, and {@code image} prepares the model input
+   * from it for a {@link MultimodalEmbeddingClient} (null until image compute provides one). Both version fields default to
+   * zero, as for a standalone text input.
+   */
+  public static EmbeddingInput storedImage(String sourcePathSha, long chunkId, String modality, BlobBytesSupplier stored,
+                                           PreparedImageSupplier image) {
+    return storedImage(sourcePathSha, 0L, 0L, modality, chunkId, stored, image);
+  }
+
+  /** The input of an image row with its full source version identity, in key-column order; see the overload above. */
+  public static EmbeddingInput storedImage(String sourcePathSha, long sourceModificationTime, long sourceFileSize, String modality,
+                                           long chunkId, BlobBytesSupplier stored, PreparedImageSupplier image) {
+    return new EmbeddingInput(sourcePathSha, sourceModificationTime, sourceFileSize, modality, chunkId, null, stored, image);
   }
 
   public String getSourcePathSha() {
@@ -77,6 +108,22 @@ public class EmbeddingInput implements Serializable {
   public String describeIdentity() {
     return "source_path_sha=" + sourcePathSha + " source_modification_time=" + sourceModificationTime
         + " source_file_size=" + sourceFileSize + " modality=" + modality + " chunk_id=" + chunkId;
+  }
+
+  /**
+   * Opens the row's stored input, {@code prepared_image} (each call a fresh stream the caller closes); null when the input is not
+   * a stored one (text rows).
+   */
+  public BlobBytesSupplier storedImage() {
+    return stored;
+  }
+
+  /**
+   * Prepares the resized model input of an image row from its stored input (each call prepares it again); null for text rows and
+   * while no image preparation is configured.
+   */
+  public PreparedImageSupplier image() {
+    return image;
   }
 
 }
