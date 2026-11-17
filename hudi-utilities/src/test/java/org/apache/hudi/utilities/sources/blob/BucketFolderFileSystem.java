@@ -19,6 +19,7 @@
 package org.apache.hudi.utilities.sources.blob;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RawLocalFileSystem;
@@ -64,25 +65,30 @@ public class BucketFolderFileSystem extends RawLocalFileSystem {
   @Override
   public void initialize(URI name, Configuration conf) throws IOException {
     super.initialize(name, conf);
-    this.uri = URI.create(SCHEME + "://" + (name.getAuthority() == null ? "" : name.getAuthority()) + "/");
-    this.root = new File(conf.get(ROOT));
+    this.uri = URI.create(scheme() + "://" + (name.getAuthority() == null ? "" : name.getAuthority()) + "/");
+    this.root = new File(conf.get("fs." + scheme() + ".root"));
   }
 
   /** The superclass constructor asks for the URI before {@link #initialize} has set it. */
   @Override
   public URI getUri() {
-    return uri == null ? URI.create(SCHEME + ":///") : uri;
+    return uri == null ? URI.create(scheme() + ":///") : uri;
   }
 
   @Override
   public String getScheme() {
+    return scheme();
+  }
+
+  /** The scheme this file system serves; a subclass serves another one over the same layout. */
+  protected String scheme() {
     return SCHEME;
   }
 
   @Override
   public File pathToFile(Path path) {
     URI pathUri = path.toUri();
-    if (!SCHEME.equals(pathUri.getScheme())) {
+    if (!scheme().equals(pathUri.getScheme())) {
       return super.pathToFile(path);
     }
     return new File(new File(root, pathUri.getAuthority()), pathUri.getPath());
@@ -122,4 +128,11 @@ public class BucketFolderFileSystem extends RawLocalFileSystem {
     return statuses;
   }
 
+  @Override
+  public FSDataInputStream open(Path f, int bufferSize) throws IOException {
+    SourceOpenHooks.opening(pathToFile(f).getAbsolutePath());
+    FSDataInputStream in = super.open(f, bufferSize);
+    SourceOpenHooks.opened(pathToFile(f).getAbsolutePath());
+    return in;
+  }
 }
