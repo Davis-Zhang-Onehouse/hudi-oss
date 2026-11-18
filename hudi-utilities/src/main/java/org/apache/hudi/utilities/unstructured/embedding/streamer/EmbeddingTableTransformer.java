@@ -34,6 +34,7 @@ import org.apache.hudi.utilities.unstructured.embedding.compute.ComputeCounters;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ComputeRound;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientFactory;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenizerFactory;
 
 import org.apache.spark.api.java.JavaSparkContext;
@@ -85,7 +86,7 @@ import java.util.stream.Collectors;
  * One model per embedding table: a round fills the active model's VECTOR column only. Switching the active model adds the new
  * model's column, and every row the new model writes carries NULL in the old model's column.
  * A row carrying {@code _corrupt_record} goes to the job's error table ({@code CUSTOM_TRANSFORMER_FAILURE}); with the error
- * table off a failed file or PERMANENT input fails the round. Every cache of a round is at
+ * table off a failed file, chunk or PERMANENT input fails the round. Every cache of a round is at
  * {@code hoodie.write.tagged.record.storage.level}; the source batch is released once prep has run, and the prep output, the
  * balancer's assignment and the compute output stay until the table's next round.
  */
@@ -328,7 +329,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       int parallelism = config.computeParallelism(jsc.defaultParallelism());
       ComputeCounters counters = ComputeCounters.register(jsc.sc());
       Dataset<Row> embedded = ComputeRound.embed(spark, ComputeRound.roundRobin(toEmbed, parallelism), tableSchema, model, props,
-          counters, level);
+          new BlobBytesSource(storageConf, config.prepSourceRetry()), counters, level);
       caches.outputs.add(embedded);
       LOG.info("Embedding round of {} at instant {}: model {} over {} task(s): {} row(s) embedded, {} failed for good", target,
           instant, model.getName(), parallelism, counters.getRowsEmbedded().value(), counters.getRowsPermanent().value());

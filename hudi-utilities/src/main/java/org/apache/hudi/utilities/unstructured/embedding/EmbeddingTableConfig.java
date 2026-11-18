@@ -316,9 +316,56 @@ public class EmbeddingTableConfig implements Serializable {
       .markAdvanced()
       .sinceVersion("1.3.0")
       .withDocumentation("The FilePreprocessor class for files with extension <ext>; when unset, the built-in preprocessor of "
-          + "that extension (pdf has one; other extensions have none). Replace <ext> with a file extension.");
+          + "that extension (pdf has one; png, jpg, jpeg, gif, bmp, tif and tiff map to ImageInputPreprocessor; other extensions "
+          + "have none). Replace <ext> with a file extension.");
   /** Suffix of the per-extension preprocessor class key. */
   public static final String PREPROCESSOR_CLASS_SUFFIX = ".class";
+  /**
+   * Image data prep: images whose header declares more pixels fail data prep (a quarantine entry) before any compute; default
+   * {@link #DEFAULT_PREP_IMAGE_MAX_PIXELS}. Must be positive. Part of the preprocessing style when set.
+   */
+  public static final ConfigProperty<Long> PREP_IMAGE_MAX_PIXELS = ConfigProperty
+      .key(PREP_PREFIX + "image.max.pixels")
+      .defaultValue(100000000L)
+      .markAdvanced()
+      .sinceVersion("1.3.0")
+      .withDocumentation("Image data prep: images whose header declares more pixels fail data prep (a quarantine entry) before any "
+          + "compute; default 100000000. Must be positive. Part of the preprocessing style when set.");
+  public static final long DEFAULT_PREP_IMAGE_MAX_PIXELS = 100_000_000L;
+  /**
+   * Image data prep: the most bytes read to find an image's header; an image whose header needs more fails data prep (a
+   * quarantine entry). Over a source row (random access) it counts bytes read wherever they lie in the file; over a plain stream
+   * it is the offset the memory-cached read may reach. Default {@link #DEFAULT_PREP_IMAGE_HEADER_MAX_BYTES} (1 MiB). Must be
+   * positive. Part of the preprocessing style when set.
+   */
+  public static final ConfigProperty<Long> PREP_IMAGE_HEADER_MAX_BYTES = ConfigProperty
+      .key(PREP_PREFIX + "image.header.max.bytes")
+      .defaultValue(1048576L)
+      .markAdvanced()
+      .sinceVersion("1.3.0")
+      .withDocumentation("Image data prep: the most bytes read to find an image's header; an image whose header needs more fails data "
+          + "prep (a quarantine entry). Over a source row (random access) it counts bytes read wherever they lie in the "
+          + "file; over a plain stream it is the offset the memory-cached read may reach. Default 1048576 (1 MiB). Must be "
+          + "positive. Part of the preprocessing style when set.");
+  public static final long DEFAULT_PREP_IMAGE_HEADER_MAX_BYTES = 1024L * 1024;
+  /**
+   * Image data prep: the largest image, in source bytes ({@code file_size}), that prep stores as a model input; a larger one
+   * fails data prep (a quarantine entry) before any byte of it is read. An operator's limit, not a memory bound: the row's
+   * {@code prepared_image} is the source row's own blob value (its inline bytes, or its reference to the object), never a copy
+   * prep reads, so the default {@link #DEFAULT_PREP_IMAGE_MAX_BYTES} sets no limit. Must be positive. Part of the preprocessing
+   * style when set.
+   */
+  public static final ConfigProperty<Long> PREP_IMAGE_MAX_BYTES = ConfigProperty
+      .key(PREP_PREFIX + "image.max.bytes")
+      .defaultValue(9223372036854775807L)
+      .markAdvanced()
+      .sinceVersion("1.3.0")
+      .withDocumentation("Image data prep: the largest image, in source bytes (file_size), that prep stores as a model input; a "
+          + "larger one fails data prep (a quarantine entry) before any byte of it is read. An operator's limit, not a "
+          + "memory bound: the row's prepared_image is the source row's own blob value (its inline bytes, or its reference "
+          + "to the object), never a copy prep reads, so the default 9223372036854775807 sets no limit. Must be positive. "
+          + "Part of the preprocessing style when set.");
+  public static final long DEFAULT_PREP_IMAGE_MAX_BYTES = Long.MAX_VALUE;
   /** Prefix of the row-balancing keys; they do not shape the preprocessing style. */
   public static final String BALANCE_PREFIX = PREP_PREFIX + "balance.";
   /**

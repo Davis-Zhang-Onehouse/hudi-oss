@@ -21,6 +21,7 @@ package org.apache.hudi.utilities.unstructured.embedding;
 import org.apache.hudi.HoodieSchemaConversionUtils;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.common.schema.HoodieSchemaType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.TableSchemaResolver;
 import org.apache.hudi.common.util.ConfigUtils;
@@ -30,6 +31,7 @@ import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.utilities.config.CloudSourceConfig;
 
 import org.apache.spark.sql.types.ArrayType;
+import org.apache.spark.sql.types.BlobType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.MetadataBuilder;
@@ -61,13 +63,27 @@ public final class EmbeddingTableSchema {
   public static final String PREPARED_TEXT_CHUNK = "prepared_text_chunk";
   public static final String CHUNK_TOKEN_COUNT = "chunk_token_count";
   public static final String AUX = "aux";
+  /**
+   * The model input of an image row, a nullable Hudi BLOB: an image file's own bytes, as the source row carried them (inline, or
+   * an unmanaged reference to the object), or a derived input (a video frame) stored inline. Null on text rows. Written in both
+   * modes: a prep_only table has no vector column but keeps its prepared images.
+   */
+  public static final String PREPARED_IMAGE = "prepared_image";
+  /** Aux key of a row carrying {@link #PREPARED_IMAGE}: the stored input's width in pixels. */
+  public static final String AUX_INPUT_WIDTH = "input_width";
+  /** Aux key of a row carrying {@link #PREPARED_IMAGE}: the stored input's height in pixels. */
+  public static final String AUX_INPUT_HEIGHT = "input_height";
+  /** Aux key of a row carrying {@link #PREPARED_IMAGE}: the logic that made the stored input from the source. */
+  public static final String AUX_INPUT_LOGIC = "input_logic";
   public static final int MAX_ERROR_CHARS = 1024;
 
   /**
    * {@link #MODALITY} values: the TARGET type of a row's model input, never the source file's
-   * type. Text rows: a PDF's chunks.
+   * type. Text rows: a PDF's chunks; image rows: an image file's row.
    */
   public static final String MODALITY_TEXT = "text";
+  /** Image rows: an image file's row and a video's frame rows (a frame is an image to the model). */
+  public static final String MODALITY_IMAGE = "image";
   /** The modality an error record names for a file no preprocessor is mapped to; never a row's modality. */
   public static final String MODALITY_UNKNOWN = "unknown";
 
@@ -77,8 +93,8 @@ public final class EmbeddingTableSchema {
   /** Fixed columns before model vectors and user partition columns, in {@link #build} order. */
   public static final List<String> BASE_COLUMNS = Collections.unmodifiableList(Arrays.asList(SOURCE_PATH_SHA,
       SOURCE_MODIFICATION_TIME, SOURCE_FILE_SIZE, MODALITY, CHUNK_ID, SOURCE_FILE_PATH, SOURCE_FILE_NAME,
-      SOURCE_FILE_EXTENSION, PREPARED_TEXT_CHUNK, CHUNK_TOKEN_COUNT, AUX));
-  /** Number of fixed columns, up to {@link #AUX}. */
+      SOURCE_FILE_EXTENSION, PREPARED_TEXT_CHUNK, CHUNK_TOKEN_COUNT, AUX, PREPARED_IMAGE));
+  /** Number of fixed columns, up to {@link #PREPARED_IMAGE}. */
   public static final int BASE_COLUMN_COUNT = BASE_COLUMNS.size();
   /** Columns each declared model owns: its VECTOR column. */
   public static final int COLUMNS_PER_MODEL = 1;
@@ -105,6 +121,7 @@ public final class EmbeddingTableSchema {
     fields.add(DataTypes.createStructField(PREPARED_TEXT_CHUNK, DataTypes.StringType, true));
     fields.add(DataTypes.createStructField(CHUNK_TOKEN_COUNT, DataTypes.IntegerType, true));
     fields.add(DataTypes.createStructField(AUX, DataTypes.createMapType(DataTypes.StringType, DataTypes.StringType), true));
+    fields.add(preparedImageField());
     for (EmbeddingModelSpec model : config.models()) {
       fields.add(vectorField(model));
     }
@@ -127,6 +144,14 @@ public final class EmbeddingTableSchema {
       }
     }
     return columns;
+  }
+
+  /** The nullable {@link #PREPARED_IMAGE} column: a Hudi BLOB ({@code BlobType}, Hudi type metadata {@code BLOB}). */
+  public static StructField preparedImageField() {
+    Metadata metadata = new MetadataBuilder()
+        .putString(HoodieSchema.TYPE_METADATA_FIELD, HoodieSchemaType.BLOB.name())
+        .build();
+    return new StructField(PREPARED_IMAGE, BlobType.dataType(), true, metadata);
   }
 
   /** The VECTOR column of {@code model}: named by {@code model.<alias>.column}, sized by its dimensions. */

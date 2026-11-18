@@ -61,8 +61,8 @@ import java.util.Set;
  * <p>Opening an OUT_OF_LINE blob (resolving its storage, opening and seeking to its range) is retried in-commit under the
  * source's {@link TransientRetry} when it fails transiently ({@link #isTransient}): any storage failure except the file's own
  * ({@link SourceFailures#isContentFailure}: gone, short, a malformed reference) and a platform failure (an access denial such
- * as a 403 or KMS denial, {@link AccessDeniedException}). Reads of an opened stream are not retried here: the caller's decoder
- * holds state.
+ * as a 403 or KMS denial, {@link AccessDeniedException}); {@link #openSeekable} opens the same bytes for random access under
+ * the same rules. Reads of an opened stream are not retried here: the caller's decoder holds state.
  */
 public class BlobBytesSource implements Serializable {
 
@@ -150,6 +150,52 @@ public class BlobBytesSource implements Serializable {
       }
       throw e;
     }
+  }
+
+  /**
+   * Opens the bytes described by the {@code blob} struct for random access: an INLINE blob over its {@code data} (already in
+   * the row), an OUT_OF_LINE one over a seekable storage stream restricted to the referenced range (the whole object when the
+   * reference has no range), so a reader that seeks (an image header reader) never needs the file in memory. The row is
+   * validated as {@link #open} validates it, and the open is retried as {@link #open} retries it ({@link #isTransient}). A read
+   * or seek of the returned blob is not retried; it re-checks a FileNotFoundException as {@link #open}'s stream does, and a
+   * seek or read past the object's real end inside the recorded range is a {@link BlobTruncatedException}. The caller closes the
+   * result.
+   *
+   * @param blob the {@code blob} column value
+   * @throws BlobReferenceException for a row that names no readable range, exactly as {@link #open} refuses it
+   */
+  public SeekableBlob openSeekable(Row blob) throws IOException {
+    ParsedBlob parsed = parse(blob);
+    if (parsed.data != null) {
+      return new ByteArrayBlob(parsed.data);
+    }
+    return openRetry.call("open blob " + parsed.path, () -> openSeekableRange(parsed), BlobBytesSource::isTransient);
+  }
+
+  private SeekableBlob openSeekableRange(ParsedBlob blob) throws IOException {
+    HoodieStorage pathStorage = storageFor(blob.path);
+    long base = blob.offset == null ? 0L : blob.offset;
+    long size;
+    try {
+      size = blob.length != null ? blob.length : pathStorage.getPathInfo(blob.path).getLength();
+    } catch (IOException | RuntimeException e) {
+      throw notFoundChecked(pathStorage, blob.path, e);
+    }
+    SeekableDataInputStream in = openChecked(pathStorage, blob.path);
+    try {
+      if (base > 0) {
+        seekChecked(in, pathStorage, blob.path, base);
+      }
+    } catch (IOException | RuntimeException e) {
+      // the caller never receives the blob, so its stream must not leak
+      try {
+        in.close();
+      } catch (IOException closeFailure) {
+        e.addSuppressed(closeFailure);
+      }
+      throw e;
+    }
+    return new StorageRangeBlob(in, pathStorage, base, size, blob.path);
   }
 
   /**
@@ -479,4 +525,108 @@ public class BlobBytesSource implements Serializable {
     }
   }
 
+  /** An INLINE blob's bytes, already held by the row. */
+  private static final class ByteArrayBlob implements SeekableBlob {
+    private final byte[] data;
+    private int pos;
+
+    ByteArrayBlob(byte[] data) {
+      this.data = data;
+    }
+
+    @Override
+    public long length() {
+      return data.length;
+    }
+
+    @Override
+    public long getPos() {
+      return pos;
+    }
+
+    @Override
+    public void seek(long newPos) throws IOException {
+      if (newPos < 0 || newPos > data.length) {
+        throw new BlobTruncatedException("Seek to " + newPos + " outside an INLINE blob of " + data.length + " bytes");
+      }
+      pos = (int) newPos;
+    }
+
+    @Override
+    public int read(byte[] buffer, int offset, int len) {
+      if (pos >= data.length) {
+        return -1;
+      }
+      int n = Math.min(len, data.length - pos);
+      System.arraycopy(data, pos, buffer, offset, n);
+      pos += n;
+      return n;
+    }
+
+    @Override
+    public void close() {
+    }
+  }
+
+  /** An OUT_OF_LINE blob: the range [base, base + length) of a seekable storage stream. */
+  private static final class StorageRangeBlob implements SeekableBlob {
+    private final SeekableDataInputStream in;
+    private final HoodieStorage storage;
+    private final long base;
+    private final long length;
+    private final StoragePath path;
+
+    StorageRangeBlob(SeekableDataInputStream in, HoodieStorage storage, long base, long length, StoragePath path) {
+      this.in = in;
+      this.storage = storage;
+      this.base = base;
+      this.length = length;
+      this.path = path;
+    }
+
+    @Override
+    public long length() {
+      return length;
+    }
+
+    @Override
+    public long getPos() throws IOException {
+      return in.getPos() - base;
+    }
+
+    @Override
+    public void seek(long pos) throws IOException {
+      if (pos < 0 || pos > length) {
+        throw new BlobTruncatedException("Seek to " + pos + " outside the " + length + "-byte blob range of " + path);
+      }
+      // inside the recorded range, a seek past the object's real end (HDFS and ABFS throw a bare EOFException) is the object's
+      // truncation, checked against its length like the first seek
+      seekChecked(in, storage, path, base + pos);
+    }
+
+    @Override
+    public int read(byte[] buffer, int offset, int len) throws IOException {
+      long remaining = length - getPos();
+      if (remaining <= 0) {
+        return -1;
+      }
+      int n;
+      try {
+        n = in.read(buffer, offset, (int) Math.min(len, remaining));
+      } catch (IOException | RuntimeException e) {
+        // a FileNotFoundException of a read is the file's absence only when a re-check finds it absent, as at open
+        throw notFoundChecked(storage, path, e);
+      }
+      if (n < 0) {
+        throw new BlobTruncatedException("Blob file " + path + " ended early: expected " + remaining
+            + " more bytes of the referenced range");
+      }
+      return n;
+    }
+
+    @Override
+    public void close() throws IOException {
+      in.close();
+    }
+  }
 }
