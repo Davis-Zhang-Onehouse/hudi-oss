@@ -33,7 +33,6 @@ import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.utilities.config.CloudSourceConfig;
 import org.apache.hudi.utilities.config.HoodieIncrSourceConfig;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig;
 import org.apache.hudi.utilities.ingestion.HoodieIngestionMetrics;
 import org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector;
@@ -161,7 +160,6 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
     TypedProperties props = new TypedProperties();
     props.setProperty(UnstructuredSourceConfig.MODE.key(), "blob");
     props.setProperty(UnstructuredSourceConfig.CLOUD.key(), "s3");
-    props.setProperty(HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key(), "true");
     props.setProperty(HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key(), BlobParquetConfigInjector.class.getName());
     props.setProperty(HoodieIncrSourceConfig.HOODIE_SRC_BASE_PATH.key(), eventsPath());
     props.setProperty(S3EventsHoodieIncrSourceConfig.S3_FS_PREFIX.key(), BucketFolderFileSystem.SCHEME);
@@ -530,7 +528,6 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
     assertTrue(round(source(props), Option.empty(), Long.MAX_VALUE).rows.isEmpty());
   }
 
-  private static final String START_COMMIT = HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key();
   private static final String INJECTOR = HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key();
   private static final String CODEC = HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME.key();
   private static final String BLOOM = HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED.key();

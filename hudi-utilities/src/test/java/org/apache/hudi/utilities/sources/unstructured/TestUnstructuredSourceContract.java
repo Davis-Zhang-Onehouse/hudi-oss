@@ -26,7 +26,6 @@ import org.apache.hudi.keygen.ComplexKeyGenerator;
 import org.apache.hudi.keygen.NonpartitionedKeyGenerator;
 import org.apache.hudi.keygen.SimpleKeyGenerator;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.SourceContracts;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
@@ -49,7 +48,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** The contract of {@link UnstructuredDataSource} per mode: the settings, the transformers and the refusals, without Spark. */
 class TestUnstructuredSourceContract {
 
-  private static final String START_COMMIT = HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key();
   private static final String INJECTOR = HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key();
   private static final String CODEC = HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME.key();
   private static final String BLOOM = HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED.key();
@@ -152,7 +150,6 @@ class TestUnstructuredSourceContract {
     blob.put("hoodie.table.unstructured.kind", "blob");
     blob.put("hoodie.table.unstructured.schema.version", "1");
     blob.put("hoodie.table.unstructured.key.encoding.version", "1");
-    blob.put(START_COMMIT, "true");
     blob.put(RECORD_KEY, BLOB_KEY);
     blob.put(MARKERS, "TIMELINE_SERVER_BASED");
     blob.put(ROLLBACK, "true");
@@ -185,7 +182,6 @@ class TestUnstructuredSourceContract {
     embedding.put("hoodie.table.unstructured.kind", "embedding");
     embedding.put("hoodie.table.unstructured.schema.version", "1");
     embedding.put("hoodie.table.unstructured.key.encoding.version", "1");
-    embedding.put(START_COMMIT, "true");
     embedding.put(RECORD_KEY, EMBEDDING_KEY);
     embedding.put(MARKERS, "TIMELINE_SERVER_BASED");
     embedding.put(ROLLBACK, "true");
@@ -220,7 +216,6 @@ class TestUnstructuredSourceContract {
   void jobThatSetsEveryRequiredKeyToTheSameValueStarts() {
     for (String mode : new String[] {"blob", "embedding"}) {
       TypedProperties props = mode(mode);
-      props.setProperty(START_COMMIT, "true");
       props.setProperty(RECORD_KEY, "blob".equals(mode) ? BLOB_KEY : EMBEDDING_KEY);
       props.setProperty(KEY_GENERATOR, ComplexKeyGenerator.class.getName());
       props.setProperty(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key(), "source_file_extension");
@@ -265,10 +260,6 @@ class TestUnstructuredSourceContract {
 
   @Test
   void refusalsNameUnstructuredDataSourceAndMode() {
-    TypedProperties startCommit = new TypedProperties();
-    startCommit.setProperty(START_COMMIT, "false");
-    assertEquals("UnstructuredDataSource (mode blob) requires " + START_COMMIT + "=true, configured: false",
-        refusal(contract("blob"), startCommit));
     TypedProperties injector = new TypedProperties();
     injector.setProperty(INJECTOR, "com.example.JobInjector");
     assertEquals("UnstructuredDataSource (mode embedding) requires " + INJECTOR + "=" + EmbeddingParquetConfigInjector.class.getName()
@@ -296,13 +287,11 @@ class TestUnstructuredSourceContract {
   @Test
   void preparationCanonicalizesRequiredValuesWithoutMutatingTheJob() {
     TypedProperties props = mode("blob");
-    props.setProperty(START_COMMIT, " TRUE ");
     props.setProperty(RECORD_KEY, " " + BLOB_KEY.replace(",", " , ") + " ");
     props.setProperty(INJECTOR, " " + BlobParquetConfigInjector.class.getName() + " ");
     props.setProperty(CODEC, "zstd");
     TypedProperties before = TypedProperties.copy(props);
     TypedProperties merged = contract("blob").prepareJob(props);
-    assertEquals("true", merged.getString(START_COMMIT));
     assertEquals(BLOB_KEY, merged.getString(RECORD_KEY));
     assertEquals(BlobParquetConfigInjector.class.getName(), merged.getString(INJECTOR));
     assertEquals("zstd", merged.getString(CODEC));
@@ -312,12 +301,10 @@ class TestUnstructuredSourceContract {
   @Test
   void blankSettingsAreFilledAndUnrelatedSettingsAreKept() {
     TypedProperties props = mode("blob");
-    props.setProperty(START_COMMIT, " ");
     props.setProperty(RECORD_KEY, " ");
     props.setProperty(CODEC, " ");
     props.setProperty("user.setting", "kept");
     TypedProperties prepared = contract("blob").prepareJob(props);
-    assertEquals("true", prepared.getString(START_COMMIT));
     assertEquals(BLOB_KEY, prepared.getString(RECORD_KEY));
     assertEquals("uncompressed", prepared.getString(CODEC));
     assertEquals("kept", prepared.getString("user.setting"));

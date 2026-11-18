@@ -37,7 +37,6 @@ import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration;
 import org.apache.hudi.storage.hadoop.HoodieHadoopStorage;
 import org.apache.hudi.utilities.config.HoodieIncrSourceConfig;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.schema.SchemaProvider;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceConfig;
@@ -311,7 +310,6 @@ public class TestBlobParquetConfigInjector extends UtilitiesTestBase {
     props.setProperty(HoodieIncrSourceConfig.HOODIE_SRC_BASE_PATH.key(), tempDir.resolve("events").toUri().toString());
     props.setProperty("hoodie.datasource.write.recordkey.field", BlobTableSchema.SOURCE_PATH_SHA + "," + BlobTableSchema.SOURCE_MODIFICATION_TIME + "," + BlobTableSchema.SOURCE_FILE_SIZE);
     // the blob job's writer settings, as blob-table.properties sets them
-    props.setProperty(HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key(), "true");
     props.setProperty(HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key(), BlobParquetConfigInjector.class.getName());
     props.setProperty(HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME.key(), "uncompressed");
     props.setProperty(HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED.key(), "false");

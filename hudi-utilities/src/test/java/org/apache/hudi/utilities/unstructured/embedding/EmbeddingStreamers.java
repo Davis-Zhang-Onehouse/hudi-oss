@@ -39,7 +39,6 @@ import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.keygen.NonpartitionedKeyGenerator;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.utilities.config.HoodieIncrSourceConfig;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobTableConfig;
@@ -113,7 +112,6 @@ public final class EmbeddingStreamers {
     props.setProperty("hoodie.clean.automatic", "false");
     props.setProperty("hoodie.upsert.shuffle.parallelism", "2");
     props.setProperty("hoodie.insert.shuffle.parallelism", "2");
-    props.setProperty(HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key(), "true");
     props.setProperty(HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key(), EmbeddingParquetConfigInjector.class.getName());
     props.setProperty(EmbeddingTableConfig.MODE.key(), mode);
     if (EmbeddingTableConfig.MODE_PREP_AND_COMPUTE.equals(mode)) {

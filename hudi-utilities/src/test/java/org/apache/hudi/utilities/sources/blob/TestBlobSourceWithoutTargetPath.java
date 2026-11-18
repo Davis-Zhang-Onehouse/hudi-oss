@@ -25,7 +25,6 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieCleanConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.config.SqlTransformerConfig;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.streamer.HoodieStreamer;
@@ -170,7 +169,6 @@ public class TestBlobSourceWithoutTargetPath extends UtilitiesTestBase {
     cfg.transformerClassNames = Arrays.asList(BlobCopyTransformer.class.getName(), RecordingInstantTransformer.class.getName(),
         SqlQueryBasedTransformer.class.getName());
     TypedProperties props = harness.jobProperties(4096);
-    props.setProperty(HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key(), "true");
     props.setProperty(HoodieCleanConfig.FAILED_WRITES_CLEANER_POLICY.key(), "LAZY");
     props.setProperty(SqlTransformerConfig.TRANSFORMER_SQL.key(), "SELECT *, 'applied' AS transformer_marker FROM <SRC>");
 

@@ -35,7 +35,7 @@ import org.apache.spark.SparkConf;
 /**
  * Construction-time validation of the job of {@link UnstructuredDataSource}, the blob job or the embedding job
  * ({@link UnstructuredMode}). It only checks the job's properties and changes none of them. The settings each job runs with
- * (start-commit-before-transformer, the record key, the markers, the Parquet config injector) are the source's contract's
+ * (the record key, the markers, the Parquet config injector) are the source's contract's
  * ({@link UnstructuredSourceContract#prepareJob}), merged in by the streamer before the source is built; this checks the
  * others, and refuses a value the job cannot run with, naming the setting and the source with its mode.
  */

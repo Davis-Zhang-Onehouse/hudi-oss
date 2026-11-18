@@ -28,11 +28,14 @@ import org.apache.hudi.common.util.ClusteringUtils;
 import org.apache.hudi.common.util.CollectionUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.HoodieWriteConflictException;
+import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.table.HoodieTable;
 
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Comparator;
 import java.util.List;
@@ -115,8 +118,12 @@ public class PreferWriterConflictResolutionStrategy
    *
    * <p>If the current write is clustering and
    * {@code hoodie.clustering.fail.on.pending.ingestion.during.conflict.resolution} is enabled,
-   * also includes ingestion {@code .requested} instants (filtering out those with expired heartbeats)
-   * so they can be evaluated by {@link #hasConflict} and {@link #resolveConflict}.</p>
+   * also includes ingestion {@code .requested} instants, and ingestion {@code .inflight} instants whose inflight file is still
+   * empty (filtering out both with expired heartbeats), so they can be evaluated by {@link #hasConflict} and
+   * {@link #resolveConflict}. An empty inflight file is written by any writer that moves its instant to inflight before it writes
+   * a workload profile (the streamer before an instant-aware transformer, and bulk insert, the row writer and Flink, which keep
+   * it empty for the whole write); with EAGER failed-writes cleaning there is no heartbeat, so such an instant, like a
+   * .requested one, never blocks clustering.</p>
    */
   private Stream<HoodieInstant> getCandidateInstantsForTableServicesCommits(
       HoodieActiveTimeline activeTimeline, HoodieInstant currentInstant,
@@ -142,14 +149,19 @@ public class PreferWriterConflictResolutionStrategy
           .filter(i -> !ClusteringUtils.isClusteringInstant(activeTimeline, i, metaClient.getInstantGenerator()))
           .filter(i -> {
             if (i.isRequested()) {
-              try {
-                return !HoodieHeartbeatUtils.isHeartbeatExpired(i.requestedTime(), maxHeartbeatIntervalMs,
-                    metaClient.getStorage(), metaClient.getBasePath().toString());
-              } catch (IOException e) {
-                throw new RuntimeException(e);
-              }
+              return isHeartbeatActive(metaClient, i, maxHeartbeatIntervalMs);
             }
-            return i.isInflight();
+            if (!i.isInflight()) {
+              return false;
+            }
+            Option<Long> inflightFileLength = inflightFileLength(metaClient, i);
+            if (!inflightFileLength.isPresent()) {
+              // rolled back after the timeline was read: no candidate, as a completed rollback leaves none
+              return false;
+            }
+            // an INFLIGHT instant with an empty inflight file has not written its workload profile yet: like a .requested
+            // one it names no file group, and it is a candidate only while its writer's heartbeat is active
+            return inflightFileLength.get() > 0 || isHeartbeatActive(metaClient, i, maxHeartbeatIntervalMs);
           });
     } else {
       inflightIngestionCommitsStream = activeTimeline
@@ -165,11 +177,38 @@ public class PreferWriterConflictResolutionStrategy
     return instantsToConsider.stream();
   }
 
+  private static boolean isHeartbeatActive(HoodieTableMetaClient metaClient, HoodieInstant instant, long maxHeartbeatIntervalMs) {
+    try {
+      return !HoodieHeartbeatUtils.isHeartbeatExpired(instant.requestedTime(), maxHeartbeatIntervalMs,
+          metaClient.getStorage(), metaClient.getBasePath().toString());
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  /**
+   * The length of the timeline file of {@code instant}; empty when the file is gone (the instant was rolled back since). Existence is
+   * asked first: with the consistency check on, a stat of a file that is not there waits the consistency guard's full backoff.
+   */
+  static Option<Long> inflightFileLength(HoodieTableMetaClient metaClient, HoodieInstant instant) {
+    StoragePath path = new StoragePath(metaClient.getTimelinePath(), metaClient.getInstantFileNameGenerator().getFileName(instant));
+    try {
+      if (!metaClient.getStorage().exists(path)) {
+        return Option.empty();
+      }
+      return Option.of(metaClient.getStorage().getPathInfo(path).getLength());
+    } catch (FileNotFoundException e) {
+      return Option.empty();
+    } catch (IOException e) {
+      throw new HoodieIOException("Cannot read the inflight file " + path, e);
+    }
+  }
+
   @Override
   public boolean hasConflict(ConcurrentOperation thisOperation, ConcurrentOperation otherOperation) {
     if (isClusteringBlockForPendingIngestion
         && WriteOperationType.CLUSTER.equals(thisOperation.getOperationType())
-        && isRequestedIngestionInstant(otherOperation)) {
+        && isPendingIngestionWithoutWorkloadProfile(otherOperation)) {
       log.info("Clustering operation {} conflicts with pending ingestion instant {} "
           + "that has an active heartbeat", thisOperation, otherOperation);
       return true;
@@ -182,22 +221,35 @@ public class PreferWriterConflictResolutionStrategy
       ConcurrentOperation thisOperation, ConcurrentOperation otherOperation) {
     if (isClusteringBlockForPendingIngestion
         && WriteOperationType.CLUSTER.equals(thisOperation.getOperationType())
-        && isRequestedIngestionInstant(otherOperation)) {
+        && isPendingIngestionWithoutWorkloadProfile(otherOperation)) {
       throw new HoodieWriteConflictException(
           HoodieWriteConflictException.ConflictCategory.TABLE_SERVICE_VS_INGESTION,
-          String.format("Pending ingestion instant %s with active heartbeat has not transitioned to "
-              + "inflight yet but may potentially conflict with current clustering operation %s",
+          String.format("Pending ingestion instant %s with active heartbeat has not written its workload profile "
+              + "yet but may potentially conflict with current clustering operation %s",
               otherOperation, thisOperation));
     }
     return super.resolveConflict(table, thisOperation, otherOperation);
   }
 
-  private boolean isRequestedIngestionInstant(ConcurrentOperation operation) {
+  /**
+   * Whether {@code operation} is an ingestion instant that does not name the file groups it writes yet: a .requested one, or
+   * one that is INFLIGHT with an empty inflight file (no operation type, no file group), as when a writer moves its instant to
+   * inflight before the write writes its workload profile. Clustering cannot tell which file groups such an instant writes.
+   */
+  private boolean isPendingIngestionWithoutWorkloadProfile(ConcurrentOperation operation) {
     String state = operation.getInstantActionState();
     String actionType = operation.getInstantActionType();
-    return HoodieInstant.State.REQUESTED.name().equals(state)
-        && (COMMIT_ACTION.equals(actionType) || DELTA_COMMIT_ACTION.equals(actionType)
-            || (REPLACE_COMMIT_ACTION.equals(actionType) && !WriteOperationType.CLUSTER.equals(operation.getOperationType())));
+    boolean ingestionAction = COMMIT_ACTION.equals(actionType) || DELTA_COMMIT_ACTION.equals(actionType)
+        || (REPLACE_COMMIT_ACTION.equals(actionType) && !WriteOperationType.CLUSTER.equals(operation.getOperationType()));
+    if (!ingestionAction) {
+      return false;
+    }
+    if (HoodieInstant.State.REQUESTED.name().equals(state)) {
+      return true;
+    }
+    return HoodieInstant.State.INFLIGHT.name().equals(state)
+        && (operation.getOperationType() == null || WriteOperationType.UNKNOWN.equals(operation.getOperationType()))
+        && operation.getMutatedPartitionAndFileIds().isEmpty();
   }
 
   @Override

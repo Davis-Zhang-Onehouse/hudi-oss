@@ -19,6 +19,7 @@
 package org.apache.hudi.utilities.streamer;
 
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
+import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.config.RecordMergeMode;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.HoodieTableType;
@@ -36,7 +37,6 @@ import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.metrics.Metrics;
 import org.apache.hudi.utilities.config.HoodieIncrSourceConfig;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.exception.HoodieTransformPlanException;
 import org.apache.hudi.utilities.ingestion.HoodieIngestionMetrics;
 import org.apache.hudi.utilities.schema.SchemaProvider;
@@ -82,8 +82,10 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
 
   private static final String RECORD_KEY = KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key();
   private static final String REQUIRED_KEY = "source_path_sha,source_modification_time,source_file_size";
-  /** A setting only the source declares, to see where the merged settings reach. */
-  private static final String DECLARED_ONLY = HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key();
+  /** A setting only the source declares (the blob job's codec default), to see where the merged settings reach. */
+  private static final String DECLARED_ONLY = HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME.key();
+  /** The value the source declares for {@link #DECLARED_ONLY}. */
+  private static final String DECLARED_VALUE = "uncompressed";
 
   @TempDir
   Path tempDir;
@@ -153,7 +155,7 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   void settingsReachWriteConfigAndNewTable() throws Exception {
     try (StreamSync sync = streamSync(jobProps())) {
       assertEquals(REQUIRED_KEY, sync.getProps().getString(RECORD_KEY));
-      assertEquals("true", sync.getProps().getString(DECLARED_ONLY));
+      assertEquals(DECLARED_VALUE, sync.getProps().getString(DECLARED_ONLY));
     }
     assertEquals(REQUIRED_KEY, tableConfig().getString(HoodieTableConfig.RECORDKEY_FIELDS));
   }
@@ -212,7 +214,7 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
       TypedProperties seen = ContractTestSource.SEEN.get();
       assertNotNull(seen, "the source was not built");
       assertEquals(REQUIRED_KEY, seen.getString(RECORD_KEY));
-      assertEquals("true", seen.getString(DECLARED_ONLY));
+      assertEquals(DECLARED_VALUE, seen.getString(DECLARED_ONLY));
       assertEquals(before, props, "the job's properties changed");
     }
   }
@@ -227,9 +229,9 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     HoodieStreamer streamer = new HoodieStreamer(cfg, jsc, Option.of(props));
     try {
       assertNotNull(RecordingSchemaProvider.SEEN.get());
-      assertEquals("true", RecordingSchemaProvider.SEEN.get().getString(DECLARED_ONLY, null));
+      assertEquals(DECLARED_VALUE, RecordingSchemaProvider.SEEN.get().getString(DECLARED_ONLY, null));
       assertEquals(REQUIRED_KEY, RecordingSchemaProvider.SEEN.get().getString(RECORD_KEY, null));
-      assertEquals("true", ContractTestSource.SEEN.get().getString(DECLARED_ONLY));
+      assertEquals(DECLARED_VALUE, ContractTestSource.SEEN.get().getString(DECLARED_ONLY));
       assertEquals(before, props, "preparing the job must not change the caller's properties");
     } finally {
       streamer.shutdownGracefully();
@@ -258,7 +260,7 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     };
     try (StreamSync sync = new StreamSync(config(), sparkSession, prepared, new HoodieSparkEngineContext(jsc), fs,
         jsc.hadoopConfiguration(), client -> true, new DefaultStreamContext(null, Option.empty()), alreadyPrepared)) {
-      assertEquals("true", sync.getProps().getString(DECLARED_ONLY));
+      assertEquals(DECLARED_VALUE, sync.getProps().getString(DECLARED_ONLY));
       assertEquals(1, ContractTestSource.BUILT.get());
     }
   }
@@ -275,7 +277,7 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     try {
       streamer.sync();
       TypedProperties updated = ((HoodieStreamer.StreamSyncService) streamer.getIngestionService()).getProps();
-      assertEquals("true", updated.getString(DECLARED_ONLY, null));
+      assertEquals(DECLARED_VALUE, updated.getString(DECLARED_ONLY, null));
       assertEquals(REQUIRED_KEY, updated.getString(RECORD_KEY, null));
       assertEquals("updated", updated.getString("test.hot.update"));
       assertEquals(2, ContractTestSource.BUILT.get(), "the hot update reconstructs the source once");

@@ -25,7 +25,6 @@ import org.apache.hudi.common.model.OverwriteWithLatestMerger;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredMode;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingParquetConfigInjector;
@@ -60,7 +59,6 @@ public class TestBlobSourceSetup {
    */
   private static TypedProperties job(UnstructuredMode job) {
     TypedProperties props = new TypedProperties();
-    props.setProperty(HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key(), "true");
     props.setProperty(INJECTOR_KEY, injectorOf(job));
     if (job == UnstructuredMode.EMBEDDING) {
       props.setProperty("hoodie.unstructured.embedding.mode", "prep_only");

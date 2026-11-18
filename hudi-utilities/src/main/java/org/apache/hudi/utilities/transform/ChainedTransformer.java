@@ -47,13 +47,16 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
- * A {@link Transformer} to chain other {@link Transformer}s and apply sequentially. Given an instant, it passes the instant to
- * each {@link InstantAwareTransformer} of the chain and calls the others as without one.
+ * A {@link Transformer} to chain other {@link Transformer}s and apply sequentially. It needs the round's instant when one of
+ * them is an {@link InstantAwareTransformer} that does ({@link #needsInstant()}). Given an instant, it passes the instant to each
+ * such transformer, moving the instant to INFLIGHT right before the first of them, and calls the others as without one.
  */
 public class ChainedTransformer implements InstantAwareTransformer {
 
   // Delimiter used to separate class name and the property key suffix. The suffix comes first.
   private static final String ID_TRANSFORMER_CLASS_NAME_DELIMITER = ":";
+  /** The transition to INFLIGHT for an instant that is already INFLIGHT. */
+  private static final Runnable NO_TRANSITION = () -> { };
 
   protected final List<TransformerInfo> transformers;
   private final Supplier<Option<HoodieSchema>> sourceSchemaSupplier;
@@ -119,36 +122,56 @@ public class ChainedTransformer implements InstantAwareTransformer {
 
   @Override
   public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties) {
-    return applyChain(jsc, sparkSession, rowDataset, properties, Option.empty());
+    return applyChain(jsc, sparkSession, rowDataset, properties, Option.empty(), NO_TRANSITION);
   }
 
   @Override
   public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties,
                             String instantTime) {
-    return applyChain(jsc, sparkSession, rowDataset, properties, Option.of(instantTime));
+    return applyChain(jsc, sparkSession, rowDataset, properties, Option.of(instantTime), NO_TRANSITION);
+  }
+
+  @Override
+  public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties,
+                            String instantTime, Runnable toInflight) {
+    return applyChain(jsc, sparkSession, rowDataset, properties, Option.of(instantTime), toInflight);
+  }
+
+  /** Whether a transformer of the chain needs the round's instant. */
+  @Override
+  public boolean needsInstant() {
+    return transformers.stream().anyMatch(info -> needsInstant(info.getTransformer()));
+  }
+
+  private static boolean needsInstant(Transformer transformer) {
+    return transformer instanceof InstantAwareTransformer && ((InstantAwareTransformer) transformer).needsInstant();
   }
 
   /**
    * Applies the transformers in order.
    *
    * @param instantTime the instant of the round, passed to each {@link InstantAwareTransformer}; empty when there is none
+   * @param toInflight  moves the instant to INFLIGHT; run right before the first transformer that needs the instant
    */
   protected Dataset<Row> applyChain(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties,
-                                    Option<String> instantTime) {
+                                    Option<String> instantTime, Runnable toInflight) {
     Dataset<Row> dataset = rowDataset;
     for (TransformerInfo transformerInfo : transformers) {
-      dataset = applyOne(transformerInfo, jsc, sparkSession, dataset, properties, instantTime);
+      dataset = applyOne(transformerInfo, jsc, sparkSession, dataset, properties, instantTime, toInflight);
     }
     return dataset;
   }
 
-  /** Applies one transformer of the chain, with the instant when it is an {@link InstantAwareTransformer} and there is one. */
+  /**
+   * Applies one transformer of the chain: with the instant (and {@code toInflight}) when it is an {@link InstantAwareTransformer}
+   * that needs one and there is one, else through the plain apply.
+   */
   protected Dataset<Row> applyOne(TransformerInfo transformerInfo, JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> dataset,
-                                  TypedProperties properties, Option<String> instantTime) {
+                                  TypedProperties properties, Option<String> instantTime, Runnable toInflight) {
     Transformer transformer = transformerInfo.getTransformer();
     TypedProperties transformerProps = transformerInfo.getProperties(properties, transformers);
-    if (instantTime.isPresent() && transformer instanceof InstantAwareTransformer) {
-      return ((InstantAwareTransformer) transformer).apply(jsc, sparkSession, dataset, transformerProps, instantTime.get());
+    if (instantTime.isPresent() && needsInstant(transformer)) {
+      return ((InstantAwareTransformer) transformer).apply(jsc, sparkSession, dataset, transformerProps, instantTime.get(), toInflight);
     }
     return transformer.apply(jsc, sparkSession, dataset, transformerProps);
   }

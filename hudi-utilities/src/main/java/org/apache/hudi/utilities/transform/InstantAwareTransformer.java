@@ -29,15 +29,13 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 
 /**
- * A {@link Transformer} that can be given the instant the round writes to.
+ * A {@link Transformer} that writes files for the instant of the round, and so is given that instant.
  *
- * <p>With {@code hoodie.streamer.start.commit.before.transformer} on, the streamer starts the commit and moves it to INFLIGHT
- * (under LAZY failed-writes cleaning it also has a heartbeat) before it transforms, and calls
- * {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)} with that instant. A file the transformer
- * writes for the instant follows the write protocol: its CREATE marker first, then the file, so a rollback of the instant
- * removes it.
- * With the flag off the streamer calls the plain {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties)}
- * before any instant exists.
+ * <p>A transformer chain with one makes the streamer start the round's commit (REQUESTED) once the source returned data, and move
+ * it to INFLIGHT right before the instant-aware transformer runs ({@link #apply(JavaSparkContext, SparkSession, Dataset,
+ * TypedProperties, String, Runnable)}), so every file the transformer writes for the instant follows the write protocol: its
+ * CREATE marker first, then the file, under an inflight instant, and a rollback of the instant removes it. The round's write then
+ * takes the instant that is already INFLIGHT. A chain without one runs as before: no instant exists while it transforms.
  */
 @PublicAPIClass(maturity = ApiMaturityLevel.EVOLVING)
 public interface InstantAwareTransformer extends Transformer {
@@ -54,4 +52,28 @@ public interface InstantAwareTransformer extends Transformer {
    */
   @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
   Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties, String instantTime);
+
+  /**
+   * Transforms the source dataset for the round that writes to {@code instantTime}, which is still REQUESTED: {@code toInflight}
+   * moves it to INFLIGHT, and must run before this transformer writes any file for the instant (running it again does nothing).
+   * The default moves it at once and calls {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)}.
+   *
+   * @param toInflight moves the instant to INFLIGHT
+   * @return Transformed Dataset
+   */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  default Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties,
+                             String instantTime, Runnable toInflight) {
+    toInflight.run();
+    return apply(jsc, sparkSession, rowDataset, properties, instantTime);
+  }
+
+  /**
+   * Whether this transformer writes files for the round's instant, so the streamer starts the instant before it. True; a
+   * transformer that wraps others (a chain) answers for what it wraps.
+   */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  default boolean needsInstant() {
+    return true;
+  }
 }

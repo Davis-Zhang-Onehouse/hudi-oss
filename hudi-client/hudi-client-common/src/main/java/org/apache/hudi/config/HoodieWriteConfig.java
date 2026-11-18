@@ -730,8 +730,10 @@ public class HoodieWriteConfig extends HoodieConfig {
       .withDocumentation("Only applicable when \"hoodie.write.concurrency.mode\" is set to OCC or NBCC and the conflict "
           + "resolution strategy (\"hoodie.write.conflict.resolution.strategy\") is set to "
           + "PreferWriterConflictResolutionStrategy. When enabled, proactively prevents clustering from committing if "
-          + "there are any ongoing ingestion writes that have not transitioned from requested to inflight yet and have "
-          + "an active heartbeat, since ingestion may be targeting the same files and should have precedence.");
+          + "there are any ongoing ingestion writes that have an active heartbeat and do not name the files they write yet: "
+          + "requested, or inflight with an empty inflight file (no workload profile yet, as a writer that moves its instant to "
+          + "inflight before the write leaves it; Spark bulk insert, its row writer and Flink keep it empty for the whole write), "
+          + "since ingestion may be targeting the same files and should have precedence.");
 
   public static final ConfigProperty<String> WRITE_CONCURRENCY_MODE = ConfigProperty
       .key("hoodie.write.concurrency.mode")

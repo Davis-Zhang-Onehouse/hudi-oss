@@ -57,8 +57,9 @@ import java.util.Map;
 
 /**
  * Copies managed objects to independently generated managed files. Existing paths remain ordinary upserts.
- * The streamer hands it the round's instant, already INFLIGHT ({@code hoodie.streamer.start.commit.before.transformer=true}): each
- * managed file is written after its CREATE marker, so a failed round's standard marker-based rollback removes it.
+ * An {@link InstantAwareTransformer}: the streamer starts the round's instant before the transformer and moves it to INFLIGHT right
+ * before this transformer runs, before any copy, so each managed file is written after its CREATE marker under an inflight
+ * instant and a failed round's standard marker-based rollback removes it.
  * Output is persisted and materialized before returning, so copy failures occur inside the streamer's rollback boundary. Content
  * failures carry their identity in one _corrupt_record column for ordinary transformer error routing. The next round
  * releases the previous output after the preceding write has consumed it. A round that ends before the transformer (an
@@ -72,7 +73,8 @@ public class BlobCopyTransformer implements InstantAwareTransformer {
 
   @Override
   public Dataset<Row> apply(JavaSparkContext jsc, SparkSession spark, Dataset<Row> rows, TypedProperties props) {
-    throw new IllegalStateException("BlobCopyTransformer requires hoodie.streamer.start.commit.before.transformer=true");
+    throw new IllegalStateException("BlobCopyTransformer writes under the round's instant: it runs only through the streamer, "
+        + "which hands it the instant");
   }
 
   @Override

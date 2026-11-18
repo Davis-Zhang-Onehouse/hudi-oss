@@ -63,9 +63,9 @@ import java.util.stream.Collectors;
 /**
  * The transformer of the embedding job: one stream (the unstructured data source, which emits each announced object's
  * bytes, inline or as a reference to the object), one table, one commit per
- * round holding every row the round prepares, with its embedding under {@code prep_and_compute}. It needs
- * {@code hoodie.streamer.start.commit.before.transformer=true}: the streamer starts the commit, moves it to INFLIGHT and hands
- * the instant to {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)}, so every out-of-line file the
+ * round holding every row the round prepares, with its embedding under {@code prep_and_compute}. As an
+ * {@link InstantAwareTransformer} it makes the streamer start the commit, move it to INFLIGHT right before this transformer and
+ * hand it the instant ({@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)}), so every out-of-line file the
  * round writes (input-store frames and images, prepared payloads) is written after its marker under an inflight instant; a throw
  * rolls the instant back with the standard marker-based rollback, which removes those files, and the checkpoint does not move.
  *
@@ -111,8 +111,8 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
 
   @Override
   public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties) {
-    throw new HoodieException(getClass().getSimpleName() + " writes every row of a round under the round's instant: it needs "
-        + "hoodie.streamer.start.commit.before.transformer=true, which hands it the instant. Nothing was written");
+    throw new HoodieException(getClass().getSimpleName() + " writes every row of a round under the round's instant: it runs only "
+        + "through the streamer, which hands it the instant. Nothing was written");
   }
 
   /**

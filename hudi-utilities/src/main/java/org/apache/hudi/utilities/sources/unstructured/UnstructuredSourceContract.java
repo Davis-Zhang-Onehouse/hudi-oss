@@ -30,7 +30,6 @@ import org.apache.hudi.keygen.ComplexKeyGenerator;
 import org.apache.hudi.keygen.NonpartitionedKeyGenerator;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.keygen.factory.HoodieSparkKeyGeneratorFactory;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobSourceSetup;
@@ -85,7 +84,6 @@ public class UnstructuredSourceContract implements SourceContract {
   @Override
   public TypedProperties prepareJob(TypedProperties jobProps) {
     TypedProperties merged = TypedProperties.copy(jobProps);
-    require(merged, HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER, "true", UnstructuredSourceContract::ignoringCase, "");
     require(merged, KeyGeneratorOptions.RECORDKEY_FIELD_NAME, String.join(",", mode.keyColumns()),
         UnstructuredSourceContract::fields, " (these fields, in this order)");
     if (ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE)) {

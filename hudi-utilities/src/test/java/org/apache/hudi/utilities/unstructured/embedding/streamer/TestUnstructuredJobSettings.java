@@ -31,7 +31,6 @@ import org.apache.hudi.keygen.ComplexKeyGenerator;
 import org.apache.hudi.keygen.NonpartitionedKeyGenerator;
 import org.apache.hudi.keygen.SimpleKeyGenerator;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
-import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobJobHarness;
 import org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector;
@@ -65,7 +64,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Tag("functional")
 public class TestUnstructuredJobSettings extends EmbeddingRoundTestBase {
 
-  private static final String START_COMMIT = HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key();
   private static final String INJECTOR = HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key();
   private static final String CODEC = HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME.key();
   private static final String BLOOM = HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED.key();
@@ -140,14 +138,14 @@ public class TestUnstructuredJobSettings extends EmbeddingRoundTestBase {
   }
 
   /**
-   * A blob job that sets none of start-commit-before-transformer, the markers, the injector, the record key, the codec or the bloom
+   * A blob job that sets none of the markers, the injector, the record key, the codec or the bloom
    * filter runs: the streamer sets them, so the table stores the blob key list and its files are uncompressed with no bloom filter.
    * The job's own properties are not changed.
    */
   @Test
   public void blobJobRunsWithEveryRequiredSettingUnset() throws Exception {
     announceObjects();
-    TypedProperties props = job(UnstructuredMode.BLOB, START_COMMIT, MARKERS, ROLLBACK, INJECTOR, RECORD_KEY, CODEC, BLOOM);
+    TypedProperties props = job(UnstructuredMode.BLOB, MARKERS, ROLLBACK, INJECTOR, RECORD_KEY, CODEC, BLOOM);
     TypedProperties before = TypedProperties.copy(props);
 
     runBlobJob(props);
@@ -158,11 +156,11 @@ public class TestUnstructuredJobSettings extends EmbeddingRoundTestBase {
     assertEquals(before, props, "the job's own properties are not changed");
   }
 
-  /** The same for the embedding job: start-commit, the markers, the injector and the record key are set; codec and bloom stay Hudi's. */
+  /** The same for the embedding job: the markers, the injector and the record key are set; codec and bloom stay Hudi's. */
   @Test
   public void embeddingJobRunsWithEveryRequiredSettingUnset() throws Exception {
     announce(text("a", "alpha", "beta"));
-    TypedProperties props = job(UnstructuredMode.EMBEDDING, START_COMMIT, MARKERS, ROLLBACK, INJECTOR, RECORD_KEY);
+    TypedProperties props = job(UnstructuredMode.EMBEDDING, MARKERS, ROLLBACK, INJECTOR, RECORD_KEY);
     TypedProperties before = TypedProperties.copy(props);
 
     Round round = round(props);
@@ -209,7 +207,6 @@ public class TestUnstructuredJobSettings extends EmbeddingRoundTestBase {
   public void sameValueSetByTheJobIsAccepted() throws Exception {
     announceObjects();
     TypedProperties blob = job(UnstructuredMode.BLOB);
-    blob.setProperty(START_COMMIT, "TRUE");
     blob.setProperty(MARKERS, "timeline_server_based");
     blob.setProperty(ROLLBACK, "True");
     blob.setProperty(INJECTOR, " " + BlobParquetConfigInjector.class.getName() + " ");
@@ -218,7 +215,6 @@ public class TestUnstructuredJobSettings extends EmbeddingRoundTestBase {
     assertEquals(1, EmbeddingStreamers.commits(blobTable(), storage()).size());
 
     TypedProperties embedding = job(UnstructuredMode.EMBEDDING);
-    embedding.setProperty(START_COMMIT, "true");
     embedding.setProperty(MARKERS, "TIMELINE_SERVER_BASED");
     embedding.setProperty(ROLLBACK, "true");
     embedding.setProperty(RECORD_KEY, String.join(" ,", EmbeddingTableSchema.KEY_COLUMNS));
@@ -228,13 +224,11 @@ public class TestUnstructuredJobSettings extends EmbeddingRoundTestBase {
   /** A different value of a required setting is refused at start, naming the setting, the source and the job's mode. */
   @ParameterizedTest(name = "{0} {1}={2}")
   @CsvSource(delimiter = '|', value = {
-      "BLOB|hoodie.streamer.start.commit.before.transformer|false",
       "BLOB|hoodie.write.markers.type|DIRECT",
       "BLOB|hoodie.rollback.using.markers|false",
       "BLOB|hoodie.parquet.write.config.injector.class|org.apache.hudi.utilities.unstructured.embedding.EmbeddingParquetConfigInjector",
       "BLOB|hoodie.datasource.write.recordkey.field|source_modification_time,source_path_sha,source_file_size",
       "BLOB|hoodie.datasource.write.recordkey.field|source_path_sha",
-      "EMBEDDING|hoodie.streamer.start.commit.before.transformer|false",
       "EMBEDDING|hoodie.write.markers.type|DIRECT",
       "EMBEDDING|hoodie.rollback.using.markers|false",
       "EMBEDDING|hoodie.parquet.write.config.injector.class|org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector",

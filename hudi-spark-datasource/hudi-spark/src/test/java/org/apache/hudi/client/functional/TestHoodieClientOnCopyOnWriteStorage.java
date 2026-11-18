@@ -1902,10 +1902,12 @@ public class TestHoodieClientOnCopyOnWriteStorage extends HoodieClientTestBase {
   /**
    * Verifies that clustering fails with {@link HoodieWriteConflictException} when
    * {@code hoodie.clustering.fail.on.pending.ingestion.during.conflict.resolution} is enabled
-   * and an ingestion .requested instant with an active heartbeat exists.
+   * and an ingestion .requested instant with an active heartbeat exists, or an ingestion instant that is INFLIGHT with an empty
+   * inflight file: clustering cannot commit over the file groups such an instant is about to write.
    */
-  @Test
-  public void testClusteringFailsOnPendingIngestionRequestedInstant() throws Exception {
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void testClusteringFailsOnPendingIngestionRequestedInstant(boolean emptyInflight) throws Exception {
     Properties properties = createOccProperties();
     HoodieCleanConfig cleanConfig = createCleanConfig(HoodieFailedWritesCleaningPolicy.LAZY, false);
     int numRecords = 200;
@@ -1915,9 +1917,15 @@ public class TestHoodieClientOnCopyOnWriteStorage extends HoodieClientTestBase {
         buildOccWriteConfig(properties, cleanConfig, new PreferWriterConflictResolutionStrategy()));
     seedTableWithFirstCommit(client, numRecords);
 
-    // Simulate an ingestion writer that has created a .requested commit with an active heartbeat
+    // Simulate an ingestion writer that has created a .requested commit with an active heartbeat; with emptyInflight, it has
+    // also moved it to inflight with an empty inflight file, before writing its workload profile (as the streamer does before
+    // an instant-aware transformer writes), so the instant names no file group yet
     String ingestionRequestedTime = WriteClientTestUtils.createNewInstantTime();
-    HoodieTestTable.of(metaClient).addRequestedCommit(ingestionRequestedTime);
+    if (emptyInflight) {
+      HoodieTestTable.of(metaClient).addInflightCommit(ingestionRequestedTime);
+    } else {
+      HoodieTestTable.of(metaClient).addRequestedCommit(ingestionRequestedTime);
+    }
     HoodieHeartbeatClient heartbeatClient = new HoodieHeartbeatClient(
         metaClient.getStorage(), metaClient.getBasePath().toString(),
         (long) (1000 * 60), 5);
@@ -2219,5 +2227,32 @@ public class TestHoodieClientOnCopyOnWriteStorage extends HoodieClientTestBase {
     Properties properties = new Properties();
     properties.setProperty("hoodie.datasource.write.row.writer.enable", String.valueOf(false));
     return properties;
+  }
+
+  @Test
+  public void testSecondBulkWriteAtSameInstantRequiresOptIn() throws Exception {
+    HoodieWriteConfig config = getConfigBuilder()
+        .withMetadataConfig(HoodieMetadataConfig.newBuilder().enable(false).build()).build();
+    try (SparkRDDWriteClient client = getHoodieWriteClient(config)) {
+      String instant = client.startCommit();
+      JavaRDD<HoodieRecord> first = jsc.parallelize(dataGen.generateInserts(instant, 10), 1);
+      assertNoWriteErrors(client.bulkInsert(first, instant).collect());
+      JavaRDD<HoodieRecord> second = jsc.parallelize(dataGen.generateInserts(instant, 10), 1);
+      assertThrows(Exception.class, () -> client.bulkInsert(second, instant).collect());
+    }
+  }
+
+  @Test
+  public void testExplicitSameInstantOptInStillAllowsBothBulkWrites() throws Exception {
+    HoodieWriteConfig config = getConfigBuilder()
+        .withMetadataConfig(HoodieMetadataConfig.newBuilder().enable(false).build())
+        .withAllowMultiWriteOnSameInstant(true).build();
+    try (SparkRDDWriteClient client = getHoodieWriteClient(config)) {
+      String instant = client.startCommit();
+      JavaRDD<HoodieRecord> first = jsc.parallelize(dataGen.generateInserts(instant, 10), 1);
+      assertNoWriteErrors(client.bulkInsert(first, instant).collect());
+      JavaRDD<HoodieRecord> second = jsc.parallelize(dataGen.generateInserts(instant, 10), 1);
+      assertNoWriteErrors(client.bulkInsert(second, instant).collect());
+    }
   }
 }
