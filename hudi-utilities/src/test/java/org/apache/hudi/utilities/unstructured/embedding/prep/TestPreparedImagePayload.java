@@ -64,7 +64,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -121,6 +124,31 @@ public class TestPreparedImagePayload {
     @Override
     public ClosableIterator<Chunk> open(BlobBytesSupplier bytes, FileMeta file, Tokenizer tokenizer, TypedProperties props) {
       Chunk chunk = Chunk.builder(EmbeddingTableSchema.MODALITY_IMAGE).sourcePayload(bytes, file.getFileSize(), "image/png").build();
+      return ClosableIterator.wrap(Collections.singletonList(chunk).iterator());
+    }
+  }
+
+  /** One image chunk per file of {@link #DERIVED}, at its exact size. */
+  public static class OneDerivedPayloadPreprocessor implements FilePreprocessor {
+    @Override
+    public String name() {
+      return "one-derived-payload-v1";
+    }
+
+    @Override
+    public SourceKind sourceKind() {
+      return SourceKind.IMAGE;
+    }
+
+    @Override
+    public boolean storesInputs() {
+      return true;
+    }
+
+    @Override
+    public ClosableIterator<Chunk> open(BlobBytesSupplier bytes, FileMeta file, Tokenizer tokenizer, TypedProperties props) {
+      Chunk chunk = Chunk.builder(EmbeddingTableSchema.MODALITY_IMAGE)
+          .payload(() -> new ByteArrayInputStream(DERIVED), DERIVED.length, "image/jpeg").build();
       return ClosableIterator.wrap(Collections.singletonList(chunk).iterator());
     }
   }
@@ -319,6 +347,46 @@ public class TestPreparedImagePayload {
         + ", and this prep has no payload destination"), error);
   }
 
+  /**
+   * A background payload write that fails is thrown where the iterator reports its end, and the iterator is closed there: the
+   * task's write threads end although nobody calls {@link PreprocessingIterator#close} (outside Spark nothing else would).
+   */
+  @Test
+  public void failedWriteAtTheEndClosesTheIterator() throws Exception {
+    TypedProperties props = props();
+    preprocessor(props, "one", OneDerivedPayloadPreprocessor.class);
+    props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
+    // the write fails at creating its file, whatever timeline server an earlier test left configured
+    props.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    // the blob folder is a file, so the payload file cannot be created
+    Path blobFolder = temp.resolve("embedding").resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME);
+    Files.createDirectories(blobFolder.getParent());
+    Files.write(blobFolder, new byte[0]);
+    Set<Thread> before = writeThreads();
+    PreprocessingIterator iterator = storingIterator(props, embeddingTable, inlineRow("sha-fail", "one", new byte[] {1}));
+
+    assertTrue(iterator.hasNext());
+    iterator.next();
+    assertThrows(EmbeddingPayloadWriteException.class, iterator::hasNext);
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    Set<Thread> left = writeThreads();
+    left.removeAll(before);
+    while (!left.isEmpty() && System.nanoTime() < deadline) {
+      for (Thread thread : left) {
+        thread.join(100);
+      }
+      left = writeThreads();
+      left.removeAll(before);
+    }
+    assertEquals(Collections.emptySet(), left, "the task's write threads ended");
+  }
+
+  /** The live threads of every out-of-line write pool. */
+  private static Set<Thread> writeThreads() {
+    return Thread.getAllStackTraces().keySet().stream().filter(Thread::isAlive)
+        .filter(thread -> thread.getName().startsWith("hudi-out-of-line-write-")).collect(Collectors.toCollection(HashSet::new));
+  }
+
   @Test
   public void derivedPayloadAboveTheThresholdIsWrittenOutOfLineUnderTheEmbeddingTable() throws IOException {
     TypedProperties props = props();
@@ -376,7 +444,8 @@ public class TestPreparedImagePayload {
 
     RuntimeException failure = assertThrows(RuntimeException.class, () -> drain(iterator));
     assertTrue(PrepFailures.roundFailure(failure) instanceof EmbeddingPayloadWriteException, String.valueOf(failure));
-    assertTrue(failure.getMessage().contains("modality=image chunk_id=0"), failure.getMessage());
+    // both chunks are written on the task's write pool at once: the round fails with whichever failure comes first
+    assertTrue(failure.getMessage().matches("(?s).*modality=image chunk_id=[01] .*"), failure.getMessage());
     assertTrue(iterator.getSideOutputs().isEmpty(), "never a quarantine entry: " + iterator.getSideOutputs());
     assertFalse(Files.isDirectory(temp.resolve("embedding").resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME)));
   }

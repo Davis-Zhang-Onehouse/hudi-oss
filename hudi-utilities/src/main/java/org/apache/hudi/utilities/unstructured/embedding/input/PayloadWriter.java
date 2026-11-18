@@ -18,7 +18,9 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.input;
 
+import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
+import org.apache.hudi.utilities.unstructured.storage.OutOfLineWritePool;
 import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter;
 
 import java.io.IOException;
@@ -83,6 +85,39 @@ public final class PayloadWriter {
     } catch (IOException | RuntimeException e) {
       throw payload.failure(step[0], e.getMessage(), e);
     }
+  }
+
+  /**
+   * As {@link #stream} for a payload already read whole: names the file now, on the calling task's thread, and writes it on
+   * {@code pool}, which throws a failure to create or write it, an {@link EmbeddingPayloadWriteException} as {@link #stream}
+   * makes it, at the task's next submit or at its {@link OutOfLineWritePool#awaitAll}. A submit refused (the task was
+   * interrupted while waiting for room, or its pool is closed) is an {@link EmbeddingPayloadWriteException} of this payload: a
+   * failure of the round, never of the row's content. Returns the generated relative path.
+   */
+  public static String write(OutOfLineWriter writer, OutOfLineWritePool pool, Payload payload, byte[] bytes) {
+    String relative = writer.newPath(payload.partitionPath);
+    try {
+      submit(writer, pool, payload, bytes, relative);
+    } catch (EmbeddingPayloadWriteException e) {
+      throw e;
+    } catch (HoodieException e) {
+      throw payload.failure(STEP_CREATE, e.getMessage(), e);
+    }
+    return relative;
+  }
+
+  private static void submit(OutOfLineWriter writer, OutOfLineWritePool pool, Payload payload, byte[] bytes, String relative) {
+    pool.submit(bytes.length, () -> {
+      String[] step = {STEP_CREATE};
+      try {
+        writer.writeAt(relative, out -> {
+          step[0] = STEP_WRITE;
+          out.write(bytes);
+        });
+      } catch (IOException | RuntimeException e) {
+        throw payload.failure(step[0], e.getMessage(), e);
+      }
+    });
   }
 
   /** A failure of the payload stream {@link #stream} reads, carried past the write's own classification. */

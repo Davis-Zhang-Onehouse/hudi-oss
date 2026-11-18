@@ -28,6 +28,8 @@ import org.apache.hudi.utilities.sources.blob.SourceOpenHooks;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageFixtures;
+import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
+import org.apache.hudi.utilities.unstructured.embedding.input.PayloadDestination;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
 import org.apache.hudi.utilities.unstructured.embedding.source.CountingObjectFileSystem;
@@ -48,11 +50,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -292,6 +298,35 @@ public class TestPreprocessingIteratorPrefetch {
     return rows;
   }
 
+  /**
+   * Videos read ahead while their frames are written out of line in the background: two clips in one partition, every frame
+   * above the inline threshold (0). The second clip is read on the read-ahead thread; the frames (their stored bytes) and side
+   * outputs are those of a run without the read ahead, each clip is opened once in all (a failed read ahead would open it again
+   * on the task), and every payload file a row references exists when the iterator first reports its end.
+   */
+  @Test
+  public void videosReadAheadWithBackgroundFrameWritesMatchARunWithoutReadAhead() throws IOException {
+    byte[] first = resource("/video/h264-aac-speech-12s.mp4");
+    byte[] second = resource("/video/h264-aac-bframes-12s.mp4");
+    List<Row> corpus = Arrays.asList(
+        objectRow("sha-v1", "mp4", object("v1.mp4", first), first.length),
+        objectRow("sha-v2", "mp4", object("v2.mp4", second), second.length));
+
+    StoredRun without = storedRun(videoProps(0L), corpus);
+    StoredRun with = storedRun(videoProps(8L * 1024 * 1024), corpus);
+
+    assertEquals(without.frames, with.frames);
+    assertEquals(without.sideOutputs, with.sideOutputs);
+    assertTrue(with.frames.size() >= 2, with.frames.toString());
+    assertTrue(with.frames.stream().allMatch(frame -> frame.startsWith(HoodieSchema.Blob.OUT_OF_LINE)), with.frames.toString());
+    assertEquals(0, without.prefetchOpens, "nothing is read ahead at 0");
+    assertEquals(1, with.prefetchOpens, "the second clip is read ahead");
+    assertEquals(Arrays.asList(1, 1), with.opensPerClip, "each clip is opened once, the second only by the read ahead");
+    assertEquals(Arrays.asList(1, 1), without.opensPerClip);
+    assertEquals(Collections.emptyList(), with.missingAtEnd);
+    assertEquals(Collections.emptyList(), without.missingAtEnd);
+  }
+
   /** A JPEG under 1 MiB whose header the JDK reader reads twice, more than 1 MiB served in all. */
   private static byte[] metadataHeavyJpeg() {
     byte[] jpeg = ImageFixtures.image("jpeg", 64, 48);
@@ -321,6 +356,107 @@ public class TestPreprocessingIteratorPrefetch {
     private final List<String> rows = new ArrayList<>();
     private final List<String> sideOutputs = new ArrayList<>();
     private int prefetchOpens;
+  }
+
+  /** The frames (each its blob type and the SHA-256 of its stored bytes), side outputs and read-ahead opens of one drained run. */
+  private static final class StoredRun {
+    private final List<String> frames = new ArrayList<>();
+    private final List<String> sideOutputs = new ArrayList<>();
+    private final List<String> missingAtEnd = new ArrayList<>();
+    private final List<Integer> opensPerClip = new ArrayList<>();
+    private int prefetchOpens;
+  }
+
+  /** {@link #run} with the input store writing out-of-line payloads under the embedding table. */
+  private StoredRun storedRun(TypedProperties props, List<Row> rows) throws IOException {
+    AtomicInteger prefetchOpens = new AtomicInteger();
+    List<AtomicInteger> opens = new ArrayList<>();
+    for (Row row : rows) {
+      String path = ((Row) row.getAs(BlobColumns.BLOB)).getStruct(2).getString(0);
+      AtomicInteger clipOpens = new AtomicInteger();
+      opens.add(clipOpens);
+      SourceOpenHooks.beforeOpen(localOf(path).toAbsolutePath().toString(), () -> {
+        clipOpens.incrementAndGet();
+        if (Thread.currentThread().getName().startsWith(PREFETCH_THREAD)) {
+          prefetchOpens.incrementAndGet();
+        }
+      });
+    }
+    Configuration conf = new Configuration();
+    CountingObjectFileSystem.install(conf, temp.resolve("buckets"));
+    BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(conf), TransientRetry.NONE)
+        .withReadahead(BlobBytesSource.PREP_SOURCE_READAHEAD_BYTES);
+    PrepCounters counters = new PrepCounters(new LongAccumulator(), new LongAccumulator(), new LongAccumulator(),
+        new LongAccumulator(), new LongAccumulator());
+    PayloadDestination destination = new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), embeddingTable, props);
+    PreprocessingIterator iterator = new PreprocessingIterator(rows.iterator(), EmbeddingTableConfig.from(props), "001", source,
+        new PreprocessorRegistry(props), new WordCountTokenizer(), counters, null, destination);
+    StoredRun run = new StoredRun();
+    List<Row> prepared = new ArrayList<>();
+    try {
+      while (iterator.hasNext()) {
+        prepared.add(iterator.next());
+      }
+      // the iterator has reported its end: every payload file it references is written
+      for (Row row : prepared) {
+        Row image = (Row) row.get(EmbeddingTableSchema.BASE_COLUMNS.indexOf(EmbeddingTableSchema.PREPARED_IMAGE));
+        byte[] bytes;
+        // the prepared image is a blob value: type, inline data, reference (path first)
+        if (HoodieSchema.Blob.OUT_OF_LINE.equals(image.getString(0))) {
+          String path = image.getStruct(2).getString(0);
+          Path file = temp.resolve("embedding").resolve(path);
+          if (!Files.exists(file)) {
+            run.missingAtEnd.add(path);
+            continue;
+          }
+          bytes = Files.readAllBytes(file);
+        } else {
+          bytes = (byte[]) image.get(1);
+        }
+        run.frames.add(image.getString(0) + " " + row.get(EmbeddingTableSchema.BASE_COLUMNS.indexOf(EmbeddingTableSchema.SOURCE_PATH_SHA))
+            + " " + sha256(bytes));
+      }
+    } finally {
+      iterator.close();
+    }
+    for (PrepSideOutput entry : iterator.getSideOutputs()) {
+      run.sideOutputs.add(entry.getSourcePathSha() + " " + entry.getStage() + " " + entry.getModality() + " " + entry.getError());
+    }
+    run.prefetchOpens = prefetchOpens.get();
+    for (AtomicInteger clipOpens : opens) {
+      run.opensPerClip.add(clipOpens.get());
+    }
+    SourceOpenHooks.clear();
+    return run;
+  }
+
+  /** Video prep only (mp4), every frame stored out of line, reading at most {@code prefetchMaxBytes} ahead. */
+  private TypedProperties videoProps(long prefetchMaxBytes) {
+    TypedProperties props = props(prefetchMaxBytes);
+    props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "mp4");
+    props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), "0");
+    // no timeline server here: the files are written without markers
+    props.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    return props;
+  }
+
+  private static byte[] resource(String name) throws IOException {
+    try (InputStream in = TestPreprocessingIteratorPrefetch.class.getResourceAsStream(name)) {
+      assertNotNull(in, name);
+      return in.readAllBytes();
+    }
+  }
+
+  private static String sha256(byte[] bytes) {
+    try {
+      StringBuilder hex = new StringBuilder();
+      for (byte b : MessageDigest.getInstance("SHA-256").digest(bytes)) {
+        hex.append(String.format("%02x", b));
+      }
+      return hex.toString();
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   private Run run(TypedProperties props, List<Row> rows) {

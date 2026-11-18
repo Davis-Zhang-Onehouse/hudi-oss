@@ -28,6 +28,7 @@ import org.apache.hudi.utilities.unstructured.embedding.prep.video.FrameExtracti
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
+import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlob;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobInputStream;
 
@@ -50,9 +51,8 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Deque;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.function.Function;
@@ -64,12 +64,16 @@ import java.util.function.Function;
  * resize; JPEG q90 is the shared frame representation). Data prep stores the encoded frame inline as the frame row's
  * payload; compute resizes it in memory.
  *
- * <p>Per video it opens two grabbers over two seekable views of the blob ({@link SeekableBlobInputStream}; nothing buffers the
- * file): a SCANNER that reads packets only — it is never asked for a frame (opening it probes the stream, which FFmpeg may do by
- * decoding a few frames) — and feeds their keyframe timestamps to the schedule, and a DECODER that seeks to each chosen keyframe
- * and decodes that one frame ({@code thread_count} = {@link VideoFrameConfig#getThreads()}) straight into a BGR
- * {@link BufferedImage}. Frames come out one per {@code next()}: at most one decoded frame, its raster and its encoded JPEG are
- * alive at a time, whatever the video's length.
+ * <p>Per video it opens the blob once and starts one grabber over it ({@link SeekableBlobInputStream} over a
+ * {@link BlockBufferedBlob}: reads go to storage in 1 MiB blocks, at most two of them kept, never the whole file). The grabber
+ * first SCANS: it reads every packet, never asked for a frame (starting it probes the stream, which FFmpeg may do by decoding a
+ * few frames), and feeds the keyframe timestamps to the schedule, which chooses the keyframes to keep. Then it DECODES: it seeks
+ * to each chosen keyframe and decodes that one frame ({@code thread_count} = {@link VideoFrameConfig#getThreads()}) straight
+ * into a BGR {@link BufferedImage}. Frames come out one per {@code next()}: at most one decoded frame, its raster and its
+ * encoded JPEG are alive at a time, whatever the video's length; the chosen keyframes are two timestamps each. A scan that
+ * ends in a failure (a cut file, unreadable packets, a storage failure) yields the frames chosen before it, then throws it,
+ * where reading and decoding side by side did. (A storage failure part way through a file, a failure of the round, may be
+ * reported a few frames later than then.)
  *
  * <p>Time: a frame's timestamp is its keyframe's PTS minus the CONTAINER's
  * start time, clamped at 0, in milliseconds, with the PTS as the FFmpeg demuxer reports them (it applies an MP4/MOV edit list itself, its
@@ -109,6 +113,8 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
   private static final long TIMESTAMP_TOLERANCE_MICROS = 1;
   /** How far the packets may end before a declared duration (at least; two packet intervals when larger) before a cut is assumed. */
   static final long TRUNCATION_TOLERANCE_MICROS = 250_000L;
+  /** Channels of a BGR24 frame, the pixel format the grabber converts every decoded frame to. */
+  private static final int BGR_CHANNELS = 3;
 
   @Override
   public String name() {
@@ -178,14 +184,17 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private final FileMeta video;
     private final KeyframeSchedule schedule;
     private final FrameDedup dedup;
-    /** Chosen keyframes not yet decoded, as {relative to the origin, as the demuxer reported it} in microseconds: at most two. */
-    private final Deque<long[]> chosen = new ArrayDeque<>(2);
+    /** The chosen keyframes, in order, as {relative to the origin, as the demuxer reported it} in microseconds. */
+    private final List<long[]> chosen = new ArrayList<>();
+    /** The next of {@link #chosen} to decode. */
+    private int nextChosen;
     private final Java2DFrameConverter converter = new Java2DFrameConverter();
     private final long maxPixels;
-    private SeekableBlobInputStream scanStream;
-    private SeekableBlobInputStream decodeStream;
-    private FFmpegFrameGrabber scanner;
-    private FFmpegFrameGrabber decoder;
+    private BlockBufferedBlob blob;
+    private SeekableBlobInputStream stream;
+    private FFmpegFrameGrabber grabber;
+    /** The blob's failure count when the scan ended: a decode that sees more met a storage failure of its own. */
+    private long failuresAfterScan;
     private FrameJpegEncoder encoder;
     private int videoStream;
     private AVRational timeBase;
@@ -208,7 +217,9 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
     /** An AVI: its extent is checked at open, never its duration (re-derived when cut, a placeholder when never patched). */
     private boolean riff;
     private long[] smallestStepMicros;
-    private boolean scannedToEnd;
+    private boolean scanned;
+    /** How the scan ended when it did not reach the end of a whole file: thrown once the frames chosen before it are out. */
+    private RuntimeException scanFailure;
     /** Whether a keyframe past JavaCV's timestamp range was seen (and logged). */
     private boolean pastJavacvRange;
     private long nextIndex;
@@ -235,74 +246,75 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
     private void open(SeekableBlobBytesSupplier bytes, VideoFrameConfig config) throws IOException {
       Natives.init();
-      scanStream = new SeekableBlobInputStream(bytes.openSeekable());
-      scanner = start(new FFmpegFrameGrabber(scanStream), scanStream, config, false);
-      if (scanStream.storageFailure() != null) {
-        // FFmpeg probed the stream over a read that failed in storage: what it found (or did not) says nothing about the video
-        throw failure(scanStream, "could not be probed", null);
+      SeekableBlob source = bytes.openSeekable();
+      try {
+        blob = new BlockBufferedBlob(source);
+      } catch (Throwable e) {
+        // not wrapped yet, so close() would not reach it
+        try {
+          source.close();
+        } catch (Throwable closeFailure) {
+          e.addSuppressed(closeFailure);
+        }
+        throw e;
       }
-      riff = "avi".equals(scanner.getFormatContext().iformat().name().getString());
+      stream = new SeekableBlobInputStream(blob);
+      grabber = start(new FFmpegFrameGrabber(stream), stream, config);
+      if (stream.storageFailure() != null) {
+        // FFmpeg probed the stream over a read that failed in storage: what it found (or did not) says nothing about the video
+        throw failure("could not be probed", null, true);
+      }
+      riff = "avi".equals(grabber.getFormatContext().iformat().name().getString());
       if (riff) {
         String cut = RiffExtent.truncation(bytes, video);
         if (cut != null) {
           throw new VideoDecodeException("video " + video + " " + cut + ": the file is truncated");
         }
       }
-      int streams = scanner.getFormatContext().nb_streams();
+      int streams = grabber.getFormatContext().nb_streams();
       previousPtsMicros = new long[streams];
       Arrays.fill(previousPtsMicros, Long.MIN_VALUE);
       largestDurationMicros = new long[streams];
       streamTimeBases = new AVRational[streams];
       mediaStreams = new boolean[streams];
       for (int i = 0; i < streams; i++) {
-        AVStream each = scanner.getFormatContext().streams(i);
+        AVStream each = grabber.getFormatContext().streams(i);
         streamTimeBases[i] = each.time_base();
         int type = each.codecpar().codec_type();
         mediaStreams[i] = type == avutil.AVMEDIA_TYPE_VIDEO || type == avutil.AVMEDIA_TYPE_AUDIO;
       }
       smallestStepMicros = new long[streams];
       Arrays.fill(smallestStepMicros, Long.MAX_VALUE);
-      videoStream = scanner.getVideoStream();
+      videoStream = grabber.getVideoStream();
       if (videoStream < 0) {
         throw new VideoDecodeException("video " + video + " has no video stream");
       }
-      long pixels = (long) scanner.getImageWidth() * scanner.getImageHeight();
-      if (scanner.getImageWidth() <= 0 || scanner.getImageHeight() <= 0) {
+      long pixels = (long) grabber.getImageWidth() * grabber.getImageHeight();
+      if (grabber.getImageWidth() <= 0 || grabber.getImageHeight() <= 0) {
         throw new VideoDecodeException("video " + video + " declares no frame size");
       }
       if (pixels > config.getMaxPixels()) {
         throw new UncheckedIOException(new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + "video " + video
-            + " declares " + scanner.getImageWidth() + "x" + scanner.getImageHeight() + " = " + pixels
+            + " declares " + grabber.getImageWidth() + "x" + grabber.getImageHeight() + " = " + pixels
             + " pixels per frame, above the configured maximum (" + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") of "
             + config.getMaxPixels()));
       }
-      AVStream stream = scanner.getFormatContext().streams(videoStream);
+      AVStream stream = grabber.getFormatContext().streams(videoStream);
       timeBase = stream.time_base();
       streamStartMicros = stream.start_time() == avutil.AV_NOPTS_VALUE ? 0 : toMicros(stream.start_time(), timeBase);
-      long containerStart = scanner.getFormatContext().start_time();
+      long containerStart = grabber.getFormatContext().start_time();
       originMicros = containerStart == avutil.AV_NOPTS_VALUE ? 0 : containerStart;
-      decodeStream = new SeekableBlobInputStream(bytes.openSeekable());
-      decoder = start(new FFmpegFrameGrabber(decodeStream), decodeStream, config, true);
-      if (decodeStream.storageFailure() != null) {
-        throw failure(decodeStream, "could not be probed", null);
-      }
       encoder = new FrameJpegEncoder();
     }
 
-    private FFmpegFrameGrabber start(FFmpegFrameGrabber grabber, SeekableBlobInputStream stream, VideoFrameConfig config,
-                                     boolean decodes) {
+    private FFmpegFrameGrabber start(FFmpegFrameGrabber grabber, SeekableBlobInputStream stream, VideoFrameConfig config) {
       // the decoder's thread count is explicit (FFmpeg's 0 means "one per core this process may use")
       grabber.setVideoOption("threads", String.valueOf(config.getThreads()));
-      if (decodes) {
-        grabber.setImageMode(FrameGrabber.ImageMode.COLOR);
-        grabber.setPixelFormat(avutil.AV_PIX_FMT_BGR24);
-        // the YUV to BGR conversion is bit-exact, so a frame's pixels (its dedup key and its JPEG) do not depend on the CPU
-        grabber.setImageScalingFlags(swscale.SWS_BILINEAR | swscale.SWS_ACCURATE_RND | swscale.SWS_BITEXACT);
-      } else {
-        // the scanner is never asked for frames: no colour conversion buffers
-        grabber.setImageMode(FrameGrabber.ImageMode.RAW);
-      }
-      return startOrRelease(grabber, stream, video, e -> failure(stream, "cannot be opened", e));
+      grabber.setImageMode(FrameGrabber.ImageMode.COLOR);
+      grabber.setPixelFormat(avutil.AV_PIX_FMT_BGR24);
+      // the YUV to BGR conversion is bit-exact, so a frame's pixels (its dedup key and its JPEG) do not depend on the CPU
+      grabber.setImageScalingFlags(swscale.SWS_BILINEAR | swscale.SWS_ACCURATE_RND | swscale.SWS_BITEXACT);
+      return startOrRelease(grabber, stream, video, e -> failure("cannot be opened", e, stream.storageFailure() != null));
     }
 
     @Override
@@ -327,26 +339,51 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       return frame;
     }
 
-    /** The next chosen keyframe ({relative, as reported}), scanning packets as far as needed; null at the end. */
+    /**
+     * The next chosen keyframe ({relative, as reported}), scanning the whole file first; null at the end. A scan that failed
+     * throws its failure once every keyframe chosen before it was handed out.
+     */
     private long[] nextChosen() {
-      while (chosen.isEmpty() && !scannedToEnd) {
+      if (!scanned) {
+        scanned = true;
+        scan();
+        failuresAfterScan = blob.failures();
+      }
+      if (nextChosen < chosen.size()) {
+        return chosen.get(nextChosen++);
+      }
+      if (scanFailure != null) {
+        throw scanFailure;
+      }
+      return null;
+    }
+
+    /** Reads every packet, choosing keyframes as they come; how it ended, when not at the end of a whole file, is {@link #scanFailure}. */
+    private void scan() {
+      while (true) {
         AVPacket packet;
         try {
-          packet = scanner.grabPacket();
+          packet = grabber.grabPacket();
         } catch (FrameGrabber.Exception e) {
-          throw failure(scanStream, "cannot be read", e);
+          scanFailure = failure("cannot be read", e, stream.storageFailure() != null);
+          return;
         }
         if (packet == null) {
-          scannedToEnd = true;
-          if (scanStream.storageFailure() != null) {
+          if (stream.storageFailure() != null) {
             // the scan stopped on a storage failure, not at the video's end: the remaining targets are not decidable
-            throw failure(scanStream, "could not be read to its end", null);
+            scanFailure = failure("could not be read to its end", null, true);
+            return;
           }
-          checkNotCutShort();
+          try {
+            checkNotCutShort();
+          } catch (VideoDecodeException cut) {
+            scanFailure = cut;
+            return;
+          }
           if (previousRelativeMicros >= 0) {
             choose(schedule.onEnd(lastFrameMicros), -1, -1);
           }
-          break;
+          return;
         }
         try {
           trackPacketEnd(packet);
@@ -376,7 +413,6 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
           avcodec.av_packet_unref(packet);
         }
       }
-      return chosen.isEmpty() ? null : chosen.removeFirst();
     }
 
     /**
@@ -410,7 +446,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
      * a file whose packets stop well before it was cut.
      */
     private void checkNotCutShort() {
-      AVFormatContext format = scanner.getFormatContext();
+      AVFormatContext format = grabber.getFormatContext();
       long declared = format.duration();
       if (riff || format.duration_estimation_method() != avformat.AVFMT_DURATION_FROM_STREAM || declared == avutil.AV_NOPTS_VALUE
           || declared <= 0 || packetsEndMicros < 0) {
@@ -440,7 +476,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
      */
     private void choose(List<Long> chosenRelative, long relativeMicros, long ptsMicros) {
       for (long relative : chosenRelative) {
-        chosen.addLast(new long[] {relative, relative == relativeMicros ? ptsMicros : previousKeyframeMicros});
+        chosen.add(new long[] {relative, relative == relativeMicros ? ptsMicros : previousKeyframeMicros});
       }
     }
 
@@ -470,17 +506,17 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private BufferedImage decodeKeyframe(long keyframeMicros) {
       Frame frame;
       try {
-        decoder.setVideoTimestamp(keyframeMicros - streamStartMicros);
-        frame = decoder.grabImage();
+        grabber.setVideoTimestamp(keyframeMicros - streamStartMicros);
+        frame = grabber.grabImage();
       } catch (FrameGrabber.Exception e) {
-        throw failure(decodeStream, "cannot be decoded at " + keyframeMicros + "us", e);
+        throw failure("cannot be decoded at " + keyframeMicros + "us", e, decodeMetStorageFailure());
       }
-      if (decodeStream.storageFailure() != null) {
-        throw failure(decodeStream, "could not be read at " + keyframeMicros + "us", null);
+      if (decodeMetStorageFailure()) {
+        throw failure("could not be read at " + keyframeMicros + "us", null, true);
       }
       if (frame == null || !frame.keyFrame || Math.abs(frame.timestamp - keyframeMicros) > TIMESTAMP_TOLERANCE_MICROS) {
-        throw failure(decodeStream, "seek to the keyframe at " + keyframeMicros + "us landed on "
-            + (frame == null ? "the end of the stream" : frame.timestamp + "us, keyframe=" + frame.keyFrame), null);
+        throw failure("seek to the keyframe at " + keyframeMicros + "us landed on "
+            + (frame == null ? "the end of the stream" : frame.timestamp + "us, keyframe=" + frame.keyFrame), null, false);
       }
       if ((long) frame.imageWidth * frame.imageHeight > maxPixels) {
         // the declared size passed the guard, this frame does not (a mid-stream resolution change): refused before any more work
@@ -488,16 +524,25 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
             + " has a " + frame.imageWidth + "x" + frame.imageHeight + " frame at " + keyframeMicros + "us, above the configured "
             + "maximum (" + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") of " + maxPixels + " pixels"));
       }
+      // the grabber converts every frame to BGR24, 3 bytes a pixel. JavaCV derives the channel count as the row stride over the
+      // width, and pads a BGR24 row to a multiple of 64 pixels, so a frame 129 to 144 pixels wide (65 to 96, or at most 48) would
+      // read as 4 or more channels: a 4-byte ABGR image of the wrong pixels. The stride stays as JavaCV set it.
+      frame.imageChannels = BGR_CHANNELS;
       // the converter reuses one TYPE_3BYTE_BGR raster per video: it is consumed (hashed, encoded) before the next decode
       return converter.getBufferedImage(frame);
     }
 
+    /** Whether the decodes since the scan met a storage failure of their own. */
+    private boolean decodeMetStorageFailure() {
+      return blob.failures() > failuresAfterScan;
+    }
+
     /**
-     * The failure of an FFmpeg call over {@code stream}: a storage failure seen under it is reported as such (the caller decides
+     * The failure of an FFmpeg call: a storage failure under it ({@code storageFailed}) is reported as such (the caller decides
      * whether it interrupts the round), anything else is the video's data.
      */
-    private RuntimeException failure(SeekableBlobInputStream stream, String what, Exception cause) {
-      IOException storage = stream == null ? null : stream.storageFailure();
+    private RuntimeException failure(String what, Exception cause, boolean storageFailed) {
+      IOException storage = storageFailed && stream != null ? stream.storageFailure() : null;
       if (storage != null) {
         BlobReadException read = storage instanceof BlobReadException ? (BlobReadException) storage : new BlobReadException(storage);
         if (cause != null) {
@@ -517,8 +562,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       next = null;
       // each handle is released whatever the one before it threw, a JVM Error included; the first failure propagates once all
       // ran, the later ones suppressed into it
-      Throwable failure = release(() -> closeQuietly(decoder, decodeStream, video), null);
-      failure = release(() -> closeQuietly(scanner, scanStream, video), failure);
+      Throwable failure = release(() -> closeQuietly(grabber, stream, video), null);
       failure = release(converter::close, failure);
       if (encoder != null) {
         failure = release(encoder::close, failure);

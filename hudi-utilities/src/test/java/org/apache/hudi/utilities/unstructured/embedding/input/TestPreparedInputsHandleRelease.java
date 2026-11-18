@@ -52,8 +52,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * The input store: {@link PreparedInputs#prepare} closes the payload stream it opens and, through {@link PayloadWriter}, the
- * payload file it writes, on the inline and out-of-line main paths and when the payload or the file fails; a failed out-of-line
- * write leaves no file under the embedding table's blob folder.
+ * payload file it writes (in the background, done by {@link PreparedInputs#awaitWrites}), on the inline and out-of-line main
+ * paths and when the payload or the file fails; a failed out-of-line write leaves no file under the embedding table's blob folder.
  */
 @ExtendWith(OutOfLineWriterTestExtension.class)
 public class TestPreparedInputsHandleRelease {
@@ -87,10 +87,13 @@ public class TestPreparedInputsHandleRelease {
   @Test
   public void mainPathClosesThePayloadAndTheStoredFile() throws IOException {
     byte[] small = bytes(32);
-    Row inline = inputs().prepare("row-0", "p1", JPEG, payload(small), small.length);
+    PreparedInputs inputs = inputs();
+    Row inline = inputs.prepare("row-0", "p1", JPEG, payload(small), small.length);
     assertArrayEquals(small, (byte[]) inline.getAs(HoodieSchema.Blob.INLINE_DATA_FIELD));
     byte[] large = bytes(500);
-    Row outOfLine = inputs().prepare("row-1", "p1", JPEG, payload(large), large.length);
+    Row outOfLine = inputs.prepare("row-1", "p1", JPEG, payload(large), large.length);
+    inputs.awaitWrites();
+    inputs.close();
     String externalPath = ((Row) outOfLine.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE)).getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_PATH);
     assertEquals(3, HandleCountingFileSystem.opened(), "two payload reads and one stored file");
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "streams left open by the main path");
@@ -128,7 +131,11 @@ public class TestPreparedInputsHandleRelease {
     byte[] large = bytes(500);
     BlobBytesSupplier largePayload = payload(large);
     HandleCountingFileSystem.inject(table, HandleCountingFileSystem.Fault.CLOSE_WRITE, 1);
-    assertThrows(EmbeddingPayloadWriteException.class, () -> inputs().prepare("row-1", "p1", JPEG, largePayload, large.length));
+    PreparedInputs inputs = inputs();
+    inputs.prepare("row-1", "p1", JPEG, largePayload, large.length);
+    // written in the background: the failure is the task's at its barrier
+    assertThrows(EmbeddingPayloadWriteException.class, inputs::awaitWrites);
+    inputs.close();
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "streams left open by a failed stored-file close");
     assertEquals(Collections.emptyList(), blobFiles(), "files left by a failed stored-file close");
   }

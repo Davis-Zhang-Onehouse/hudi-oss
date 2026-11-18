@@ -27,6 +27,7 @@ import org.apache.hudi.io.hadoop.HoodieBaseParquetWriter;
 import org.apache.hudi.utilities.sources.blob.BlobInlineCeiling;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageContentTypes;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
+import org.apache.hudi.utilities.unstructured.storage.OutOfLineWritePool;
 import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriterTestExtension;
 import org.apache.hudi.utilities.unstructured.storage.ParquetInlineCap;
 
@@ -154,8 +155,8 @@ public class TestPreparedInputs {
   @Test
   void configDefaultsAndRefusals() {
     TypedProperties props = new TypedProperties();
-    // 1 MiB, or 10 KiB on a Parquet without per-column statistics
-    assertEquals(HoodieBaseParquetWriter.supportsColumnStatisticsSwitch() ? 1024L * 1024L : 10L * 1024, EmbeddingInputConfig.inlineMaxBytes(props));
+    // 1 MiB, or 80 KiB (the most used there) on a Parquet without per-column statistics
+    assertEquals(HoodieBaseParquetWriter.supportsColumnStatisticsSwitch() ? 1024L * 1024L : 80L * 1024, EmbeddingInputConfig.inlineMaxBytes(props));
     assertEquals(1.0 / 64, EmbeddingInputConfig.inlineMaxHeapFraction(props));
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), "-1");
     assertThrows(IllegalArgumentException.class, () -> EmbeddingInputConfig.inlineMaxBytes(props));
@@ -310,6 +311,7 @@ public class TestPreparedInputs {
     assertEquals(2, opens[0], "one open per prepare");
     assertEquals(first.getString(0), replay.getString(0));
     assertFalse(first.getStruct(2).getString(0).equals(replay.getStruct(2).getString(0)));
+    inputs.awaitWrites();
     assertArrayEquals(content, stored(replay));
     assertArrayEquals(content, stored(first));
   }
@@ -328,6 +330,7 @@ public class TestPreparedInputs {
     assertTrue(interrupted.getCause() instanceof IOException, String.valueOf(interrupted.getCause()));
     Row retry = inputs.prepare(row(13), "p", JPEG, () -> new ByteArrayInputStream(content), content.length);
     assertFalse(clean.getStruct(2).getString(0).equals(retry.getStruct(2).getString(0)));
+    inputs.awaitWrites();
     assertArrayEquals(content, stored(retry));
   }
 
@@ -385,7 +388,8 @@ public class TestPreparedInputs {
    */
   @Test
   void outOfLinePayloadIsStreamedThroughABoundedBuffer() throws IOException {
-    int length = 5 * PayloadWriter.COPY_BUFFER_BYTES + 3;
+    // above what is read whole and written in the background: streamed
+    int length = OutOfLineWritePool.MAX_PENDING_BYTES + 5 * PayloadWriter.COPY_BUFFER_BYTES + 3;
     byte[] content = bytes(length, 23);
     int[] largestRead = {0};
     BlobBytesSupplier spied = () -> new FilterInputStream(new ByteArrayInputStream(content)) {
@@ -511,8 +515,11 @@ public class TestPreparedInputs {
     return Files.readAllBytes(base().resolve(path));
   }
 
+  /** Prepares {@code content} and waits for its payload file, if any, to be written. */
   private static Row prepare(PreparedInputs inputs, String fileId, String partition, String contentType, byte[] content) {
-    return inputs.prepare(fileId, partition, contentType, () -> new ByteArrayInputStream(content), content.length);
+    Row prepared = inputs.prepare(fileId, partition, contentType, () -> new ByteArrayInputStream(content), content.length);
+    inputs.awaitWrites();
+    return prepared;
   }
 
   /** Every regular file under the test folder, relative to the destination's base, the local file system's checksums left out. */

@@ -189,8 +189,8 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
     if (HoodieBaseParquetWriter.supportsColumnStatisticsSwitch()) {
       assertEquals(EmbeddingInputConfig.DEFAULT_INLINE_MAX_BYTES, threshold);
     } else {
-      // the Spark 3.5 builds: 10 KiB by default, a larger value is used as 80 KiB
-      assertEquals(ParquetInlineCap.DEFAULT_BYTES, threshold);
+      // the Spark 3.5 builds: 80 KiB by default, the most used there; a larger value is used as 80 KiB
+      assertEquals(ParquetInlineCap.MAX_BYTES, threshold);
       TypedProperties large = new TypedProperties();
       large.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(1L << 20));
       assertEquals(ParquetInlineCap.MAX_BYTES, EmbeddingInputConfig.inlineMaxBytes(large));

@@ -21,10 +21,12 @@ package org.apache.hudi.utilities.unstructured.storage;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.sources.blob.BlobTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.LogCapture;
+import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -127,6 +129,28 @@ public class TestParquetInlineCap {
       }
       assertEquals(Collections.singletonList("WARN " + ParquetInlineCap.warning(key, 81921L)), logs.warnings());
     }
+  }
+
+  /**
+   * The embedding input store's threshold: unset, it is the cap itself without the switch (an encoded frame is already in
+   * memory, so every frame up to the cap stays in its row) and 1 MiB with it; a configured value is capped as the blob table's.
+   */
+  @ParameterizedTest
+  @CsvSource(value = {"null,false,81920", "10240,false,10240", "81921,false,81920", "null,true,1048576", "81921,true,81921"},
+      nullValues = "null")
+  public void embeddingInputThresholdDefaultsToTheCapWithoutTheSwitch(String configured, boolean statisticsSwitch, long expected) {
+    TypedProperties props = new TypedProperties();
+    if (configured != null) {
+      props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), configured);
+    }
+    assertEquals(expected, EmbeddingInputConfig.inlineMaxBytes(props, statisticsSwitch));
+  }
+
+  /** A default without the switch above the cap is the cap. */
+  @Test
+  public void defaultWithoutTheSwitchIsAtMostTheCap() {
+    assertEquals(81920L, ParquetInlineCap.effective("k", null, 1L << 20, 1L << 20, false));
+    assertEquals(10240L, ParquetInlineCap.effective("k", null, 1L << 20, false));
   }
 
   @Test

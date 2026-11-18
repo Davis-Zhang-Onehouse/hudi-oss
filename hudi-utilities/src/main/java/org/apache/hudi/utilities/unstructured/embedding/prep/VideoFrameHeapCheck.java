@@ -66,6 +66,12 @@ import java.util.regex.Pattern;
  * <p>Data prep's read ahead ({@link EmbeddingTableConfig#PREP_PREFETCH_MAX_BYTES}) never changes this admission: a job reads
  * ahead only when the slot term plus {@code 2 · prefetch} still fits ({@link #admittedPrefetchBytes}), else it reads nothing ahead.
  *
+ * <p>Not counted: the FFmpeg frame source's block reads (at most 2 MiB per clip) and a task's background out-of-line frame writes
+ * (at most 4 MiB pending plus the payload of at most 4 MiB waiting for room), about 10 MiB per task slot beside the measured
+ * 16 MiB, which was measured before either existed. They come out of the fixed rest
+ * ({@link EmbeddingTableConfig#PREP_VIDEO_HEAP_FIXED_BYTES}) and the per-slot margin; a job admitted at the boundary with many
+ * slots and little fixed rest may need more heap.
+ *
  * <p>It is static: it never waits and never defers. The operator lowers the pixel limit or the slots, or gives the executor more
  * heap. It reads only the job's properties and the Spark conf: no decoder class is loaded on the driver. A job whose prepped
  * extensions map to no video preprocessor is never checked: a job of images and PDFs that lists its extensions in
