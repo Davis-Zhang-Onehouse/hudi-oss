@@ -78,10 +78,17 @@ public class BlobBytesSource implements Serializable {
 
   private static final long serialVersionUID = 1L;
   private static final int READ_BUFFER_BYTES = 64 * 1024;
+  /**
+   * The read-ahead of data prep's source reads ({@link #withReadahead}): a reader that seeks (an image header reader, FFmpeg) gets
+   * this many bytes per storage request instead of the file system's default (S3A: 64 KiB), so it sends far fewer requests.
+   */
+  public static final long PREP_SOURCE_READAHEAD_BYTES = 1024L * 1024;
   // null: no table to resolve a relative path against, so every relative path is refused
   private final String tableBasePath;
   private final StorageConfiguration<?> storageConf;
   private final TransientRetry openRetry;
+  // 0: the file system's own read-ahead
+  private final long readaheadBytes;
   private transient HoodieStorage baseStorage;
   private transient Map<String, HoodieStorage> storageBySchemeAuthority;
 
@@ -113,9 +120,35 @@ public class BlobBytesSource implements Serializable {
    * @param openRetry the in-commit retry of a transient failure to open an OUT_OF_LINE blob
    */
   public BlobBytesSource(String tableBasePath, StorageConfiguration<?> storageConf, TransientRetry openRetry) {
+    this(tableBasePath, storageConf, openRetry, 0L);
+  }
+
+  private BlobBytesSource(String tableBasePath, StorageConfiguration<?> storageConf, TransientRetry openRetry, long readaheadBytes) {
     this.tableBasePath = tableBasePath;
     this.storageConf = storageConf;
     this.openRetry = openRetry;
+    this.readaheadBytes = readaheadBytes;
+  }
+
+  /**
+   * This source, trying each open once ({@link TransientRetry#NONE}): data prep's read ahead of the next file, whose failure the
+   * task's own open, with this source's retry, meets again.
+   */
+  public BlobBytesSource withoutOpenRetry() {
+    return new BlobBytesSource(tableBasePath, storageConf, TransientRetry.NONE, readaheadBytes);
+  }
+
+  /**
+   * This source, with every OUT_OF_LINE stream it opens set to read {@code bytes} ahead where the stream takes a read-ahead (S3A
+   * does; a local file does not). It changes the requests a seeking reader sends, never the bytes it reads.
+   *
+   * @param bytes the read-ahead in bytes; 0 keeps the file system's own
+   */
+  public BlobBytesSource withReadahead(long bytes) {
+    if (bytes < 0) {
+      throw new IllegalArgumentException("Read-ahead must be >= 0 but is " + bytes);
+    }
+    return new BlobBytesSource(tableBasePath, storageConf, openRetry, bytes);
   }
 
   /**
@@ -161,16 +194,31 @@ public class BlobBytesSource implements Serializable {
    *     fails with a {@link BlobTruncatedException} when the object ends inside the recorded range.
    */
   public InputStream open(Row blob) throws IOException {
-    ParsedBlob parsed = parse(blob);
+    return open(parse(blob), null);
+  }
+
+  /**
+   * {@link #open(Row)} of a row whose object's length the caller already knows (data prep: the source listing's size). An
+   * OUT_OF_LINE reference without a range is the whole object, so the open needs no status request for its length: on S3A
+   * the object is opened without the HEAD S3A sends otherwise. A reference with a range, and an INLINE blob, open exactly as
+   * {@link #open(Row)} opens them.
+   *
+   * @param objectLength the length of the object an unranged reference names, as listed
+   */
+  public InputStream open(Row blob, long objectLength) throws IOException {
+    return open(parse(blob), objectLength);
+  }
+
+  private InputStream open(ParsedBlob parsed, Long objectLength) throws IOException {
     if (parsed.data != null) {
       return new ByteArrayInputStream(parsed.data);
     }
-    return openRetry.call("open blob " + parsed.path, () -> openRange(parsed), BlobBytesSource::isTransient);
+    return openRetry.call("open blob " + parsed.path, () -> openRange(parsed, objectLength), BlobBytesSource::isTransient);
   }
 
-  private InputStream openRange(ParsedBlob blob) throws IOException {
+  private InputStream openRange(ParsedBlob blob, Long objectLength) throws IOException {
     HoodieStorage pathStorage = storageFor(blob.path, blob.absolute);
-    SeekableDataInputStream in = openChecked(pathStorage, blob.path);
+    SeekableDataInputStream in = openChecked(pathStorage, blob.path, knownObjectLength(blob, objectLength));
     try {
       if (blob.offset != null && blob.offset > 0) {
         seekChecked(in, pathStorage, blob.path, blob.offset);
@@ -201,23 +249,61 @@ public class BlobBytesSource implements Serializable {
    * @throws BlobReferenceException for a row that names no readable range, exactly as {@link #open} refuses it
    */
   public SeekableBlob openSeekable(Row blob) throws IOException {
+    return openSeekable(parse(blob), null);
+  }
+
+  /**
+   * {@link #openSeekable(Row)} of a row whose object's length the caller already knows (data prep: the source listing's size).
+   * An OUT_OF_LINE reference without a range is the whole object, of that length: no status request is sent for it, and on
+   * S3A the object is opened without the HEAD S3A sends otherwise. A reference with a range, and an INLINE blob, open exactly
+   * as {@link #openSeekable(Row)} opens them.
+   *
+   * @param objectLength the length of the object an unranged reference names, as listed
+   */
+  public SeekableBlob openSeekable(Row blob, long objectLength) throws IOException {
+    return openSeekable(parse(blob), objectLength);
+  }
+
+  /**
+   * A random-access view of an object's bytes the caller already read in full (data prep reads the next file ahead), for an
+   * OUT_OF_LINE row without a range: it reads and seeks as {@link #openSeekable(Row, long)} of an object of {@code
+   * objectBytes.length} bytes does, with no storage access. The row is validated as {@link #openSeekable(Row)} validates it.
+   *
+   * @throws BlobReferenceException for a row that names no readable range, exactly as {@link #openSeekable(Row)} refuses it
+   * @throws IllegalArgumentException for a row that is INLINE or names a range: its bytes are not one whole object
+   */
+  public SeekableBlob openSeekable(Row blob, byte[] objectBytes) throws IOException {
     ParsedBlob parsed = parse(blob);
+    if (parsed.data != null || parsed.offset != null) {
+      throw new IllegalArgumentException("Only a whole OUT_OF_LINE object is read ahead, not " + (parsed.data != null ? "an INLINE blob"
+          : "the range of " + parsed.path));
+    }
+    return new ByteArrayBlob(objectBytes, "the " + objectBytes.length + "-byte blob range of " + parsed.path);
+  }
+
+  private SeekableBlob openSeekable(ParsedBlob parsed, Long objectLength) throws IOException {
     if (parsed.data != null) {
       return new ByteArrayBlob(parsed.data);
     }
-    return openRetry.call("open blob " + parsed.path, () -> openSeekableRange(parsed), BlobBytesSource::isTransient);
+    return openRetry.call("open blob " + parsed.path, () -> openSeekableRange(parsed, objectLength), BlobBytesSource::isTransient);
   }
 
-  private SeekableBlob openSeekableRange(ParsedBlob blob) throws IOException {
+  /** The listed length of the object an unranged reference names; null for a ranged one, whose object length is not known. */
+  private static Long knownObjectLength(ParsedBlob blob, Long objectLength) {
+    return blob.offset == null && blob.length == null ? objectLength : null;
+  }
+
+  private SeekableBlob openSeekableRange(ParsedBlob blob, Long objectLength) throws IOException {
     HoodieStorage pathStorage = storageFor(blob.path, blob.absolute);
     long base = blob.offset == null ? 0L : blob.offset;
+    Long knownLength = knownObjectLength(blob, objectLength);
     long size;
     try {
-      size = blob.length != null ? blob.length : pathStorage.getPathInfo(blob.path).getLength();
+      size = blob.length != null ? blob.length : knownLength != null ? knownLength : pathStorage.getPathInfo(blob.path).getLength();
     } catch (IOException | RuntimeException e) {
       throw notFoundChecked(pathStorage, blob.path, e);
     }
-    SeekableDataInputStream in = openChecked(pathStorage, blob.path);
+    SeekableDataInputStream in = openChecked(pathStorage, blob.path, knownLength);
     try {
       if (base > 0) {
         seekChecked(in, pathStorage, blob.path, base);
@@ -294,12 +380,14 @@ public class BlobBytesSource implements Serializable {
   }
 
   /**
-   * Opens {@code path}; a FileNotFoundException is the file's absence only when a re-check finds it absent (a local "Permission
-   * denied" is a FileNotFoundException of a file that is there: an access denial, a platform failure).
+   * Opens {@code path} ({@link SourceObjectOpener}: with the object's listed length when known, so S3A sends no HEAD, and this
+   * source's read-ahead); a FileNotFoundException is the file's absence only when a re-check finds it absent (a local "Permission
+   * denied" is a FileNotFoundException of a file that is there: an access denial, a platform failure). An open with a known
+   * length is lazy on S3A: a missing object is then reported at the first read or seek, which re-check it the same way.
    */
-  private static SeekableDataInputStream openChecked(HoodieStorage storage, StoragePath path) throws IOException {
+  private SeekableDataInputStream openChecked(HoodieStorage storage, StoragePath path, Long knownLength) throws IOException {
     try {
-      return storage.openSeekable(path, READ_BUFFER_BYTES, false);
+      return SourceObjectOpener.open(storage, path, READ_BUFFER_BYTES, knownLength, readaheadBytes);
     } catch (IOException | RuntimeException e) {
       // the storage layer may wrap the FileNotFoundException (HoodieIOException "Exception creating input stream")
       throw notFoundChecked(storage, path, e);
@@ -434,7 +522,7 @@ public class BlobBytesSource implements Serializable {
    * or an invalid URI/authority rejected during construction is a malformed reference. Other construction failures, a served
    * scheme whose file system is missing included, are storage errors, so prep can fail the round and retry the input.
    */
-  private HoodieStorage storageFor(StoragePath path, boolean absolute) throws IOException {
+  private synchronized HoodieStorage storageFor(StoragePath path, boolean absolute) throws IOException {
     try {
       if (!absolute) {
         if (baseStorage == null) {
@@ -598,13 +686,20 @@ public class BlobBytesSource implements Serializable {
     }
   }
 
-  /** An INLINE blob's bytes, already held by the row. */
+  /** A blob's bytes, already in memory: an INLINE blob's, held by the row, or a whole object read ahead. */
   private static final class ByteArrayBlob implements SeekableBlob {
     private final byte[] data;
+    /** What a seek outside it names: as a storage range blob names its range, for bytes read ahead. */
+    private final String described;
     private int pos;
 
     ByteArrayBlob(byte[] data) {
+      this(data, "an INLINE blob of " + data.length + " bytes");
+    }
+
+    ByteArrayBlob(byte[] data, String described) {
       this.data = data;
+      this.described = described;
     }
 
     @Override
@@ -620,7 +715,7 @@ public class BlobBytesSource implements Serializable {
     @Override
     public void seek(long newPos) throws IOException {
       if (newPos < 0 || newPos > data.length) {
-        throw new BlobTruncatedException("Seek to " + newPos + " outside an INLINE blob of " + data.length + " bytes");
+        throw new BlobTruncatedException("Seek to " + newPos + " outside " + described);
       }
       pos = (int) newPos;
     }

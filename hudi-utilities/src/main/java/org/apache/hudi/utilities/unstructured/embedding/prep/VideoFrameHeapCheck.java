@@ -25,6 +25,8 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoFrameConfig;
 
 import org.apache.spark.SparkConf;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.management.ManagementFactory;
 import java.util.Arrays;
@@ -61,6 +63,9 @@ import java.util.regex.Pattern;
  * taken as the JVM takes it: rounded up to a power of two and clamped to [1 MiB, 512 MiB] ({@code =0} lets G1 choose). An
  * explicit {@code -XX:G1HeapRegionSize} is therefore the exact override where a JDK chooses its regions differently.
  *
+ * <p>Data prep's read ahead ({@link EmbeddingTableConfig#PREP_PREFETCH_MAX_BYTES}) never changes this admission: a job reads
+ * ahead only when the slot term plus {@code 2 · prefetch} still fits ({@link #admittedPrefetchBytes}), else it reads nothing ahead.
+ *
  * <p>It is static: it never waits and never defers. The operator lowers the pixel limit or the slots, or gives the executor more
  * heap. It reads only the job's properties and the Spark conf: no decoder class is loaded on the driver. A job whose prepped
  * extensions map to no video preprocessor is never checked: a job of images and PDFs that lists its extensions in
@@ -70,6 +75,9 @@ public final class VideoFrameHeapCheck {
 
   /** Per-slot bytes beside the decoded frame: decode overhead, one writer row group, the encoder's output. */
   static final long SLOT_OVERHEAD_BYTES = 16L * 1024 * 1024;
+  private static final Logger LOG = LoggerFactory.getLogger(VideoFrameHeapCheck.class);
+  /** The read-ahead buffers a prep task holds at once: the file it prepares and the next one. */
+  static final long PREFETCH_BUFFERS_PER_TASK = 2L;
   /** Bytes per declared pixel a decoding task slot holds. */
   static final long BYTES_PER_PIXEL = 6L;
   /** Bytes per pixel of one frame raster (three 8-bit channels): the large frame buffer that needs contiguous regions. */
@@ -117,6 +125,41 @@ public final class VideoFrameHeapCheck {
 
   /** {@link #check(EmbeddingTableConfig, SparkConf)} with this JVM's launch arguments given, for local mode. */
   static void check(EmbeddingTableConfig config, SparkConf conf, List<String> thisJvmArguments) {
+    HoodieValidationException refused = refusal(config, conf, thisJvmArguments, 0L);
+    if (refused != null) {
+      throw refused;
+    }
+  }
+
+  /**
+   * The read-ahead bound a job that preps video runs with: {@link EmbeddingTableConfig#PREP_PREFETCH_MAX_BYTES} when the frame
+   * decodes still fit the executor heap with a task's two read-ahead buffers ({@code 2 · prefetch} more per task slot), else 0 (no
+   * read ahead, with a WARN), so the read ahead never refuses a job the frame decodes alone admit. A job {@link #check} refuses
+   * is refused there first.
+   */
+  public static long admittedPrefetchBytes(EmbeddingTableConfig config, SparkConf conf) {
+    return admittedPrefetchBytes(config, conf, ManagementFactory.getRuntimeMXBean().getInputArguments());
+  }
+
+  static long admittedPrefetchBytes(EmbeddingTableConfig config, SparkConf conf, List<String> thisJvmArguments) {
+    long prefetch = config.prepPrefetchMaxBytes();
+    if (prefetch == 0L) {
+      return 0L;
+    }
+    HoodieValidationException refused = refusal(config, conf, thisJvmArguments, prefetch);
+    if (refused == null) {
+      return prefetch;
+    }
+    LOG.warn("This round preps video without reading files ahead: {} = {} needs {} x {} more bytes per task slot, which does not fit "
+        + "the executor heap beside the frame decodes. The round runs as without a read ahead; give the executor more heap or lower "
+        + "{} to read ahead.", EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key(), prefetch, PREFETCH_BUFFERS_PER_TASK, prefetch,
+        EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key());
+    return 0L;
+  }
+
+  /** The refusal of a job whose frame decodes, with {@code prefetch}-byte read-ahead buffers, do not fit, or null when they fit. */
+  private static HoodieValidationException refusal(EmbeddingTableConfig config, SparkConf conf, List<String> thisJvmArguments,
+                                                   long prefetch) {
     long maxPixels = VideoFrameConfig.from(config.getProps()).getMaxPixels();
     long fixed = config.videoHeapFixedBytes();
     BlobInlineCeiling executor = BlobInlineCeiling.onDriver(conf, 1.0);
@@ -133,25 +176,30 @@ public final class VideoFrameHeapCheck {
     }
     long region = g1Region.bytes;
     // saturating: a pixel limit large enough to overflow needs more heap than any executor has
-    long slotTerm = saturatedAdd(saturatedMultiply(BYTES_PER_PIXEL, maxPixels), SLOT_OVERHEAD_BYTES);
+    long slotTerm = saturatedAdd(saturatedAdd(saturatedMultiply(BYTES_PER_PIXEL, maxPixels), SLOT_OVERHEAD_BYTES),
+        saturatedMultiply(PREFETCH_BUFFERS_PER_TASK, prefetch));
     long reserve = humongousReserveBytes(maxPixels, region);
     long needed = saturatedAdd(saturatedMultiply(executor.slots(), slotTerm), reserve);
     long available = executor.getExecutorHeapBytes() - executor.getReservedBytes() - fixed;
     if (needed > available) {
-      throw new HoodieValidationException("This job preps video, but its frame decodes do not fit the executor heap: "
+      return new HoodieValidationException("This job preps video, but its frame decodes do not fit the executor heap: "
           + executor.slots() + " task slots x (" + BYTES_PER_PIXEL + " x " + maxPixels + " pixels ("
-          + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") + " + SLOT_OVERHEAD_BYTES + ") + reserve " + RESERVE_RASTERS
+          + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") + " + SLOT_OVERHEAD_BYTES
+          + (prefetch == 0 ? "" : " + " + PREFETCH_BUFFERS_PER_TASK + " x " + prefetch + " (" + EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key() + ")")
+          + ") + reserve " + RESERVE_RASTERS
           + " frame rasters (" + RASTER_BYTES_PER_PIXEL + " x " + maxPixels + " bytes each) in " + reserveRegions(maxPixels, region)
           + " regions each x " + region + " (G1 region, " + g1Region.source + ") = " + reserve + "; needed " + needed
           + " bytes > executor heap " + executor.getExecutorHeapBytes() + " [" + executor.getExecutorHeapSource() + "] - reserved "
           + executor.getReservedBytes() + " - fixed " + fixed + " (" + EmbeddingTableConfig.PREP_VIDEO_HEAP_FIXED_BYTES.key() + ") = "
-          + available + " bytes. Lower " + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + " or the task slots per executor, or "
-          + "give the executor more heap"
+          + available + " bytes. Lower " + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key()
+          + (prefetch == 0 ? "" : " or " + EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key())
+          + " or the task slots per executor, or give the executor more heap"
           // without an allow-list every mapped extension is prepped, the video ones included
           + (config.prepFileExtensions().isPresent() ? "" : ", or, for a job without videos, list its extensions in "
               + EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key())
           + "; nothing was written.");
     }
+    return null;
   }
 
   /**

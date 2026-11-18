@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -36,7 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The frame-heap start check of a job that preps video: {@code slots × (6 · maxPixels + 16 MiB) + reserve ≤ heap − reserved − fixed},
+ * The frame-heap start check of a job that preps video:
+ * {@code slots × (6 · maxPixels + 16 MiB) + reserve ≤ heap − reserved − fixed}, the read ahead admitted only where it fits,
  * heap and slots as the driver reads them, reserve the per-executor contiguity reserve of whole G1 regions.
  */
 public class TestVideoFrameHeapCheck {
@@ -62,6 +64,28 @@ public class TestVideoFrameHeapCheck {
         refused.getMessage());
     assertThrows(HoodieValidationException.class, () -> VideoFrameHeapCheck.check(EmbeddingTableConfig.from(uhd), cluster(4, "713m")));
     assertDoesNotThrow(() -> VideoFrameHeapCheck.check(EmbeddingTableConfig.from(uhd), cluster(4, "714m")));
+  }
+
+  /**
+   * The read ahead never changes admission: at the default 8 MiB, 1080p k = 4 is admitted at 500 MiB as without it, but reads
+   * nothing ahead there (its two buffers per slot do not fit beside the frame decodes); from 564 MiB it reads 8 MiB ahead. A refusal
+   * is the one without a read ahead, naming no read-ahead key.
+   */
+  @Test
+  public void theReadAheadRunsOnlyWhereItsBuffersFit() {
+    TypedProperties hd = props(1920L * 1080);
+    hd.remove(EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key());
+    List<String> noArgs = Collections.emptyList();
+    assertDoesNotThrow(() -> VideoFrameHeapCheck.check(EmbeddingTableConfig.from(hd), cluster(4, "500m")));
+    assertEquals(0L, VideoFrameHeapCheck.admittedPrefetchBytes(EmbeddingTableConfig.from(hd), cluster(4, "500m"), noArgs));
+    // 4 x (12 441 600 + 16 MiB + 2 x 8 MiB) + 4 x 6 x 1 MiB = 209 149 952 <= 564 MiB - 300 MiB - 64 MiB = 209 715 200
+    assertEquals(0L, VideoFrameHeapCheck.admittedPrefetchBytes(EmbeddingTableConfig.from(hd), cluster(4, "563m"), noArgs));
+    assertEquals(8L * MIB, VideoFrameHeapCheck.admittedPrefetchBytes(EmbeddingTableConfig.from(hd), cluster(4, "564m"), noArgs));
+    HoodieValidationException refused = assertThrows(HoodieValidationException.class,
+        () -> VideoFrameHeapCheck.check(EmbeddingTableConfig.from(hd), cluster(4, "499m")));
+    assertFalse(refused.getMessage().contains(EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key()), refused.getMessage());
+    hd.setProperty(EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key(), "0");
+    assertEquals(0L, VideoFrameHeapCheck.admittedPrefetchBytes(EmbeddingTableConfig.from(hd), cluster(4, "4g"), noArgs));
   }
 
   /** 2160p at 2 slots, nothing reserved: 2 x (49 766 400 + 16 MiB) + 4 x 24 x 1 MiB = 233 750 528 bytes beside 64 MiB fixed. */
@@ -238,6 +262,7 @@ public class TestVideoFrameHeapCheck {
     }
   }
 
+  /** A job at {@code maxPixels}, with the default read ahead: it never changes admission. */
   private static TypedProperties props(long maxPixels) {
     TypedProperties props = new TypedProperties();
     props.setProperty(HoodieWriteConfig.BASE_PATH.key(), "/embedding");

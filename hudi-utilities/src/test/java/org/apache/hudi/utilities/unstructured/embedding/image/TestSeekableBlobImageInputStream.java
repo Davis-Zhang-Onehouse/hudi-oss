@@ -121,14 +121,25 @@ public class TestSeekableBlobImageInputStream {
     }
   }
 
-  /** The header cap counts every byte read, wherever it lies, and fails the next read past it. */
+  /**
+   * The header cap counts every distinct byte read, wherever it lies, and fails the next read past it. A bulk read is cut at
+   * the cap; a primitive read the cap would cut (it needs all its bytes in one call) fails with the cap's exception.
+   */
   @Test
   public void theByteCapBoundsTheBytesRead() throws IOException {
+    try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(new byte[100], Integer.MAX_VALUE), 12)) {
+      assertEquals(4, in.read(new byte[4], 0, 4));
+      in.seek(0);
+      assertEquals(4, in.read(new byte[4], 0, 4), "a byte read again is not counted again");
+      in.seek(80);
+      assertEquals(8, in.read(new byte[16], 0, 16), "the bulk read is cut at the cap");
+      ImageHeaderException capped = assertThrows(ImageHeaderException.class, in::read);
+      assertEquals("image header not found within 12 bytes read", capped.getMessage());
+    }
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(new byte[100], Integer.MAX_VALUE), 6)) {
       assertEquals(4, in.read(new byte[4], 0, 4));
       in.seek(90);
-      assertEquals(2, in.read(new byte[4], 0, 4), "the read is cut at the cap");
-      ImageHeaderException capped = assertThrows(ImageHeaderException.class, in::read);
+      ImageHeaderException capped = assertThrows(ImageHeaderException.class, in::readInt, "a primitive read the cap would cut");
       assertEquals("image header not found within 6 bytes read", capped.getMessage());
     }
   }

@@ -38,6 +38,7 @@ import org.apache.hudi.utilities.unstructured.embedding.prep.PrepCounters;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PrepSideOutput;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessingIterator;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
+import org.apache.hudi.utilities.unstructured.embedding.prep.VideoFrameHeapCheck;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenizerFactory;
@@ -149,6 +150,20 @@ final class PrepRound {
     }
   }
 
+  /**
+   * The read-ahead bound the round's tasks use: {@link EmbeddingTableConfig#PREP_PREFETCH_MAX_BYTES}, or, for a job that preps
+   * video, what the frame-heap check admits beside the frame decodes ({@link VideoFrameHeapCheck#admittedPrefetchBytes}).
+   */
+  private static long admittedPrefetchBytes(EmbeddingTableConfig config, SparkConf conf) {
+    PreprocessorRegistry registry = new PreprocessorRegistry(config.getProps());
+    try {
+      return VideoFrameHeapCheck.prepsVideo(config, registry) ? VideoFrameHeapCheck.admittedPrefetchBytes(config, conf)
+          : config.prepPrefetchMaxBytes();
+    } finally {
+      registry.close();
+    }
+  }
+
   /** Whether a preprocessor of the job stores model inputs ({@link PreprocessorRegistry#storesInputs}). */
   private static boolean storesInputs(EmbeddingTableConfig config) {
     PreprocessorRegistry registry = new PreprocessorRegistry(config.getProps());
@@ -191,8 +206,9 @@ final class PrepRound {
       // written under the embedding table as it is prepared, with the round's markers, so a rollback of the instant removes it.
       // A job none of whose preprocessors stores inputs has no destination, so it needs no out-of-line markers
       PayloadDestination destination = storesInputs(config) ? new PayloadDestination(storageConf, target, props) : null;
+      long prefetchMaxBytes = admittedPrefetchBytes(config, spark.sparkContext().getConf());
       JavaRDD<Row> prepared = balanced.getRows().mapPartitions(preprocessFunction(config, instant, storageConf, destination,
-          counters, layoutOf(outputSchema, EmbeddingTableSchema.build(config)), outputSchema));
+          counters, layoutOf(outputSchema, EmbeddingTableSchema.build(config)), outputSchema, prefetchMaxBytes));
       output = spark.createDataFrame(prepared, outputSchema).persist(level);
       // the action that runs preprocessing, inside the round, where a failure rolls the instant back
       long outputRows = output.count();
@@ -259,12 +275,13 @@ final class PrepRound {
 
   private static FlatMapFunction<Iterator<Row>, Row> preprocessFunction(
       EmbeddingTableConfig config, String instant, StorageConfiguration<?> storageConf, PayloadDestination destination,
-      PrepCounters counters, int[] layout, StructType outputSchema) {
+      PrepCounters counters, int[] layout, StructType outputSchema, long prefetchMaxBytes) {
     return blobRows -> {
       Deque<PrepSideOutput> sideOutputs = new ArrayDeque<>();
       PreprocessingIterator rows = new PreprocessingIterator(blobRows, config, instant,
-          new BlobBytesSource(storageConf, config.prepSourceRetry()), new PreprocessorRegistry(config.getProps()),
-          TokenizerFactory.create(config.getProps()), counters, sideOutputs::add, destination);
+          new BlobBytesSource(storageConf, config.prepSourceRetry()).withReadahead(BlobBytesSource.PREP_SOURCE_READAHEAD_BYTES),
+          new PreprocessorRegistry(config.getProps()),
+          TokenizerFactory.create(config.getProps()), counters, sideOutputs::add, destination, prefetchMaxBytes);
       return new Iterator<Row>() {
         @Override
         public boolean hasNext() {
