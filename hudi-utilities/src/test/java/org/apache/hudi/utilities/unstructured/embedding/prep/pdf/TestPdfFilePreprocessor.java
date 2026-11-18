@@ -22,6 +22,7 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.prep.Chunk;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessingException;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
 import org.apache.hudi.utilities.unstructured.embedding.prep.SourceKind;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
@@ -44,6 +45,7 @@ import java.util.Random;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -70,8 +72,64 @@ public class TestPdfFilePreprocessor {
   }
 
   @Test
+  public void okChunksCarryTextTokensAndPageAux() throws IOException {
+    byte[] pdf = PdfFixtures.text(TestPdfBoxChunker.pageText(1, 40, new Random(1)), TestPdfBoxChunker.pageText(2, 40,
+        new Random(2)));
+    List<Chunk> chunks = run(new PdfFilePreprocessor(), pdf, new TypedProperties());
+    assertTrue(chunks.size() > 2);
+    for (Chunk chunk : chunks) {
+      assertEquals("text", chunk.getModality());
+      assertEquals(BPE.countTokens(chunk.getText()), (int) chunk.getTokenCount());
+      assertTrue(Integer.parseInt(chunk.getAux().get(PdfFilePreprocessor.AUX_PAGE_START)) >= 1);
+      assertTrue(chunk.getAux().containsKey(PdfFilePreprocessor.AUX_PAGE_END));
+      assertTrue(chunk.getAux().containsKey(PdfFilePreprocessor.AUX_OVERLAP_CHARS));
+      assertFalse(chunk.getAux().containsKey(PdfFilePreprocessor.AUX_PREP_LOSS));
+    }
+    assertTrue(chunks.stream().anyMatch(c -> !"0".equals(c.getAux().get(PdfFilePreprocessor.AUX_OVERLAP_CHARS))),
+        "the default overlap applies");
+  }
+
+  @Test
+  public void lossSummaryRidesOnTheLastChunkAux() throws IOException {
+    // page 2 fails PAGE_ERROR: its Type3 font has more CharProcs than the cap
+    byte[] pdf = PdfFixtures.type3WithCharProcs(StreamDecodeGuard.MAX_CHAR_PROCS_PER_FONT + 1);
+    List<Chunk> chunks = run(new PdfFilePreprocessor(), pdf, new TypedProperties());
+    Chunk last = chunks.get(chunks.size() - 1);
+    assertEquals("PAGES_LOST failed=1 truncated=0 glyph_limited=0 decode_limited=0 graphics_limited=0 page_limit=false "
+        + "file_error=none", last.getAux().get(PdfFilePreprocessor.AUX_PREP_LOSS));
+  }
+
+  @Test
+  public void failedMarkerBecomesAnIsolatedFailure() {
+    PreprocessingException e = assertThrows(PreprocessingException.class,
+        () -> run(new PdfFilePreprocessor(), "garbage, not a pdf".getBytes(StandardCharsets.US_ASCII), new TypedProperties()));
+    assertTrue(e.getMessage().startsWith("LOAD_ERROR: "), e.getMessage());
+  }
+
+  @Test
   public void noTextMarkerBecomesNoChunks() throws IOException {
     assertTrue(run(new PdfFilePreprocessor(), PdfFixtures.imageOnly(1, 30), new TypedProperties()).isEmpty());
+  }
+
+  @Test
+  public void invalidConfigFailsAtOpen() {
+    TypedProperties props = new TypedProperties();
+    props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "8");
+    PdfFilePreprocessor preprocessor = new PdfFilePreprocessor();
+    assertThrows(IllegalArgumentException.class, () -> preprocessor.validateConfig(props, BPE));
+    PreprocessorConfigurationException refused = assertThrows(PreprocessorConfigurationException.class,
+        () -> preprocessor.open(() -> new ByteArrayInputStream(new byte[0]), new FileMeta("f", "pdf", 0), BPE, props));
+    assertInstanceOf(IllegalArgumentException.class, refused.getCause());
+  }
+
+  @Test
+  public void registryDefaultsPdfToTheRealChunker() {
+    PreprocessorRegistry registry = new PreprocessorRegistry(new TypedProperties());
+    assertTrue(registry.forExtension("pdf").get() instanceof PdfFilePreprocessor);
+    assertTrue(registry.forExtension("PDF").get() instanceof PdfFilePreprocessor);
+    TypedProperties bad = new TypedProperties();
+    bad.setProperty(EmbeddingTableConfig.PDF_MAX_PAGES.key(), "0");
+    assertThrows(IllegalArgumentException.class, () -> new PreprocessorRegistry(bad).validateConfig(bad, BPE));
   }
 
   @Test

@@ -18,16 +18,50 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
 
+import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.graphics.form.PDFormXObject;
+import org.apache.pdfbox.pdmodel.graphics.form.PDTransparencyGroup;
 import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.pdfbox.text.TextPosition;
 
 import java.io.IOException;
 import java.io.Writer;
 
-/** Extracts one PDF page in content-stream order with the configured text separators; it applies no limit of its own. */
+/**
+ * Extracts ONE page under the page caps of the in-JVM page source. A FRESH instance per page: PDFBox's
+ * private marked-content deque is never cleared between pages (PDFTextStripper.java:162), so a reused stripper would
+ * accumulate it.
+ * <ul>
+ *   <li>content-stream order ({@code sortByPosition=false}), beads off, duplicate-overlap suppression off (no per-glyph map);
+ *       paragraph end {@code \n\n}, line separator {@code \n}, page end empty;</li>
+ *   <li>more than {@code maxGlyphs} glyphs, or more than {@code maxChars} chars of glyph text after
+ *       {@code /ActualText} substitution, fails the page with {@code PAGE_GLYPH_LIMIT} (the caller passes
+ *       {@code max.page.glyphs} for both, so a page between {@code max.page.chars} and that is truncated, not failed);</li>
+ *   <li>more than {@code maxDepth} graphics states saved above the page's base state, or marked-content sequences nested
+ *       deeper than {@code maxDepth}, fail the page with {@code GRAPHICS_DEPTH_LIMIT}. PDFBox gives every form and
+ *       transparency group a stack of its own, starting from one copy of the current state, so the states held by the
+ *       enclosing streams count too: a drawn form holds one state, as if it were wrapped in {@code q}.</li>
+ * </ul>
+ * The caps throw an unchecked {@link PageFailure}, which PDFBox's operator error handling does not swallow.
+ */
 final class GuardedPageStripper extends PDFTextStripper {
-  GuardedPageStripper() {
+
+  private final int maxGlyphs;
+  private final int maxChars;
+  private final int maxDepth;
+  private long glyphs;
+  private long chars;
+  private int markedDepth;
+  /** Graphics states held by the streams enclosing the one being processed. */
+  private int outerStates;
+
+  GuardedPageStripper(int maxGlyphs, int maxChars, int maxDepth) {
+    this.maxGlyphs = maxGlyphs;
+    this.maxChars = maxChars;
+    this.maxDepth = maxDepth;
     setSortByPosition(false);
     setShouldSeparateByBeads(false);
     setSuppressDuplicateOverlappingText(false);
@@ -43,4 +77,67 @@ final class GuardedPageStripper extends PDFTextStripper {
     processPage(page);
   }
 
+  @Override
+  protected void processTextPosition(TextPosition text) {
+    if (++glyphs > maxGlyphs) {
+      throw new PageFailure(PdfFailureCode.PAGE_GLYPH_LIMIT, "more than " + maxGlyphs + " glyphs on the page");
+    }
+    super.processTextPosition(text);
+    String unicode = text.getUnicode();
+    chars += unicode == null ? 0 : unicode.length();
+    if (chars > maxChars) {
+      throw new PageFailure(PdfFailureCode.PAGE_GLYPH_LIMIT, "more than " + maxChars + " chars of glyph text on the page");
+    }
+  }
+
+  @Override
+  public void saveGraphicsState() {
+    super.saveGraphicsState();
+    if (outerStates + getGraphicsStackSize() - 1 > maxDepth) {
+      throw new PageFailure(PdfFailureCode.GRAPHICS_DEPTH_LIMIT, "more than " + maxDepth + " nested graphics states");
+    }
+  }
+
+  @Override
+  public void showForm(PDFormXObject form) throws IOException {
+    int enclosing = enterNestedStream();
+    try {
+      super.showForm(form);
+    } finally {
+      outerStates = enclosing;
+    }
+  }
+
+  @Override
+  protected void processTransparencyGroup(PDTransparencyGroup group) throws IOException {
+    int enclosing = enterNestedStream();
+    try {
+      super.processTransparencyGroup(group);
+    } finally {
+      outerStates = enclosing;
+    }
+  }
+
+  /** Adds the current stack to the enclosing states before PDFBox starts a nested stream; returns the value to restore. */
+  private int enterNestedStream() {
+    int enclosing = outerStates;
+    outerStates += getGraphicsStackSize();
+    return enclosing;
+  }
+
+  @Override
+  public void beginMarkedContentSequence(COSName tag, COSDictionary properties) {
+    super.beginMarkedContentSequence(tag, properties);
+    if (++markedDepth > maxDepth) {
+      throw new PageFailure(PdfFailureCode.GRAPHICS_DEPTH_LIMIT, "marked content nested deeper than " + maxDepth);
+    }
+  }
+
+  @Override
+  public void endMarkedContentSequence() {
+    super.endMarkedContentSequence();
+    if (markedDepth > 0) {
+      markedDepth--;
+    }
+  }
 }

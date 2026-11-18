@@ -27,6 +27,7 @@ import org.apache.hudi.utilities.unstructured.embedding.text.TokenBudget;
 
 import org.apache.spark.TaskContext;
 
+import java.util.Locale;
 import java.util.NoSuchElementException;
 
 /**
@@ -65,10 +66,12 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
   private final TextNormalizer normalizer;
   private final ChunkPacker packer;
   private final String tokenizerId;
+  private final PdfChunkerStats stats = new PdfChunkerStats();
 
   private PageSource pageSource;
   private boolean started;
   private boolean sourceExhausted;
+  private boolean pageLimitHit;
   private boolean flushing;
   private boolean ended;
   private boolean closed;
@@ -78,8 +81,7 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
   private PdfFailureCode fileError;
   private String fileErrorDetail;
   private int pageWarnings;
-  private long pagesSeen;
-  private long pagesFailed;
+  private long startNanos;
 
   PdfChunkIterator(InputStreamSupplier source, PdfFileMeta meta, PdfChunkerConfig config, PageSourceFactory factory,
                    WarnSink warnings) {
@@ -88,10 +90,15 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
     this.config = config;
     this.factory = factory;
     this.warnings = warnings;
-    this.normalizer = new TextNormalizer(Integer.MAX_VALUE);
+    this.normalizer = new TextNormalizer(config.maxPageChars());
     this.packer = new ChunkPacker(new TokenBudget(config.tokenizer(), config.maxTokens(), config.maxWords(),
         config.windowChars(), PdfFileFailure.PACK_FAILURES), config.overlapTokens(), config.locale());
     this.tokenizerId = config.tokenizer().id();
+  }
+
+  /** Per-file counters; final once {@link #hasNext()} returned false. */
+  public PdfChunkerStats stats() {
+    return stats;
   }
 
   @Override
@@ -154,8 +161,10 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
 
   private void start() throws Exception {
     started = true;
+    startNanos = System.nanoTime();
     pageSource = factory.create(source, meta, config);
     pageSource.open();
+    stats.stagedBytes = pageSource.stagedBytes();
   }
 
   private void pullPage() {
@@ -163,33 +172,65 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
       sourceExhausted = true;
       return;
     }
-    int page = (int) ++pagesSeen;
+    if (stats.pagesSeen >= config.maxPages()) {
+      pageLimitHit = true;
+      sourceExhausted = true;
+      pageWarning(PdfFailureCode.PAGE_LIMIT, stats.pagesSeen + 1, "stopped after " + config.maxPages() + " pages", null);
+      return;
+    }
+    int page = (int) ++stats.pagesSeen;
     PageText raw;
     try {
       raw = pageSource.next();
     } catch (PdfFileFailure | PdfChunkerInterruptedException e) {
       throw e;
+    } catch (PageFailure e) {
+      checkInterrupted(e);
+      rethrowRoundFailure(e);
+      pageFailed(page, e.code(), e);
+      return;
     } catch (Exception | StackOverflowError e) {
       checkInterrupted(e);
       rethrowRoundFailure(e);
-      pageFailed(page, e);
+      pageFailed(page, PdfFailureCode.PAGE_ERROR, e);
       return;
     }
     TextNormalizer.Result normalized = normalizer.normalize(raw.text());
+    if (raw.truncated() || normalized.truncated()) {
+      stats.pagesTruncated++;
+      pageWarning(PdfFailureCode.PAGE_TRUNCATED, page, "text beyond " + config.maxPageChars() + " chars dropped", null);
+    }
     if (normalized.unpairedSurrogates() > 0) {
       pageWarning(null, page, normalized.unpairedSurrogates() + " unpaired surrogates replaced by U+FFFD", null);
     }
-    if (!normalized.text().isEmpty()) {
+    if (normalized.text().isEmpty()) {
+      stats.pagesEmpty++;
+    } else {
       packer.appendPage(normalized.text(), page);
     }
   }
 
-  private void pageFailed(int page, Throwable cause) {
-    pagesFailed++;
-    pageWarning(PdfFailureCode.PAGE_ERROR, page, null, cause);
+  private void pageFailed(int page, PdfFailureCode code, Throwable cause) {
+    switch (code) {
+      case PAGE_GLYPH_LIMIT:
+        stats.glyphLimited++;
+        break;
+      case DECODE_LIMIT:
+        stats.decodeLimited++;
+        break;
+      case GRAPHICS_DEPTH_LIMIT:
+        stats.graphicsLimited++;
+        break;
+      default:
+        stats.pagesFailed++;
+        code = PdfFailureCode.PAGE_ERROR;
+    }
+    pageWarning(code, page, null, cause);
   }
 
   private void accept(PackedChunk cut) {
+    stats.chunksEmitted++;
+    stats.forcedSplits = packer.forcedSplits();
     PdfChunk chunk = new PdfChunk(meta.sourcePathSha(), ordinal++, cut.text(), cut.tokenCount(), tokenizerId, cut.wordCount(),
         cut.overlapChars(), cut.firstMark(), cut.lastMark(), PdfChunk.Status.OK, null);
     if (held != null) {
@@ -220,7 +261,12 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
       end(lost() ? held.withStatusDetail(lossSummary()) : held);
       return;
     }
-    if (pagesFailed > 0) {
+    boolean pagesFailed = stats.pagesFailed + stats.glyphLimited + stats.decodeLimited + stats.graphicsLimited > 0;
+    if (pageLimitHit) {
+      // the pages past max.pages were never read, so the file is not known to have no text
+      end(PdfChunk.marker(meta.sourcePathSha(), tokenizerId, PdfChunk.Status.FAILED, PdfFailureCode.PAGE_LIMIT.name()
+          + ": no text in the first " + config.maxPages() + " pages, " + lossSummary()));
+    } else if (pagesFailed) {
       end(PdfChunk.marker(meta.sourcePathSha(), tokenizerId, PdfChunk.Status.FAILED, PdfFailureCode.ALL_PAGES_FAILED.name()
           + ": no page yielded text, " + lossSummary()));
     } else {
@@ -232,10 +278,12 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
     ready = last;
     held = null;
     ended = true;
+    stats.forcedSplits = packer.forcedSplits();
+    stats.elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000;
     // the summary also follows suppressed page WARNs on an OK, loss-free file
     if (lost() || last.status() != PdfChunk.Status.OK || pageWarnings > MAX_PAGE_WARNINGS) {
       warnings.warn("PDF-FILE source_path_sha=" + meta.sourcePathSha() + " path=" + meta.sourcePath() + " status=" + last.status() + " "
-          + (lost() ? lossSummary() : "pages=" + pagesSeen + (last.status() == PdfChunk.Status.OK ? "" : " (no text)"))
+          + (lost() ? lossSummary() : "pages=" + stats.pagesSeen + (last.status() == PdfChunk.Status.OK ? "" : " (no text)"))
           + " pageWarnings=" + pageWarnings
           + (fileErrorDetail == null ? "" : " error=" + fileErrorDetail));
     }
@@ -243,12 +291,15 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
   }
 
   private boolean lost() {
-    return pagesFailed > 0 || fileError != null;
+    return stats.pagesFailed + stats.pagesTruncated + stats.glyphLimited + stats.decodeLimited + stats.graphicsLimited > 0
+        || pageLimitHit || fileError != null;
   }
 
   /** The durable loss signal the last OK chunk carries. */
   private String lossSummary() {
-    return "PAGES_LOST failed=" + pagesFailed + " file_error=" + (fileError == null ? "none" : fileError.name());
+    return String.format(Locale.ROOT, "PAGES_LOST failed=%d truncated=%d glyph_limited=%d decode_limited=%d "
+            + "graphics_limited=%d page_limit=%b file_error=%s", stats.pagesFailed, stats.pagesTruncated, stats.glyphLimited,
+        stats.decodeLimited, stats.graphicsLimited, pageLimitHit, fileError == null ? "none" : fileError.name());
   }
 
   private void pageWarning(PdfFailureCode code, long page, String detail, Throwable cause) {

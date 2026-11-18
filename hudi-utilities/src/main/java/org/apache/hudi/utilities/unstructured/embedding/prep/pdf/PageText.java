@@ -18,19 +18,26 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
 
-/** The raw text of one extracted page (before normalization). */
+/** The raw text of one extracted page (before normalization) and whether it was truncated. */
 public final class PageText {
 
   private final String text;
+  private final boolean truncated;
 
   /**
-   * @param text raw page text
+   * @param text      raw page text, at most {@code max.page.chars} chars
+   * @param truncated whether text beyond {@code max.page.chars} was dropped
    */
-  public PageText(String text) {
+  public PageText(String text, boolean truncated) {
     this.text = text;
+    this.truncated = truncated;
   }
 
   public String text() {
     return text;
+  }
+
+  public boolean truncated() {
+    return truncated;
   }
 }
