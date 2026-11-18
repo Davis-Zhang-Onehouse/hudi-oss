@@ -34,6 +34,16 @@ public interface Tokenizer {
   TokenUnit unit();
 
   /**
+   * Whether counts add up at a space that follows a non-whitespace char: {@code countTokens(a + b) == countTokens(a) +
+   * countTokens(b)} whenever {@code b} starts with U+0020 and {@code a} ends with a char that is not whitespace in any
+   * Unicode sense ({@link TokenBudget#isWordSpace}). It lets {@link TokenBudget} count a growing text by its new part
+   * only. False (the default) makes every count a full count of the text, which is always correct.
+   */
+  default boolean addsUpAtWordSpaces() {
+    return false;
+  }
+
+  /**
    * An end index {@code e} of {@code text} with {@code countTokens(text.substring(0, e)) <= maxTokens}, never inside a
    * surrogate pair: {@code text.length()} when the whole text fits, 0 when no code point does. Counts need not be
    * monotone in the prefix length (BPE), so the result is a CHECKED large end, not promised to be the largest: a binary
