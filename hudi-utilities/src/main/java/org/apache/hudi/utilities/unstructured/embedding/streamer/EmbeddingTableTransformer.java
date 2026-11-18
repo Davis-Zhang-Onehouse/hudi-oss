@@ -180,6 +180,8 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       if (table.isPresent()) {
         checkModelColumnMatchesTable(model.get(), config.targetTablePath(), table.get());
       }
+      // the declared modalities: set, sendable by the model's client, within a known model's
+      ModelModalityChecks.checkDeclaration(model.get());
       // the model's client must load on the driver, so a misconfigured model fails the round before any Spark work
       EmbeddingClientFactory.checkConfig(model.get(), props);
       config.computeBatchSize();
@@ -196,6 +198,10 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
     try {
       PrepRound.checkPrepFileExtensions(config, registry);
       registry.validateConfig(props, TokenizerFactory.create(props));
+      if (model.isPresent()) {
+        // content of a modality the model does not declare: refused with the error table off, a WARN with it on
+        ModelModalityChecks.checkContent(config, registry, model.get());
+      }
       EmbeddingInputConfig.inlineMaxBytes(props);
       EmbeddingInputConfig.inlineMaxHeapFraction(props);
       if (registry.storesInputs(config)) {

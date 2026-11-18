@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 /**
  * DUMMY multimodal embedding client, used only when a model names provider {@value #PROVIDER}: a text row gets
@@ -35,12 +36,18 @@ import java.util.List;
  * ({@link #vectorForImage}), so a test can tell which image a vector was computed from. A failure to prepare the image is that
  * input's outcome ({@link ImageFailures}). It reads no configuration besides the model's.
  */
-public class DummyMultimodalEmbeddingClient implements MultimodalEmbeddingClient {
+public class DummyMultimodalEmbeddingClient implements EmbeddingClient {
 
   /** Provider id of this client ({@code hoodie.unstructured.embedding.model.<alias>.provider}); used only when named. */
   public static final String PROVIDER = "dummy-multimodal";
 
   private EmbeddingModelSpec spec;
+
+  /** Text and images, whatever the model name. */
+  @Override
+  public Set<String> supportedModalities(String modelName) {
+    return TEXT_AND_IMAGE;
+  }
 
   @Override
   public void init(EmbeddingModelSpec spec, TypedProperties props) {

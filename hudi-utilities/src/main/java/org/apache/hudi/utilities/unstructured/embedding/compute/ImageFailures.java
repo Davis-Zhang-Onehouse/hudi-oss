@@ -37,7 +37,7 @@ import java.util.Set;
 
 /**
  * The outcome of an image input whose preparation ({@link EmbeddingInput#image()}) failed, per the
- * {@link MultimodalEmbeddingClient} contract, the one classification every multimodal client uses:
+ * {@link EmbeddingClient} image contract, the one classification every multimodal client uses:
  * <ul>
  *   <li>a {@link BlobReferenceException} anywhere in the cause chain, whatever wraps it (the stored-input reference prep wrote
  *       names no readable range: prep's invariant is broken) → {@link EmbeddingComputePlatformException}, no result;</li>

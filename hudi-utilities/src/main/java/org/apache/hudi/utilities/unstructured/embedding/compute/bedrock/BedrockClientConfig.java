@@ -27,6 +27,7 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ProviderClientSettings;
 
 import java.io.Serializable;
@@ -49,7 +50,8 @@ import java.net.URISyntaxException;
  * executor with an IAM role for its service account is the pod's web identity (IRSA). The per-model request rate limit
  * ({@code .rate.limit.requests.per.second}, {@code .rate.limit.burst}) is shared by every client: see
  * {@link org.apache.hudi.utilities.unstructured.embedding.compute.RequestRateLimiter}. The model's {@code .dimensions} must be one
- * the family accepts.
+ * the family accepts; for a model that declares {@code image}, the compute image long side must not exceed the family's
+ * per-side limit ({@link BedrockModelFamily#maxImageSide()}).
  */
 @ConfigClassProperty(name = "Bedrock Embedding Client Configs",
     groupName = ConfigGroups.Names.HUDI_STREAMER,
@@ -96,17 +98,36 @@ public final class BedrockClientConfig implements Serializable {
       throw new IllegalArgumentException(key(EmbeddingTableConfig.MODEL_DIMENSIONS_SUFFIX) + "=" + spec.getDimension()
           + " is not an output dimension " + family + " supports: " + family.dimensions());
     }
+    if (spec.declares(EmbeddingTableSchema.MODALITY_IMAGE) && family.maxImageSide() > 0) {
+      int longSide = EmbeddingTableConfig.from(props).imagePreprocessing().longSide();
+      if (longSide > family.maxImageSide()) {
+        throw new IllegalArgumentException(EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key() + "=" + longSide + " resizes images "
+            + "beyond the " + family.maxImageSide() + " pixels per side " + family + " accepts, and model " + alias + " declares "
+            + EmbeddingTableSchema.MODALITY_IMAGE + " (" + key(EmbeddingTableConfig.MODEL_MODALITIES_SUFFIX) + "); set it to at most "
+            + family.maxImageSide());
+      }
+    }
+    if (spec.declares(EmbeddingTableSchema.MODALITY_TEXT) && family.maxTextTokens() > 0) {
+      int chunkTokens = EmbeddingTableConfig.from(props).chunkMaxTokens();
+      if (chunkTokens > family.maxTextTokens()) {
+        throw new IllegalArgumentException(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key() + "=" + chunkTokens + " cuts text chunks "
+            + "beyond the " + family.maxTextTokens() + " text tokens " + family + " accepts, and model " + alias + " declares "
+            + EmbeddingTableSchema.MODALITY_TEXT + " (" + key(EmbeddingTableConfig.MODEL_MODALITIES_SUFFIX) + "); set it to at most "
+            + family.maxTextTokens());
+      }
+    }
     this.region = trimmed(props, REGION_SUFFIX);
     this.endpoint = trimmed(props, ENDPOINT_SUFFIX);
     if (endpoint != null) {
       checkEndpoint();
     }
-    this.settings = ProviderClientSettings.from(spec, props, family.maxTextsPerRequest(), family.maxTextsPerRequest());
+    this.settings = ProviderClientSettings.from(spec, props, family.maxInputsPerRequest(), family.maxInputsPerRequest());
   }
 
   /**
    * @throws IllegalArgumentException naming the offending key: a model id of another family, a dimension the family does not
-   *     accept, an endpoint that is not an absolute http(s) URL without user info, query or fragment, or a bad request key
+   *     accept, an image long side beyond the family's limit for a model that declares {@code image}, an endpoint that is not
+   *     an absolute http(s) URL without user info, query or fragment, or a bad request key
    */
   public static BedrockClientConfig from(EmbeddingModelSpec spec, TypedProperties props, BedrockModelFamily family) {
     return new BedrockClientConfig(spec, props, family);

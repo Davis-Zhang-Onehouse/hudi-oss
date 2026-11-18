@@ -19,9 +19,13 @@
 package org.apache.hudi.utilities.unstructured.embedding;
 
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
- * One declared embedding model and the VECTOR column it fills.
+ * One declared embedding model and the VECTOR column it fills, with the modalities it is declared to embed
+ * ({@code hoodie.unstructured.embedding.model.<alias>.modalities}): compute sends the model only rows of a declared modality.
  */
 public class EmbeddingModelSpec implements Serializable {
 
@@ -33,15 +37,27 @@ public class EmbeddingModelSpec implements Serializable {
   private final String clientClass;
   private final String provider;
   private final String modelName;
+  /** The declared modalities, sorted; empty when the model declares none. */
+  private final Set<String> modalities;
 
+  /** A model that declares no modality: compute refuses it ({@link #getModalities()}). */
   public EmbeddingModelSpec(String name, String column, int dimension, String clientClass, String provider,
                             String modelName) {
+    this(name, column, dimension, clientClass, provider, modelName, Collections.emptySet());
+  }
+
+  /**
+   * @param modalities the modalities the model is declared to embed ({@code text}, {@code image}); empty when undeclared
+   */
+  public EmbeddingModelSpec(String name, String column, int dimension, String clientClass, String provider,
+                            String modelName, Set<String> modalities) {
     this.name = name;
     this.column = column;
     this.dimension = dimension;
     this.clientClass = clientClass;
     this.provider = provider;
     this.modelName = modelName;
+    this.modalities = Collections.unmodifiableSet(new TreeSet<>(modalities));
   }
 
   public String getName() {
@@ -71,8 +87,22 @@ public class EmbeddingModelSpec implements Serializable {
     return modelName;
   }
 
+  /**
+   * The modalities the model is declared to embed, sorted ({@code hoodie.unstructured.embedding.model.<alias>.modalities});
+   * empty when it declares none, which compute refuses. A row of another modality is never sent to the model.
+   */
+  public Set<String> getModalities() {
+    return modalities;
+  }
+
+  /** Whether the model is declared to embed rows of {@code modality}. */
+  public boolean declares(String modality) {
+    return modalities.contains(modality);
+  }
+
   @Override
   public String toString() {
-    return name + "(" + column + ", VECTOR(" + dimension + "), " + clientClass + ", " + provider + "/" + modelName + ")";
+    return name + "(" + column + ", VECTOR(" + dimension + "), " + clientClass + ", " + provider + "/" + modelName + ", "
+        + modalities + ")";
   }
 }

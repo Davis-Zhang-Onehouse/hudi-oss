@@ -22,13 +22,13 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingCallStats;
+import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClient;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientConfigException;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingComputePlatformException;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingInput;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingProviderUnavailableException;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingResult;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ImageFailures;
-import org.apache.hudi.utilities.unstructured.embedding.compute.MultimodalEmbeddingClient;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ProviderResponseKind;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ProviderRetryLoop;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ProviderRetryLoop.Answer;
@@ -51,6 +51,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
@@ -68,7 +69,7 @@ import java.util.function.LongSupplier;
  * Transient and malformed responses remain retryable. {@link VertexAccessTokens} refreshes tokens proactively and
  * after HTTP 401. Every send, including a refreshed resend, observes the rate limit and call deadline.
  */
-public class VertexMultimodalEmbeddingClient implements MultimodalEmbeddingClient {
+public class VertexMultimodalEmbeddingClient implements EmbeddingClient {
 
   /** Provider id of this client ({@code hoodie.unstructured.embedding.model.<alias>.provider}). */
   public static final String PROVIDER = "vertex-multimodal";
@@ -111,6 +112,12 @@ public class VertexMultimodalEmbeddingClient implements MultimodalEmbeddingClien
     this.clock = clock;
     this.sleeper = sleeper;
     this.environment = environment;
+  }
+
+  /** Text and images, whatever the model name. */
+  @Override
+  public Set<String> supportedModalities(String modelName) {
+    return TEXT_AND_IMAGE;
   }
 
   @Override

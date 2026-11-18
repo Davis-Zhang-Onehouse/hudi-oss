@@ -25,7 +25,7 @@ import java.io.Serializable;
 /**
  * One embedding-table row handed to an {@link EmbeddingClient}, with its five-column source version key. A text row carries
  * {@code text} and no bytes. An image row (modality {@code image}) carries its STORED input, {@link #storedImage()} over the
- * row's {@code prepared_image}, and for a {@link MultimodalEmbeddingClient} the compute flow's bounded, in-memory resize of it
+ * row's {@code prepared_image}, and for a model that declares {@code image} the compute flow's bounded, in-memory resize of it
  * into the model input, {@link #image()}.
  */
 public class EmbeddingInput implements Serializable {
@@ -66,7 +66,7 @@ public class EmbeddingInput implements Serializable {
 
   /**
    * The input of an image row: {@code stored} opens the row's {@code prepared_image}, and {@code image} prepares the model input
-   * from it for a {@link MultimodalEmbeddingClient} (null until image compute provides one). Both version fields default to
+   * from it for a model that declares {@code image} (null until image compute provides one). Both version fields default to
    * zero, as for a standalone text input.
    */
   public static EmbeddingInput storedImage(String sourcePathSha, long chunkId, String modality, BlobBytesSupplier stored,
