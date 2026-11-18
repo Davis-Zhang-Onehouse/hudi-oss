@@ -28,6 +28,7 @@ import org.apache.hudi.utilities.sources.blob.BucketFolderFileSystem;
 import org.apache.hudi.utilities.sources.blob.SourceOpenHooks;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageFixtures;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
@@ -91,7 +92,8 @@ public class TestImageInputPrepRows {
   @BeforeEach
   public void createTable() throws IOException {
     embeddingTable = temp.resolve("embedding").toUri().toString();
-    HoodieTableMetaClient.newTableBuilder().setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
+    HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
         .setRecordKeyFields(String.join(",", EmbeddingTableSchema.KEY_COLUMNS))
         .initTable(HadoopFSUtils.getStorageConf(new Configuration()), embeddingTable);
   }
@@ -204,8 +206,11 @@ public class TestImageInputPrepRows {
     expectedAux.put(ImageInputPreprocessor.AUX_FORMAT, format);
     expectedAux.put(EmbeddingTableSchema.AUX_INPUT_WIDTH, String.valueOf(width));
     expectedAux.put(EmbeddingTableSchema.AUX_INPUT_HEIGHT, String.valueOf(height));
-    expectedAux.put(EmbeddingTableSchema.AUX_INPUT_LOGIC, ImageInputPreprocessor.INPUT_LOGIC);
-    assertEquals(expectedAux, row.getJavaMap(EmbeddingTableSchema.BASE_COLUMNS.indexOf(EmbeddingTableSchema.AUX)));
+    Map<String, String> actualAux = new HashMap<>(row.getJavaMap(EmbeddingTableSchema.BASE_COLUMNS.indexOf(EmbeddingTableSchema.AUX)));
+    String version = actualAux.remove(EmbeddingTableSchema.AUX_PREP_LOGIC_VERSION);
+    assertNotNull(version);
+    assertTrue(version.matches("prep-logic-v1;sha256=[0-9a-f]{64}"));
+    assertEquals(expectedAux, actualAux);
   }
 
   private static void assertContains(String text, String expected) {

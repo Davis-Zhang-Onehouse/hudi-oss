@@ -39,6 +39,7 @@ public class TestTextNormalizer {
 
   @Test
   public void nfkc() {
+    assertEquals("text-normalizer-v2", TextNormalizer.LOGIC_VERSION);
     assertEquals("file", norm("\uFB01le"));  // escaped non-ASCII test data
     assertEquals("AB", norm("\uFF21\uFF22"));  // escaped non-ASCII test data
     assertEquals("...", norm("\u2026"));  // escaped non-ASCII test data

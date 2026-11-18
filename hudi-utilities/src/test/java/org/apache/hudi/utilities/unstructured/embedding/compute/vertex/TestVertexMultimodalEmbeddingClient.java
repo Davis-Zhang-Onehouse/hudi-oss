@@ -269,7 +269,7 @@ public class TestVertexMultimodalEmbeddingClient {
     Path file = tempDir.resolve("short." + format);
     Files.write(file, Arrays.copyOf(image, image.length * 6 / 10));
     StructType referenceType = (StructType) BLOB.apply(HoodieSchema.Blob.EXTERNAL_REFERENCE).dataType();
-    Row reference = new GenericRowWithSchema(new Object[] {file.toString(), 0L, (long) image.length, false}, referenceType);
+    Row reference = new GenericRowWithSchema(new Object[] {file.toUri().toString(), 0L, (long) image.length, false}, referenceType);
     Row blob = new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.OUT_OF_LINE, null, reference}, BLOB);
     BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration()));
     ImagePreparer preparer = new ImagePreparer(IMAGE_SPEC);

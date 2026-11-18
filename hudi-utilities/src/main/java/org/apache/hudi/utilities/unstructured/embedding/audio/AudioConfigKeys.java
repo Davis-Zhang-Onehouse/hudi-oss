@@ -24,20 +24,10 @@ import org.apache.hudi.common.config.ConfigProperty;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 
 /**
- * Configuration keys of the audio pass, read by {@link AudioConfig} and by the
- * implementations that use them (a segment source's VAD and byte bound, a transcriber's byte bound); the class keys default to
- * the real implementations (FFmpeg, whisper, the transcript packer). Two groups, so the style fingerprint holds logic and never class
- * names:
- * <ul>
- *   <li>{@link #RUNTIME_PREFIX} keys ({@code hoodie.unstructured.embedding.audio.*}): on/off and the implementation
- *       classes. NOT style keys; when audio is enabled the RESOLVED audio logic version
- *       ({@link AudioRows#AUDIO_LOGIC_FORMAT}: source, transcriber, chunker and tokenizer logic) is recorded as one style line
- *       {@code audio=<logic>}, and nothing is recorded when disabled, so an explicit {@code enabled=false} keeps the
- *       fingerprint of a table that never set it;</li>
- *   <li>{@link #STYLE_PREFIX} keys ({@code hoodie.unstructured.embedding.prep.audio.*}): settings that change which
- *       transcript rows are produced. A change is not detected; use a new table for a different preprocessing style.</li>
- * </ul>
- * Defaults marked "placeholder" are not yet measured: a benchmark may change them.
+ * Audio configuration: runtime implementation keys ({@link #RUNTIME_PREFIX}) and output-changing style values
+ * ({@link #STYLE_PREFIX}). The prep logic version persists resolved implementation identities and effective style values.
+ * Implementations fold output-changing runtime settings into their logicVersion/id; model locations and thread counts
+ * do not become style by raw value. Disabled audio does not instantiate its implementations.
  */
 @ConfigClassProperty(name = "Embedding Audio Configs",
     groupName = ConfigGroups.Names.HUDI_STREAMER,

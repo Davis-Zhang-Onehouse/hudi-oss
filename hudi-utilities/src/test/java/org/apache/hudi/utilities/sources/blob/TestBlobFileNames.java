@@ -20,12 +20,15 @@ package org.apache.hudi.utilities.sources.blob;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,6 +48,41 @@ public class TestBlobFileNames {
     }
     assertEquals(hex.substring(0, 32), fid);
     assertTrue(!fid.equals(BlobFileNames.sourcePathSha("file:///tmp/data/b.pdf")));
+  }
+
+  @Test
+  public void rawSelectorS3AliasesHaveTheSameKey() {
+    assertEquals(BlobFileNames.sourcePathSha("s3://bkt/k/a.pdf"), BlobFileNames.sourcePathSha("s3a://bkt/k/a.pdf"));
+    assertEquals(BlobFileNames.sourcePathSha("s3://bkt/k/a.pdf"), BlobFileNames.sourcePathSha("s3n://bkt/k/a.pdf"));
+  }
+
+  @Test
+  public void objectKeyTextIsNotNormalized() {
+    for (String key : new String[] {"a//b.pdf", "a/../b.pdf", "a%2Fb.pdf", "a+b.pdf", "A/b.pdf", "a/b.pdf?x#part"}) {
+      assertNotEquals(BlobFileNames.sourcePathSha("s3://bkt/a/b.pdf"), BlobFileNames.sourcePathSha("s3://bkt/" + key), key);
+    }
+    assertNotEquals(BlobFileNames.sourcePathSha("s3://bkt/café.pdf"), BlobFileNames.sourcePathSha("s3://bkt/café.pdf"));
+    assertNotEquals(BlobFileNames.sourcePathSha("s3://bkt/key"), BlobFileNames.sourcePathSha("s3://BKT/key"));
+  }
+
+  @Test
+  public void sharedKeyEncodingGoldenVectors() throws Exception {
+    try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+        TestBlobFileNames.class.getResourceAsStream("/unstructured/source-path-key-v1.tsv"), StandardCharsets.UTF_8))) {
+      String line;
+      int vectors = 0;
+      while ((line = reader.readLine()) != null) {
+        if (line.startsWith("#") || line.isEmpty()) {
+          continue;
+        }
+        String[] fields = line.split("\\t", -1);
+        assertEquals(3, fields.length, line);
+        assertEquals(fields[2], BlobFileNames.sourcePathSha(fields[0]), fields[0]);
+        assertEquals(fields[2], BlobFileNames.sourcePathSha(fields[1]), fields[1]);
+        vectors++;
+      }
+      assertEquals(19, vectors);
+    }
   }
 
   @Test

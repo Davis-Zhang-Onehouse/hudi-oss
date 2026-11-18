@@ -82,6 +82,12 @@ class TestUnstructuredSourceContract {
     TypedProperties job = mode(contract.mode().configValue());
     Map<String, String> added = asMap(contract.prepareJob(job));
     added.keySet().removeAll(job.stringPropertyNames());
+    for (String kind : new String[] {"text", "image", "video", "audio"}) {
+      String version = added.remove("hoodie.table.embedding.prep." + kind + ".logic.version");
+      if (contract.mode() == UnstructuredMode.EMBEDDING) {
+        assertTrue(version.matches("prep-logic-v1;sha256=[0-9a-f]{64}"), kind);
+      }
+    }
     return added;
   }
 
@@ -108,8 +114,49 @@ class TestUnstructuredSourceContract {
   }
 
   @Test
+  void tableCreationPinsBlobLayoutAndSchemaVersions() {
+    TypedProperties props = mode("blob");
+    TypedProperties merged = contract("blob").prepareJob(props);
+    assertEquals("1", merged.getProperty("hoodie.table.blob.layout.version"));
+    assertEquals("blob", merged.getProperty("hoodie.table.unstructured.kind"));
+    assertEquals("1", merged.getProperty("hoodie.table.unstructured.schema.version"));
+  }
+
+  @Test
+  void unknownBlobLayoutVersionIsRefused() {
+    HoodieTableConfig table = new HoodieTableConfig();
+    table.setValue(HoodieTableConfig.RECORDKEY_FIELDS, BLOB_KEY);
+    table.getProps().setProperty("hoodie.table.blob.layout.version", "99");
+    assertThrows(IllegalArgumentException.class,
+        () -> contract("blob").requiredTableProperties().checkTable("file:/tables/blob", table));
+  }
+
+  @Test
+  void embeddingCreationPinsLogicAndRefusesChangedLogic() {
+    TypedProperties props = mode("embedding");
+    UnstructuredTableProperties settings = contract("embedding").requiredTableProperties();
+    TypedProperties merged = settings.apply(props);
+    assertEquals("embedding", merged.getProperty("hoodie.table.unstructured.kind"));
+    for (String kind : new String[] {"text", "image", "video", "audio"}) {
+      String key = "hoodie.table.embedding.prep." + kind + ".logic.version";
+      assertTrue(merged.containsKey(key), key);
+      HoodieTableConfig table = new HoodieTableConfig();
+      table.getProps().putAll(merged);
+      table.setValue(HoodieTableConfig.RECORDKEY_FIELDS, EMBEDDING_KEY);
+      settings.checkTable("file:/tables/embedding", table);
+      table.getProps().setProperty(key, "other-logic");
+      assertThrows(IllegalArgumentException.class,
+          () -> settings.checkTable("file:/tables/embedding", table), key);
+    }
+  }
+
+  @Test
   void goldenSettingsBlob() {
     Map<String, String> blob = new TreeMap<>();
+    blob.put("hoodie.table.blob.layout.version", "1");
+    blob.put("hoodie.table.unstructured.kind", "blob");
+    blob.put("hoodie.table.unstructured.schema.version", "1");
+    blob.put("hoodie.table.unstructured.key.encoding.version", "1");
     blob.put(RECORD_KEY, BLOB_KEY);
     blob.put(INJECTOR, BlobParquetConfigInjector.class.getName());
     blob.put(CODEC, "uncompressed");
@@ -205,6 +252,7 @@ class TestUnstructuredSourceContract {
         props.setProperty(CODEC, "uncompressed");
         props.setProperty(BLOOM, "false");
       }
+      props.putAll(new UnstructuredSourceContract(props).tableProperties());
       TypedProperties merged = new UnstructuredSourceContract(props).prepareJob(props);
       assertEquals(asMap(props), asMap(merged), "mode " + mode);
     }
@@ -293,6 +341,10 @@ class TestUnstructuredSourceContract {
   @Test
   void goldenSettingsEmbedding() {
     Map<String, String> embedding = new TreeMap<>();
+    embedding.put("hoodie.table.blob.layout.version", "1");
+    embedding.put("hoodie.table.unstructured.kind", "embedding");
+    embedding.put("hoodie.table.unstructured.schema.version", "1");
+    embedding.put("hoodie.table.unstructured.key.encoding.version", "1");
     embedding.put(RECORD_KEY, EMBEDDING_KEY);
     embedding.put(MARKERS, "TIMELINE_SERVER_BASED");
     embedding.put(ROLLBACK, "true");

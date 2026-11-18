@@ -102,7 +102,7 @@ import java.util.function.Function;
  */
 public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
-  public static final String LOGIC_VERSION = "video-keyframe-v1";
+  public static final String LOGIC_VERSION = "video-keyframe-v2";
   /** JPEG quality of an encoded frame, the {@link FrameJpegEncoder}'s. */
   public static final int JPEG_QUALITY = FrameJpegEncoder.JPEG_QUALITY;
 

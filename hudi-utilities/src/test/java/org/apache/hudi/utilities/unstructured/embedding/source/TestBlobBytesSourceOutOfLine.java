@@ -47,8 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link BlobBytesSource} over OUT_OF_LINE blobs: an absolute reference (the source object itself, as prep points an object above
  * the inline ceiling at it) is opened as it is, whole or in its range. Without a table base path a relative reference has no table
  * to resolve against and is refused before any read; with one (compute reading the embedding table's {@code prepared_image}) a
- * managed relative reference is opened under the base as {@code read_blob()} opens it, while one escaping the base, or an unmanaged
- * relative one, is refused.
+ * managed relative reference is opened under the base as {@code read_blob()} opens it, while one escaping the base, is refused.
  */
 public class TestBlobBytesSourceOutOfLine {
 
@@ -130,7 +129,7 @@ public class TestBlobBytesSourceOutOfLine {
     BlobBytesSource source = sourceAt(table);
 
     assertEquals(new StoragePath(new StoragePath(table.toUri().toString()), relative), source.resolve(relative));
-    for (Boolean managed : new Boolean[] {true, null}) {
+    for (Boolean managed : new Boolean[] {true, false, null}) {
       try (InputStream in = source.open(outOfLine(relative, null, null, managed))) {
         assertArrayEquals(bytes, FileIOUtils.readAsByteArray(in), "whole, managed=" + managed);
       }
@@ -178,21 +177,6 @@ public class TestBlobBytesSourceOutOfLine {
       assertThrows(BlobReferenceException.class, () -> source.open(outOfLine(escaping, null, null, true)), escaping);
       assertThrows(BlobReferenceException.class, () -> source.openSeekable(outOfLine(escaping, 0L, 3L, null)), escaping);
     }
-  }
-
-  /** An unmanaged ({@code managed=false}) reference must be absolute: a relative one is refused, though the base holds the file. */
-  @Test
-  void refusesAnUnmanagedRelativeReferenceWithATableBase() throws Exception {
-    write("table/.hoodie/.blob/p1/frame-0.bin", new byte[] {1, 2, 3});
-    BlobBytesSource source = sourceAt(temp.resolve("table"));
-    String relative = ".hoodie/.blob/p1/frame-0.bin";
-
-    BlobReferenceException stream = assertThrows(BlobReferenceException.class,
-        () -> source.open(outOfLine(relative, null, null, false)));
-    assertTrue(stream.getMessage().contains("managed=false"), stream.getMessage());
-    BlobReferenceException seekable = assertThrows(BlobReferenceException.class,
-        () -> source.openSeekable(outOfLine(relative, 0L, 3L, false)));
-    assertTrue(seekable.getMessage().contains("managed=false"), seekable.getMessage());
   }
 
   private static byte[] readAll(SeekableBlob seekable) throws IOException {

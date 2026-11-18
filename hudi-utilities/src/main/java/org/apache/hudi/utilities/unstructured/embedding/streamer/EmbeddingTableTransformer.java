@@ -53,7 +53,9 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
@@ -69,13 +71,13 @@ import java.util.stream.Collectors;
  *
  * <p>One round:
  * <ol>
- *   <li>releases the previous round's caches for this table (a transformer has no hook after the commit);</li>
+ *   <li>releases the previous round's caches for this table;</li>
  *   <li>checks, at the start of the round (after the streamer fetched the batch and moved the instant to INFLIGHT, before any prep
  *   work; a refusal rolls the instant back): the table's version; under
  *   {@code prep_only} no model and no compute setting; under {@code prep_and_compute} exactly one active model, whose column and
  *   dimensions name and size the VECTOR column (an existing table's column of that name has the model's dimensions), with a
- *   loadable client; no Spark speculation; the prep extension allow-list; the preprocessors' configuration; when the job preps
- *   video, that the executor heap holds its frame decodes ({@link VideoFrameHeapCheck});</li>
+ *   loadable client; the column's model identity (auxiliary history and commit-time fence); no Spark speculation; the prep
+ *   extension allow-list; the preprocessors' configuration; when the job preps video, that the executor heap holds its frame decodes ({@link VideoFrameHeapCheck});</li>
  *   <li>takes the output schema: an existing table's latest writer schema without meta fields, its columns beyond the base
  *   ones nullable, with the model's column added
  *   when missing; else {@link EmbeddingTableSchema#build}, which has no VECTOR column under {@code prep_only};</li>
@@ -86,6 +88,11 @@ import java.util.stream.Collectors;
  *   returns the data rows, one error-only row per PERMANENT input, and prep's error rows. With no row left to embed it skips
  *   compute and returns prep's error rows.</li>
  * </ol>
+ * Inside the data commit, {@link #onPreCommit} rechecks the round's model identities against those committed meanwhile and
+ * fences them ({@link EmbeddingColumnInfoStore#validateBeforeCommit}); a conflict fails the commit before any row is durable.
+ * After the table commits, {@link #onCommit} publishes the committed identities to the auxiliary history file. A publication
+ * failure fails post-commit processing and retains the completed table commit; the fence keeps its identities for the next
+ * round's repair.
  * One model per embedding table: a round fills the active model's VECTOR column only. Switching the active model adds the new
  * model's column, and every row the new model writes carries NULL in the old model's column.
  * A row carrying {@code _corrupt_record} goes to the job's error table ({@code CUSTOM_TRANSFORMER_FAILURE}); with the error
@@ -101,6 +108,9 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
 
   /** The caches of each table's last round, released at the table's next round. */
   private static final ConcurrentMap<String, RoundCaches> ROUND_CACHES = new ConcurrentHashMap<>();
+
+  /** Driver-only publication plans; a failed table commit never publishes them. */
+  private final ConcurrentMap<String, PendingColumnInfo> pendingColumnInfo = new ConcurrentHashMap<>();
 
   @Override
   public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties) {
@@ -128,18 +138,68 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
     EmbeddingTableConfig config = EmbeddingTableConfig.from(properties);
     String target = config.targetTablePath();
     releaseRound(target);
+    pendingColumnInfo.remove(target);
     StorageConfiguration<?> storageConf = HadoopFSUtils.getStorageConf(jsc.hadoopConfiguration());
     // the table first: its minimum version
     PrepRound.checkTable(config, storageConf);
     Option<StructType> table = EmbeddingTableSchema.writerReadSchema(target, storageConf);
     Option<EmbeddingModelSpec> model = checkRound(config, sparkSession, table);
     StructType tableSchema = outputSchema(config, table, model);
+    EmbeddingColumnInfoStore columnInfo = new EmbeddingColumnInfoStore(target, storageConf, properties);
+    Map<String, Integer> writtenVectors = EmbeddingColumnInfoConfig.vectorColumns(Option.of(tableSchema));
+    Map<String, EmbeddingColumnInfoStore.Identity> identities = new LinkedHashMap<>();
+    for (EmbeddingModelSpec declared : config.models()) {
+      if (writtenVectors.containsKey(declared.getColumn())) {
+        identities.put(declared.getColumn(), EmbeddingColumnInfoConfig.identity(declared, properties));
+      }
+    }
+    EmbeddingColumnInfoStore.Update update = columnInfo.checkAtStart(identities,
+        EmbeddingColumnInfoConfig.vectorColumns(table), EmbeddingColumnInfoConfig.retiredColumns(properties));
     try {
-      return round(jsc, sparkSession, rowDataset, config, model, storageConf, tableSchema, instantTime);
+      Dataset<Row> output = round(jsc, sparkSession, rowDataset, config, model, storageConf, tableSchema, instantTime);
+      pendingColumnInfo.put(target, new PendingColumnInfo(instantTime, columnInfo, update));
+      return output;
     } catch (Exception e) {
       // every Spark job of the round may fail with a checked SparkException: wrapped, so the streamer's rollback of the instant runs
       throw e instanceof RuntimeException ? (RuntimeException) e
           : new HoodieException("Embedding round of " + target + " failed at instant " + instantTime, e);
+    }
+  }
+
+  /** Publishes this driver's column history only after the corresponding table commit succeeds. */
+  @Override
+  public void onPreCommit(JavaSparkContext jsc, SparkSession sparkSession, TypedProperties properties, String instantTime,
+                          org.apache.hudi.common.table.HoodieTableMetaClient metaClient) {
+    PendingColumnInfo pending = pendingColumnInfo.get(EmbeddingTableConfig.from(properties).targetTablePath());
+    if (pending != null && pending.instant.equals(instantTime)) {
+      pending.store.validateBeforeCommit(metaClient, instantTime, pending.update);
+    }
+  }
+
+  @Override
+  public void onCommit(JavaSparkContext jsc, SparkSession sparkSession, TypedProperties properties, String instantTime) {
+    String target = EmbeddingTableConfig.from(properties).targetTablePath();
+    PendingColumnInfo pending = pendingColumnInfo.get(target);
+    if (pending != null && pending.instant.equals(instantTime) && pendingColumnInfo.remove(target, pending)) {
+      try {
+        pending.store.publishCommittedState(instantTime, pending.update);
+      } catch (RuntimeException failure) {
+        LOG.error("Embedding column information publication failed after successful commit {} for table {}; committed data is retained",
+            instantTime, target, failure);
+        throw failure;
+      }
+    }
+  }
+
+  private static final class PendingColumnInfo {
+    private final String instant;
+    private final EmbeddingColumnInfoStore store;
+    private final EmbeddingColumnInfoStore.Update update;
+
+    private PendingColumnInfo(String instant, EmbeddingColumnInfoStore store, EmbeddingColumnInfoStore.Update update) {
+      this.instant = instant;
+      this.store = store;
+      this.update = update;
     }
   }
 
@@ -281,19 +341,20 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
     if (!table.isPresent()) {
       return EmbeddingTableSchema.build(config);
     }
+    StructType existing = table.get();
+    // Preserve nullable-image evolution for tables created before image preparation.
+    if (Arrays.stream(existing.fields()).noneMatch(field -> field.name().equalsIgnoreCase(EmbeddingTableSchema.PREPARED_IMAGE))) {
+      existing = existing.add(EmbeddingTableSchema.preparedImageField());
+    }
+    EmbeddingTableSchema.checkBaseColumns(existing);
     // every column of the table is in the round's rows, so the write keeps the table's schema; one beyond the base columns (a path
     // partition, a model's VECTOR, a column a customer's transformer added) is nullable, since prep writes null in a column it
     // does not make. A customer's transformer that adds its column again in the round wins over that null (UnstructuredSchemaGuard)
-    List<StructField> fields = Arrays.stream(table.get().fields())
+    List<StructField> fields = Arrays.stream(existing.fields())
         .filter(field -> !HoodieRecord.HOODIE_META_COLUMNS.contains(field.name()))
         .map(field -> EmbeddingTableSchema.BASE_COLUMNS.contains(field.name()) || field.nullable() ? field
             : new StructField(field.name(), field.dataType(), true, field.metadata()))
         .collect(Collectors.toList());
-    // Tables created before image preparation lack this base column. Append its nullable BLOB field before prep's
-    // projection runs, so old text rows read NULL and new image rows retain their stored input in either mode.
-    if (fields.stream().noneMatch(field -> field.name().equalsIgnoreCase(EmbeddingTableSchema.PREPARED_IMAGE))) {
-      fields.add(EmbeddingTableSchema.preparedImageField());
-    }
     if (model.isPresent()) {
       StructField vector = EmbeddingTableSchema.vectorField(model.get());
       if (fields.stream().noneMatch(field -> field.name().equals(vector.name()))) {

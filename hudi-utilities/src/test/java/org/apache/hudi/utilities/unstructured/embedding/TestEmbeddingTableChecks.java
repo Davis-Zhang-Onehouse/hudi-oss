@@ -29,6 +29,8 @@ import org.apache.hudi.storage.StorageConfiguration;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -67,6 +69,27 @@ public class TestEmbeddingTableChecks {
     EmbeddingTableVersionException error = assertThrows(EmbeddingTableVersionException.class,
         () -> EmbeddingTableChecks.checkTableVersion(table, conf, config(null)));
     assertTrue(error.getMessage().contains(HoodieTableConfig.VERSION.key() + "=8"), error.getMessage());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"missing", "2"})
+  public void standaloneEmbeddingRefusesUnknownKeyEncoding(String version) throws Exception {
+    String key = "hoodie.table.unstructured.key.encoding.version";
+    java.util.Properties pins = UnstructuredTableTestProperties.embedding(new TypedProperties());
+    pins.setProperty(key, "1");
+    String table = temp.resolve("encoding").toUri().toString();
+    HoodieTableMetaClient meta = HoodieTableMetaClient.newTableBuilder().setTableVersion(9).setTableName("embedding")
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setAdditionalProperties(pins).initTable(conf, table);
+    EmbeddingTableChecks.checkTableVersion(table, conf, config(null));
+    if ("missing".equals(version)) {
+      HoodieTableConfig.delete(meta.getStorage(), meta.getMetaPath(), java.util.Collections.singleton(key));
+    } else {
+      pins.setProperty(key, version);
+      HoodieTableConfig.update(meta.getStorage(), meta.getMetaPath(), pins);
+    }
+    IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+        () -> EmbeddingTableChecks.checkTableVersion(table, conf, config(null)));
+    assertTrue(error.getMessage().contains(key), error.getMessage());
   }
 
   /** A table left with only the hoodie.properties backup, as a crash during a table config update leaves it, exists. */

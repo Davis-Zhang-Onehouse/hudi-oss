@@ -73,8 +73,10 @@ public final class EmbeddingTableSchema {
   public static final String AUX_INPUT_WIDTH = "input_width";
   /** Aux key of a row carrying {@link #PREPARED_IMAGE}: the stored input's height in pixels. */
   public static final String AUX_INPUT_HEIGHT = "input_height";
-  /** Aux key of a row carrying {@link #PREPARED_IMAGE}: the logic that made the stored input from the source. */
+  /** Legacy raw-chunk logic hint; row assembly replaces it with {@link #AUX_PREP_LOGIC_VERSION}. */
   public static final String AUX_INPUT_LOGIC = "input_logic";
+  /** The table-pinned preparation logic version on every prepared row, including text. */
+  public static final String AUX_PREP_LOGIC_VERSION = "prep_logic_version";
   /** Aux key of a video frame row: the frame's dense kept-frame index, which is also its chunk_id. */
   public static final String AUX_FRAME_INDEX = "frame_index";
   public static final int MAX_ERROR_CHARS = 1024;
@@ -176,6 +178,17 @@ public final class EmbeddingTableSchema {
     }
     int end = Character.isHighSurrogate(error.charAt(MAX_ERROR_CHARS - 1)) ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS;
     return error.substring(0, end);
+  }
+
+  /** Refuses a schema predating any base column before the round can silently drop its value. */
+  public static void checkBaseColumns(StructType schema) {
+    List<String> found = Arrays.asList(schema.fieldNames());
+    for (String column : BASE_COLUMNS) {
+      if (!found.contains(column)) {
+        throw new IllegalArgumentException("Embedding table is missing base column " + column
+            + "; create a new embedding table with schema version 1. Nothing was written");
+      }
+    }
   }
 
   /**

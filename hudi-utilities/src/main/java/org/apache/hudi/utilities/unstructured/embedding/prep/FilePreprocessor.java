@@ -44,11 +44,16 @@ import java.util.Set;
  *       text;</li>
  *   <li>the framework always calls {@code close()} (file switch, failure, or Spark task completion).</li>
  * </ul>
+ * The framework stamps every stored row with the table-pinned {@code prep_logic_version}, replacing the raw chunks'
+ * legacy input_logic/video_logic/audio_logic hints.
  * Implementations need a public no-arg constructor; one instance serves many files of one Spark task, sequentially.
  */
 public interface FilePreprocessor {
 
-  /** Stable name + version of the preprocessing style, stored in the {@code preprocessor} column. */
+  /**
+   * Stable implementation name + version, composed into the table-pinned prep logic version and each row's
+   * {@code prep_logic_version} aux value. Bump it whenever emitted records change.
+   */
   String name();
 
   /**
