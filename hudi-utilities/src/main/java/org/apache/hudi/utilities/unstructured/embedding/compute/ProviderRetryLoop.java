@@ -1,0 +1,262 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.hudi.utilities.unstructured.embedding.compute;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Random;
+import java.util.function.LongSupplier;
+
+/**
+ * Sends one request with its retries: every attempt first takes a token of {@link RequestRateLimiter}, then a transient answer
+ * ({@link ProviderResponseKind#RETRYABLE}) is retried with full-jitter exponential backoff, honouring the answer's retry hint
+ * up to {@code .retry.max.backoff.ms}, within the call's
+ * {@code .request.deadline.ms} and {@code .retry.max.attempts} ({@link ProviderClientSettings}). After
+ * {@code .outage.consecutive.failures} requests in a row stay RETRYABLE, {@link #outageOpen()} is true and every later request
+ * is not sent. Any other answer ends the request at once.
+ *
+ * <p>Not thread safe. {@link #startCall} opens a call, {@link #stats} reports it.
+ */
+public final class ProviderRetryLoop {
+
+  private static final Logger LOG = LoggerFactory.getLogger(ProviderRetryLoop.class);
+  public static final String OUTAGE = "provider outage short-circuit";
+  public static final String DEADLINE_EXCEEDED = "deadline exceeded";
+  public static final String INTERRUPTED = "interrupted";
+
+  /** Waits between attempts; injectable so tests advance a fake clock instead of sleeping. */
+  @FunctionalInterface
+  public interface Sleeper {
+    void sleep(long millis) throws InterruptedException;
+  }
+
+  /** One attempt of a request. */
+  @FunctionalInterface
+  public interface Sender<T> {
+    /** Never throws for a provider or transport failure: those are an {@link Answer} of their kind. */
+    Answer<T> send() throws InterruptedException;
+  }
+
+  /** What one attempt, or a request with its retries, came to. */
+  public static final class Answer<T> {
+    private final ProviderResponseKind kind;
+    private final T value;
+    private final String error;
+    private final long retryAfterMillis;
+    private final boolean interrupted;
+
+    private Answer(ProviderResponseKind kind, T value, String error, long retryAfterMillis, boolean interrupted) {
+      this.kind = kind;
+      this.value = value;
+      this.error = error;
+      this.retryAfterMillis = retryAfterMillis;
+      this.interrupted = interrupted;
+    }
+
+    public static <T> Answer<T> ok(T value) {
+      return new Answer<>(ProviderResponseKind.OK, value, null, -1, false);
+    }
+
+    /** @param retryAfterMillis the provider's retry hint, -1 for none */
+    public static <T> Answer<T> failed(ProviderResponseKind kind, String error, long retryAfterMillis) {
+      return new Answer<>(kind, null, error, retryAfterMillis, false);
+    }
+
+    static <T> Answer<T> interrupted(String error) {
+      return new Answer<>(ProviderResponseKind.RETRYABLE, null, error, -1, true);
+    }
+
+    public ProviderResponseKind kind() {
+      return kind;
+    }
+
+    public T value() {
+      return value;
+    }
+
+    public String error() {
+      return error;
+    }
+
+    /** The calling thread was interrupted: RETRYABLE, but not a provider failure. */
+    public boolean isInterrupted() {
+      return interrupted;
+    }
+  }
+
+  private final String name;
+  private final ProviderClientSettings settings;
+  private final RequestRateLimiter rateLimiter;
+  private final LongSupplier clock;
+  private final Sleeper sleeper;
+  private final Random jitter;
+  private int consecutiveFailures;
+  private boolean outageOpen;
+  private boolean interrupted;
+  private long deadline;
+  private int requests;
+  private int retries;
+  private long rateLimitWaitMillis;
+
+  /** @param name the model and provider, for log lines */
+  public ProviderRetryLoop(String name, ProviderClientSettings settings, RequestRateLimiter rateLimiter, LongSupplier clock,
+                           Sleeper sleeper, Random jitter) {
+    this.name = name;
+    this.settings = settings;
+    this.rateLimiter = rateLimiter;
+    this.clock = clock;
+    this.sleeper = sleeper;
+    this.jitter = jitter;
+  }
+
+  /** Opens a call: resets its counters and starts its deadline. */
+  public void startCall() {
+    deadline = clock.getAsLong() + settings.deadlineMs();
+    requests = 0;
+    retries = 0;
+    rateLimitWaitMillis = 0;
+    interrupted = false;
+  }
+
+  /** The current call's counts. */
+  public EmbeddingCallStats stats() {
+    return new EmbeddingCallStats(requests, retries, rateLimitWaitMillis);
+  }
+
+  public boolean outageOpen() {
+    return outageOpen;
+  }
+
+  public int consecutiveFailures() {
+    return consecutiveFailures;
+  }
+
+  /** Set once the calling thread was interrupted in this call: nothing more is sent. */
+  public boolean interrupted() {
+    return interrupted;
+  }
+
+  /** The non-negative time left for this call, including permit waiting. */
+  public long remainingMillis() {
+    return Math.max(0L, deadline - clock.getAsLong());
+  }
+
+  public boolean pastDeadline() {
+    return clock.getAsLong() >= deadline;
+  }
+
+  /**
+   * Why a request of this call is not sent (the call was interrupted, the outage short-circuit is open, or the deadline passed),
+   * or null when it may be sent.
+   */
+  public String notSentReason() {
+    if (interrupted) {
+      return INTERRUPTED + ": the request was not sent";
+    }
+    if (outageOpen) {
+      return OUTAGE + ": the request was not sent";
+    }
+    if (pastDeadline()) {
+      return DEADLINE_EXCEEDED + ": the request was not sent";
+    }
+    return null;
+  }
+
+  /** One request with its retries; a RETRYABLE end counts toward the outage short-circuit, an OK one resets it. */
+  public <T> Answer<T> send(Sender<T> sender) {
+    int requestsBefore = requests;
+    Answer<T> answer = attempts(sender);
+    if (answer.kind() == ProviderResponseKind.OK) {
+      consecutiveFailures = 0;
+    } else if (answer.kind() == ProviderResponseKind.RETRYABLE && !answer.isInterrupted() && requests > requestsBefore) {
+      consecutiveFailures++;
+      LOG.warn("EMBED-PROVIDER-REQUEST-FAILED {} consecutiveFailures={}: {}", name, consecutiveFailures, answer.error());
+      if (consecutiveFailures >= settings.outageConsecutiveFailures() && !outageOpen) {
+        outageOpen = true;
+        LOG.warn("EMBED-PROVIDER-OUTAGE {}: {} consecutive requests failed; later requests are not sent", name, consecutiveFailures);
+      }
+    } else if (answer.isInterrupted()) {
+      interrupted = true;
+    }
+    return answer;
+  }
+
+  private <T> Answer<T> attempts(Sender<T> sender) {
+    String lastError = null;
+    for (int attempt = 1; attempt <= settings.retryMaxAttempts(); attempt++) {
+      String notSent = notSentReason();
+      if (notSent != null) {
+        return Answer.failed(ProviderResponseKind.RETRYABLE, notSent, -1);
+      }
+      try {
+        rateLimitWaitMillis += rateLimiter.acquire(remainingMillis());
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return Answer.interrupted(lastError == null ? INTERRUPTED : lastError + " (" + INTERRUPTED + ")");
+      }
+      if (pastDeadline()) {
+        String notSentMessage = DEADLINE_EXCEEDED + ": the request was not sent";
+        return Answer.failed(ProviderResponseKind.RETRYABLE, lastError == null ? notSentMessage : lastError + " (" + notSentMessage + ")", -1);
+      }
+      if (attempt > 1) {
+        retries++;
+      }
+      requests++;
+      Answer<T> answer;
+      try {
+        answer = sender.send();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return Answer.interrupted(INTERRUPTED);
+      }
+      if (answer.kind() != ProviderResponseKind.RETRYABLE) {
+        return answer;
+      }
+      lastError = answer.error();
+      if (attempt == settings.retryMaxAttempts()) {
+        return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (after " + attempt + " attempts)", -1);
+      }
+      long hint = answer.retryAfterMillis;
+      if (hint > settings.maxBackoffMs()) {
+        return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (provider asks to wait " + hint + " ms, over the "
+            + settings.maxBackoffMs() + " ms max backoff)", -1);
+      }
+      long wait = hint >= 0 ? hint : backoff(attempt);
+      if (clock.getAsLong() + wait >= deadline) {
+        return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (" + DEADLINE_EXCEEDED + " before the next attempt)",
+            -1);
+      }
+      LOG.debug("EMBED-PROVIDER-RETRY {} attempt={} waitMs={}: {}", name, attempt, wait, lastError);
+      try {
+        sleeper.sleep(wait);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return Answer.interrupted(lastError + " (" + INTERRUPTED + ")");
+      }
+    }
+    return Answer.failed(ProviderResponseKind.RETRYABLE, lastError, -1);
+  }
+
+  /** Full jitter: uniform in [0, min(max, initial * 2^(attempt-1))]. */
+  private long backoff(int attempt) {
+    long ceiling = (long) Math.min(settings.maxBackoffMs(), settings.initialBackoffMs() * Math.pow(2, attempt - 1));
+    return (long) (jitter.nextDouble() * (ceiling + 1));
+  }
+}
