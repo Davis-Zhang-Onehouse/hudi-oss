@@ -106,7 +106,7 @@ import java.util.concurrent.ExecutorService;
  */
 public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
-  public static final String LOGIC_VERSION = "video-keyframe-h264mp4-v1";
+  public static final String LOGIC_VERSION = "video-keyframe-h264mp4-v2";
   /** The one extension this strategy prepares. */
   public static final String EXTENSION = "mp4";
   /**
@@ -413,15 +413,58 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
       checkStream((VideoSampleEntry) track.getSampleEntries()[0]);
       editMediaTime = editMediaTime(track.getEdits());
       syncSamples = stss.getSyncSamples();
+      checkSyncSamples();
       decodeDeltas = stts.getEntries();
       CompositionOffsetsBox ctts = NodeBox.findFirstPath(trak, CompositionOffsetsBox.class, Box.path("mdia.minf.stbl.ctts"));
       compositionOffsets = ctts == null ? new CompositionOffsetsBox.Entry[0] : ctts.getEntries();
+      if (ctts != null) {
+        checkCompositionOffsetsCoverTheTrack();
+      }
       timescale = track.getTimescale();
       if (timescale <= 0) {
         throw new VideoDecodeException("video " + video + " declares a video timescale of " + timescale);
       }
       codecPrivate = track.getMeta().getCodecPrivate();
       encoder = new FrameJpegEncoder();
+    }
+
+    /**
+     * The sync-sample walk ({@link #isSync}) assumes stss lists sample numbers strictly increasing within [1, sampleCount]; an
+     * entry out of order would be passed over and one out of range never met, so listed keyframes would be omitted without an
+     * error. Such a table is a corrupt index, refused before any frame.
+     */
+    private void checkSyncSamples() {
+      long previous = 0;
+      for (int i = 0; i < syncSamples.length; i++) {
+        // an entry is an unsigned 32-bit sample number, read by JCodec into an int
+        long entry = syncSamples[i] & 0xffffffffL;
+        if (entry < 1 || entry > sampleCount) {
+          throw new VideoDecodeException("video " + video + " has a corrupt sync-sample table (stss): entry " + (i + 1) + " ("
+              + entry + ") is outside [1, " + sampleCount + "]");
+        }
+        if (entry <= previous) {
+          throw new VideoDecodeException("video " + video + " has a corrupt sync-sample table (stss): it is not strictly "
+              + "increasing, entry " + (i + 1) + " (" + entry + ") is not above the one before it (" + previous + ")");
+        }
+        previous = entry;
+      }
+    }
+
+    /**
+     * An absent ctts means every composition offset is 0; a present one must cover every sample of the track, or the samples past
+     * its end would take an offset of 0 they do not have, moving their presentation times (and so the keyframe schedule) without an
+     * error. Such a table is a corrupt index, refused before any frame.
+     */
+    private void checkCompositionOffsetsCoverTheTrack() {
+      long covered = 0;
+      for (CompositionOffsetsBox.Entry entry : compositionOffsets) {
+        // a sample count is an unsigned 32-bit value, read by JCodec into an int
+        covered += entry.getCount() & 0xffffffffL;
+      }
+      if (covered < sampleCount) {
+        throw new VideoDecodeException("video " + video + " has a corrupt composition-offset table (ctts): it covers " + covered
+            + " of the track's " + sampleCount + " samples");
+      }
     }
 
     /**
@@ -784,18 +827,19 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
     /** The composition offset of the current sample (ctts; 0 without one), moving that cursor too. */
     private long compositionOffset() {
-      while (offsetEntry < compositionOffsets.length && offsetUsed >= compositionOffsets[offsetEntry].getCount()) {
+      while (offsetEntry < compositionOffsets.length && offsetUsed >= (compositionOffsets[offsetEntry].getCount() & 0xffffffffL)) {
         offsetEntry++;
         offsetUsed = 0;
       }
       if (offsetEntry >= compositionOffsets.length) {
+        // no ctts: a present one covers every sample (checkCompositionOffsetsCoverTheTrack)
         return 0;
       }
       offsetUsed++;
       return compositionOffsets[offsetEntry].getOffset();
     }
 
-    /** Whether {@code sample} (from 0) is a sync sample; stss lists them from 1, ascending. */
+    /** Whether {@code sample} (from 0) is a sync sample; stss lists them from 1, strictly ascending ({@link #checkSyncSamples}). */
     private boolean isSync(long sample) {
       while (syncIndex < syncSamples.length && syncSamples[syncIndex] - 1L < sample) {
         syncIndex++;

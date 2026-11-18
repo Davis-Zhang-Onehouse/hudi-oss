@@ -31,7 +31,9 @@ import javax.imageio.IIOException;
 import java.io.EOFException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
 
@@ -39,6 +41,13 @@ import java.util.Set;
  * The outcome of an image input whose preparation ({@link EmbeddingInput#image()}) failed, per the
  * {@link EmbeddingClient} image contract, the one classification every multimodal client uses:
  * <ul>
+ *   <li>a JVM failure ({@link VirtualMachineError}, e.g. an OutOfMemoryError, or a {@link LinkageError}) anywhere in its causes
+ *       or suppressed failures, whatever wraps it (the JDK PNG reader wraps an OutOfMemoryError in an IIOException): it says nothing about the
+ *       image → {@link EmbeddingComputePlatformException}, no result, so the run fails and the image is computed again. Not a
+ *       {@link StackOverflowError}: the input's own nesting depth causes it, the same on every attempt, so it stays the
+ *       image's failure. The trade-off: an image whose decode needs more heap than the executor has, where the pre-decode
+ *       estimates do not reach (a BMP's embedded JPEG/PNG is not counted, {@code DecoderIntermediates}), fails every run until
+ *       an operator acts (a larger executor heap, or the file removed), as a file that ends its executor does in prep;</li>
  *   <li>a {@link BlobReferenceException} anywhere in the cause chain, whatever wraps it (the stored-input reference prep wrote
  *       names no readable range: prep's invariant is broken) → {@link EmbeddingComputePlatformException}, no result;</li>
  *   <li>a stored input confirmed missing or shorter than its recorded range ({@link SourceFailures#isContentFailure}) → PERMANENT,
@@ -68,6 +77,12 @@ public final class ImageFailures {
    * @throws EmbeddingComputePlatformException for a malformed stored-input reference: no result, the run fails
    */
   public static EmbeddingResult result(EmbeddingInput input, Exception failure) {
+    Error jvm = jvmFailure(failure);
+    if (jvm != null) {
+      throw new EmbeddingComputePlatformException("preparing the image of " + rowOf(input) + " failed in the JVM, not in the "
+          + "image: " + jvm.getClass().getSimpleName() + ": " + jvm.getMessage() + "; the compute commit fails and the next run "
+          + "computes the image again", failure);
+    }
     BlobReferenceException reference = find(failure, BlobReferenceException.class);
     if (reference != null) {
       throw new EmbeddingComputePlatformException("the stored input reference of " + rowOf(input) + " is malformed: "
@@ -118,6 +133,30 @@ public final class ImageFailures {
       return true;
     }
     return firstIo instanceof ImageRefusedException || firstIo instanceof ImageHeaderException || firstIo instanceof IIOException;
+  }
+
+  /**
+   * The first JVM failure among {@code failure}, its causes and suppressed failures, or null: a {@link VirtualMachineError} other than a
+   * {@link StackOverflowError} (which the input's nesting causes), or a {@link LinkageError}.
+   */
+  private static Error jvmFailure(Throwable failure) {
+    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    Deque<Throwable> pending = new ArrayDeque<>();
+    pending.add(failure);
+    while (!pending.isEmpty()) {
+      Throwable cause = pending.removeFirst();
+      if (!visited.add(cause)) {
+        continue;
+      }
+      if ((cause instanceof VirtualMachineError && !(cause instanceof StackOverflowError)) || cause instanceof LinkageError) {
+        return (Error) cause;
+      }
+      if (cause.getCause() != null) {
+        pending.addLast(cause.getCause());
+      }
+      Collections.addAll(pending, cause.getSuppressed());
+    }
+    return null;
   }
 
   /** The first cause of {@code failure} (itself included) of {@code type}, or null; a cause chain that loops ends. */

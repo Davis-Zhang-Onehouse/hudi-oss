@@ -208,6 +208,9 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
     assertTrue(video.bytes.length > BLOB_INLINE_MAX_BYTES, "the video is streamed from its object: " + video.bytes.length);
     announce(video);
     TypedProperties props = videoProps(mode);
+    // with the error table on, a derived frame refused inline would be recorded as an error and the frames after it skipped,
+    // and the round would still commit: every frame, the first included, must instead reach the table out of line
+    assertEquals("true", props.getString(HoodieErrorTableConfig.ERROR_TABLE_ENABLED.key()), "the error table is on");
     List<byte[]> frames = expectedFrames(video, props);
     assertTrue(frames.size() > 1, "the clip keeps several frames: " + frames.size());
     for (byte[] frame : frames) {

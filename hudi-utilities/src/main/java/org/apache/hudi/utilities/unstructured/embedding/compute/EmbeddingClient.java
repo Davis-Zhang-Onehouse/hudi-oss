@@ -59,7 +59,8 @@ import java.util.TreeSet;
  * ({@link org.apache.hudi.utilities.unstructured.embedding.image.ImageHeaderException}), corrupt pixel data
  * ({@link javax.imageio.IIOException}) or a body cut short is PERMANENT; a storage failure under the read
  * ({@link org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException} in the cause chain) is RETRYABLE; a malformed
- * stored-input reference fails the run ({@link EmbeddingComputePlatformException}).
+ * stored-input reference, or a JVM failure anywhere in the cause chain (an OutOfMemoryError the PNG reader wrapped in an
+ * IIOException, a LinkageError; not a StackOverflowError), fails the run ({@link EmbeddingComputePlatformException}).
  */
 public interface EmbeddingClient extends AutoCloseable {
 

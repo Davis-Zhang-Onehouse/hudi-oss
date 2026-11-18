@@ -324,6 +324,54 @@ public class TestJcodecKeyframeVideoFrameSource {
   }
 
   /**
+   * A sync-sample table whose size and count are valid but whose entries are not strictly increasing within [1, sampleCount] is
+   * refused when the track opens, before any frame: c01 lists [1, 11, 21, 31, 41, 51] of its 60 samples.
+   */
+  @ParameterizedTest(name = "{0}")
+  @CsvSource({
+      "unordered, '1, 31, 21, 41, 51, 60', entry 3 (21) is not above the one before it (31)",
+      "duplicate, '1, 11, 11, 31, 41, 51', entry 3 (11) is not above the one before it (11)",
+      "zero, '0, 11, 21, 31, 41, 51', entry 1 (0) is outside [1, 60]",
+      "pastTheEnd, '1, 11, 21, 31, 41, 61', entry 6 (61) is outside [1, 60]"})
+  public void testASyncSampleTableOutOfOrderOrRangeIsRefusedBeforeAnyFrame(String name, String entries, String reason)
+      throws Exception {
+    byte[] bytes = c01Bytes();
+    int stss = box(bytes, "stss");
+    assertEquals(6, getInt(bytes, stss + 12), "precondition: c01 lists 6 sync samples");
+    String[] values = entries.split(",\\s*");
+    for (int i = 0; i < values.length; i++) {
+      // stss: size, type, version and flags, the entry count, then the entries
+      putInt(bytes, stss + 16 + 4 * i, Long.parseLong(values[i]));
+    }
+    List<ExtractedFrame> frames = new ArrayList<>();
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
+        write("stss-" + name + ".mp4", bytes), "mp4", new TypedProperties(), frames, new ArrayList<>()));
+    assertTrue(refused.getMessage().contains("sync-sample table (stss)") && refused.getMessage().contains(reason),
+        refused.getMessage());
+    assertTrue(frames.isEmpty(), "refused before any frame: " + frames.size());
+  }
+
+  /**
+   * A composition-offset table present but covering fewer samples than the track (its entries fit in the box) is refused when
+   * the track opens, before any frame, rather than giving the uncovered samples an offset of 0: c01's first entry covers 3
+   * samples of its 60; made to cover 1, the table covers 58.
+   */
+  @Test
+  public void testACompositionOffsetTableCoveringFewerSamplesThanTheTrackIsRefusedBeforeAnyFrame() throws Exception {
+    byte[] bytes = c01Bytes();
+    int ctts = box(bytes, "ctts");
+    // ctts: size, type, version and flags, the entry count, then {sample count, offset} entries
+    assertEquals(3, getInt(bytes, ctts + 16), "precondition: c01's first composition entry covers 3 samples");
+    putInt(bytes, ctts + 16, 1);
+    List<ExtractedFrame> frames = new ArrayList<>();
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
+        write("ctts-short.mp4", bytes), "mp4", new TypedProperties(), frames, new ArrayList<>()));
+    assertTrue(refused.getMessage().contains("corrupt composition-offset table (ctts): it covers 58 of the track's 60 samples"),
+        refused.getMessage());
+    assertTrue(frames.isEmpty(), "refused before any frame: " + frames.size());
+  }
+
+  /**
    * A table JCodec parses outside the sample table box (it parses a box of a table type under any parent) or of a type the
    * demuxer reads beside the sync samples ({@code stps}) is checked too: c01's edit box relabelled as user data holding a sync
    * table, and its sync table relabelled as partial sync, each with an oversized count.
@@ -495,7 +543,7 @@ public class TestJcodecKeyframeVideoFrameSource {
 
   @Test
   public void testTheLogicVersionNamesTheLogicNotTheLibrary() {
-    assertEquals("video-keyframe-h264mp4-v1", new JcodecKeyframeVideoFrameSource().name());
+    assertEquals("video-keyframe-h264mp4-v2", new JcodecKeyframeVideoFrameSource().name());
   }
 
   private static void assertRefusal(Exception refused, String reason, String extension) {

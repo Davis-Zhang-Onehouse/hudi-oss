@@ -81,18 +81,25 @@ public class TestDecoderSourceRows {
   }
 
   @ParameterizedTest
-  @CsvSource({"bmp,16000", "gif,4000"})
+  @CsvSource({"bmp,12000", "gif,4000"})
   public void neighboringSourceRowsAreChargedBeforeDecode(String format, long rowBytes) throws IOException {
     byte[] bytes = ImageFixtures.image(format, 4000, 1);
+    if ("bmp".equals(format)) {
+      assertEquals(24, (bytes[28] & 0xff) | (bytes[29] & 0xff) << 8, "the BMP fixture has a 24-bit source row");
+    }
     assertThrows(ImageRefusedException.class,
         () -> new ImagePreparer(spec(rowBytes - 1)).prepare(ImageFixtures.source(bytes)));
     assertEquals(0, CountingImageDecoder.CALLS.get());
   }
 
   @ParameterizedTest
-  @CsvSource({"bmp,16000", "gif,4000"})
+  @CsvSource({"bmp,12000", "gif,4000"})
   public void neighboringSourceRowsAtBudgetDecode(String format, long rowBytes) throws IOException {
-    PreparedImage image = new ImagePreparer(spec(rowBytes)).prepare(ImageFixtures.source(ImageFixtures.image(format, 4000, 1)));
+    byte[] bytes = ImageFixtures.image(format, 4000, 1);
+    if ("bmp".equals(format)) {
+      assertEquals(24, (bytes[28] & 0xff) | (bytes[29] & 0xff) << 8, "the BMP fixture has a 24-bit source row");
+    }
+    PreparedImage image = new ImagePreparer(spec(rowBytes)).prepare(ImageFixtures.source(bytes));
     assertEquals(512, image.getWidth());
     assertEquals(1, CountingImageDecoder.CALLS.get());
   }

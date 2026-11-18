@@ -46,10 +46,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The DEFAULT transcript chunker ({@link AudioConfig#DEFAULT_CHUNKER_CLASS}, transcript-pack-v1) over the RECORDED whisper
+ * The DEFAULT transcript chunker ({@link AudioConfig#DEFAULT_CHUNKER_CLASS}, transcript-pack-v2) over the RECORDED whisper
  * fixture ({@link RecordedUtterances}) and over built utterances: every chunk at or below the limit under openai-bpe and
  * word-count, its token count the tokenizer's count of its text, every chunk starting with its speaker label, the PDF overlap
- * between adjacent chunks, start_ms of the first utterance whose text (overlap included) is in the chunk and end_ms of the last,
+ * between adjacent chunks, start_ms of the first utterance whose text (overlap included) is in the chunk and end_ms the latest
+ * end of those utterances,
  * word and code-point splits, speaker turns as lines, normalisation, utterances pulled only while it needs text, and closing.
  */
 public class TestTranscriptPacker {
@@ -71,7 +72,7 @@ public class TestTranscriptPacker {
   @Test
   public void theDefaultChunkerIsTheTranscriptPacker() {
     TranscriptChunker chunker = AudioConfig.from(new TypedProperties()).newChunker();
-    assertEquals("transcript-pack-v1", chunker.logicVersion());
+    assertEquals("transcript-pack-v2", chunker.logicVersion());
   }
 
   /** The recorded fixture: limits, labels, coverage of the stream with overlap, and the chunk times. */
@@ -106,15 +107,28 @@ public class TestTranscriptPacker {
         assertTrue(chunks.get(i - 1).text().endsWith(stream.text.substring(start, prevEnd)), "the overlap is the previous suffix");
       }
       TranscriptSegment first = stream.utteranceAt(start);
-      TranscriptSegment last = stream.utteranceAt(end - 1);
       assertEquals(first.getStartMs(), chunk.startMs(), "start_ms of the first utterance with text in chunk " + i);
-      assertEquals(last.getEndMs(), chunk.endMs(), "end_ms of the last utterance in chunk " + i);
+      assertEquals(stream.latestEndIn(start, end), chunk.endMs(), "end_ms: the latest end of the utterances in chunk " + i);
       assertEquals(stream.segmentAt(start), chunk.firstSegment());
       assertEquals(stream.segmentAt(end - 1), chunk.lastSegment());
       prevEnd = end;
     }
     assertEquals(stream.text.length(), prevEnd, "the chunks cover the whole transcript");
     assertTrue(overlaps > 0, "adjacent chunks overlap (the stub chunker never does)");
+  }
+
+  /**
+   * Utterance ends are not non-decreasing: [0, 10000] then [2000, 4000] packed into one chunk ends at 10000, the latest end of
+   * its utterances, not at the last utterance's 4000.
+   */
+  @Test
+  public void chunkEndsAtTheLatestEndOfItsUtterances() {
+    List<TranscriptChunk> chunks = pack(Arrays.asList(utterance(0, "A long statement.", 0, 10000),
+        utterance(0, "An aside.", 2000, 4000)), 0, new WordCountTokenizer(), 512, 0);
+    assertEquals(1, chunks.size(), chunks.toString());
+    assertEquals(LABEL + "A long statement. An aside.", chunks.get(0).text());
+    assertEquals(0, chunks.get(0).startMs());
+    assertEquals(10000, chunks.get(0).endMs());
   }
 
   @Test
@@ -232,7 +246,7 @@ public class TestTranscriptPacker {
         insideOtherTurns++;
       }
       assertEquals(first.getStartMs(), chunk.startMs(), "chunk " + i);
-      assertEquals(stream.utteranceAt(end - 1).getEndMs(), chunk.endMs(), "chunk " + i);
+      assertEquals(stream.latestEndIn(start, end), chunk.endMs(), "chunk " + i);
       assertEquals(stream.speakersIn(start, end), chunk.speakers(), "chunk " + i);
       prevEnd = end;
     }
@@ -467,6 +481,15 @@ public class TestTranscriptPacker {
 
     private long segmentAt(int offset) {
       return utterances.get(index(offset)).segmentIndex();
+    }
+
+    /** The latest end of the utterances with text in [start, end). */
+    private long latestEndIn(int start, int end) {
+      long latest = Long.MIN_VALUE;
+      for (int i = index(start); i <= index(end - 1); i++) {
+        latest = Math.max(latest, utterances.get(i).utterance().getEndMs());
+      }
+      return latest;
     }
 
     /** Distinct labels of the utterances with text in {@code [start, end)}, in order of first appearance. */
