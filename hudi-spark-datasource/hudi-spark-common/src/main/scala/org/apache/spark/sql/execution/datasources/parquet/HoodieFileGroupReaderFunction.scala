@@ -199,13 +199,15 @@ private[parquet] class HoodieFileGroupReaderFunction(baseFileReader: Broadcast[S
                   .build()
               }
             // Append partition values to rows and project to output schema
-            appendPartitionAndProject(
-              reader.getClosableIterator,
-              state.projectionInputSchema,
-              state.remainingPartitionSchema,
-              state.outputSchema,
-              fileSliceMapping.getPartitionValues,
-              state.fixedPartitionIndexes)
+            HoodieFileGroupReaderFunction.projectClosingOnFailure(reader.getClosableIterator) { fileGroupRows =>
+              appendPartitionAndProject(
+                fileGroupRows,
+                state.projectionInputSchema,
+                state.remainingPartitionSchema,
+                state.outputSchema,
+                fileSliceMapping.getPartitionValues,
+                state.fixedPartitionIndexes)
+            }
 
           case _ =>
             readBaseFile(file, state, conf)
@@ -282,6 +284,26 @@ private[parquet] class HoodieFileGroupReaderFunction(baseFileReader: Broadcast[S
 }
 
 private[parquet] object HoodieFileGroupReaderFunction {
+
+  /**
+   * The rows `project` builds over the file group reader's `iterator`. No task listener holds `iterator` until those rows are
+   * returned, so a failure while building them (a projection's code generation) closes it here; a failure to close is added to
+   * the original failure as suppressed.
+   */
+  private[parquet] def projectClosingOnFailure[T](iterator: ClosableIterator[InternalRow])
+                                                 (project: ClosableIterator[InternalRow] => T): T = {
+    try {
+      project(iterator)
+    } catch {
+      case failure: Throwable =>
+        try {
+          iterator.close()
+        } catch {
+          case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+        }
+        throw failure
+    }
+  }
 
   private def appendPartitionAndProject(iter: ClosableIterator[InternalRow],
                                         inputSchema: StructType,
