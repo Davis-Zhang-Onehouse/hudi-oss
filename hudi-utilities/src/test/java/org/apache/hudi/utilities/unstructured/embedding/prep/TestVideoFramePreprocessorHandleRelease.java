@@ -72,7 +72,7 @@ public class TestVideoFramePreprocessorHandleRelease {
     }
     assertTrue(modalities.contains(EmbeddingTableSchema.MODALITY_IMAGE), modalities.toString());
     assertTrue(modalities.contains(EmbeddingTableSchema.MODALITY_TEXT), modalities.toString());
-    assertTrue(bytes.opened() >= 3, "the frames' scanner and decoder and the speech's grabber: " + bytes.opened());
+    assertTrue(bytes.opened() >= 2, "the frames' grabber and the speech's grabber: " + bytes.opened());
     assertEquals(Collections.emptyList(), bytes.unclosed(), "unclosed handles after a drained video with speech");
   }
 

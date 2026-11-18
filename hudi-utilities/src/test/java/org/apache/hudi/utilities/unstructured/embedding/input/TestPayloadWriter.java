@@ -145,8 +145,10 @@ public class TestPayloadWriter {
   @Test
   public void preparedInputsWithADestinationWritesThePayloadAndKeepsTheReferenceOnly() throws Exception {
     byte[] payload = bytes(100, 1);
-    Row prepared = inputs().prepare(ROW, PARTITION, ImageContentTypes.JPEG, () -> new ByteArrayInputStream(payload),
+    PreparedInputs inputs = inputs();
+    Row prepared = inputs.prepare(ROW, PARTITION, ImageContentTypes.JPEG, () -> new ByteArrayInputStream(payload),
         payload.length);
+    inputs.awaitWrites();
     assertEquals(HoodieSchema.Blob.OUT_OF_LINE, prepared.getString(0));
     assertNull(prepared.get(1), "the stored row holds the reference only");
     Row reference = prepared.getStruct(2);

@@ -183,11 +183,31 @@ public final class OutOfLineWriter {
    * closed.
    */
   public String write(String partition, StreamingWrite stream) throws IOException {
+    String relative = newPath(partition);
+    writeAt(relative, stream);
+    return relative;
+  }
+
+  /**
+   * A fresh relative path for a file of {@code partition}, as {@link #write} names one: a new file id and the CALLING task's
+   * write token, so it is called on the task's own thread. Nothing is created.
+   */
+  public String newPath(String partition) {
     validatePartition(partition);
     String directory = ManagedBlobPaths.FOLDER + (StringUtils.isNullOrEmpty(partition) ? "" : "/" + partition);
     String name = FSUtils.makeBaseFileName(instantTime, FSUtils.makeWriteToken(taskContextSupplier),
         FSUtils.createNewFileId(FSUtils.createNewFileIdPfx(), 0), FILE_EXTENSION);
-    String relative = directory + "/" + name;
+    return directory + "/" + name;
+  }
+
+  /**
+   * Marks {@code relative} (a {@link #newPath} of this writer) when markers are enabled, then creates and streams it exactly
+   * once, as {@link #write} does; safe to call from any thread. Returns only after the file is closed.
+   */
+  public void writeAt(String relative, StreamingWrite stream) throws IOException {
+    int slash = relative.lastIndexOf('/');
+    String directory = relative.substring(0, slash);
+    String name = relative.substring(slash + 1);
     if (markers.isPresent() && !markers.get().create(directory, name, IOType.CREATE).isPresent()) {
       throw new HoodieIOException("Timeline server did not create the out-of-line marker for " + relative);
     }
@@ -209,7 +229,6 @@ public final class OutOfLineWriter {
       }
       throw failure;
     }
-    return relative;
   }
 
   /** Keeps generated paths relative and contained; numeric partition segments carry no special meaning. */

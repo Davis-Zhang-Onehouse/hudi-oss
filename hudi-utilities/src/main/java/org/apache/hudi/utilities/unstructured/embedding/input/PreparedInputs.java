@@ -20,11 +20,13 @@ package org.apache.hudi.utilities.unstructured.embedding.input;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.utilities.sources.blob.BlobInlineCeiling;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageContentTypes;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
+import org.apache.hudi.utilities.unstructured.storage.OutOfLineWritePool;
 import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter;
 
 import org.apache.spark.SparkEnv;
@@ -34,6 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema;
 import org.apache.spark.sql.types.BlobType;
 import org.apache.spark.sql.types.StructType;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Serializable;
@@ -44,19 +47,23 @@ import java.util.Objects;
  * round's instant exists before the transform):
  * <ul>
  *   <li>at most the inline threshold ({@link EmbeddingInputConfig#inlineMaxBytes}: default 1 MiB; on a Parquet without
- *   per-column statistics 10 KiB, at most 80 KiB): {@code (INLINE, bytes, null)};</li>
+ *   per-column statistics 80 KiB, also its most): {@code (INLINE, bytes, null)};</li>
  *   <li>larger: {@code (OUT_OF_LINE, null, (<.hoodie/.blob/[<partition>/]<fileId>_<writeToken>_<instantTime>.bin>, 0, length,
  *   managed = true))}:
- *   the payload is written to that final file at once ({@link PayloadWriter} into the {@link PayloadDestination},
- *   with timeline-server markers unless {@code hoodie.write.blob.markers.enable} is false) and the value carries the
- *   reference only, relative to the embedding table's base path.</li>
+ *   the payload is written to that final file ({@link PayloadWriter} into the {@link PayloadDestination}, with
+ *   timeline-server markers unless {@code hoodie.write.blob.markers.enable} is false) and the value carries the
+ *   reference only, relative to the embedding table's base path. A payload of at most
+ *   {@link OutOfLineWritePool#MAX_PENDING_BYTES} (an encoded frame) is read whole and its marker and file are written in the
+ *   background, while the task prepares its next payloads; {@link #awaitWrites} waits for them before the task reports its
+ *   end.</li>
  * </ul>
- * The payload is read as exactly its declared size: whole into the row when inline, streamed through the writer's bounded
- * buffer when out of line, so a payload above the threshold is never held in the heap. Inside a Spark task the inline
+ * The payload is read as exactly its declared size: whole into the row when inline, whole and then written in the background
+ * when out of line up to {@link OutOfLineWritePool#MAX_PENDING_BYTES}, streamed through the writer's bounded buffer when larger,
+ * so a payload above that is never held in the heap. Inside a Spark task the inline
  * threshold is checked against the task's own {@link BlobInlineCeiling} before the first payload; the job-start check of the
  * same rule is {@link EmbeddingInputConfig#checkOnDriver}.
  */
-public final class PreparedInputs implements Serializable {
+public final class PreparedInputs implements Serializable, Closeable {
 
   private static final long serialVersionUID = 1L;
   /** Spark type of a stored input value: the {@link HoodieSchema.Blob} struct. */
@@ -72,6 +79,14 @@ public final class PreparedInputs implements Serializable {
   /** Where payloads are written as they are prepared. */
   private final PayloadDestination destination;
   private transient boolean taskCeilingChecked;
+  /**
+   * The background writes of this task's out-of-line payloads of at most {@link OutOfLineWritePool#MAX_PENDING_BYTES}; kept
+   * once closed, so a write after {@link #close} is refused rather than given new threads. Volatile: the task's completion may
+   * close it from another thread.
+   */
+  private transient volatile OutOfLineWritePool writes;
+  /** Set by {@link #close}: a write after it is refused, never given a new pool. */
+  private transient volatile boolean closed;
 
   /**
    * @param instant     the prep instant that owns each payload CREATE marker (when out-of-line markers are enabled)
@@ -114,8 +129,63 @@ public final class PreparedInputs implements Serializable {
       return new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.INLINE, readWhole(payload, sizeBytes), null}, BLOB_STRUCT);
     }
     PayloadWriter.Payload target = new PayloadWriter.Payload(row, partitionPath, sizeBytes);
+    if (sizeBytes <= OutOfLineWritePool.MAX_PENDING_BYTES) {
+      // read whole here, so a payload not of its size fails as before, before anything is marked; written in the background
+      byte[] bytes = readWhole(payload, sizeBytes);
+      return outOfLine(PayloadWriter.write(writer(target), writes(), target, bytes), sizeBytes);
+    }
+    OutOfLineWritePool pool = writes;
+    if (pool != null) {
+      // a background write already failed (or was dropped by close): the round fails now, as it would at its barrier
+      try {
+        pool.checkFailure();
+      } catch (EmbeddingPayloadWriteException e) {
+        throw e;
+      } catch (HoodieException e) {
+        throw new EmbeddingPayloadWriteException(target.row, PayloadWriter.STEP_CREATE, e.getMessage(), e);
+      }
+    }
     String externalPath = PayloadWriter.stream(writer(target), target, () -> new ExactSizeStream(payload, sizeBytes));
     return outOfLine(externalPath, sizeBytes);
+  }
+
+  /**
+   * Waits for every payload file this task submitted to be written, then throws the first write failure, if any: called before
+   * the task reports its end, so the task succeeds only with every file of its rows.
+   */
+  public void awaitWrites() {
+    if (writes != null) {
+      writes.awaitAll();
+    }
+  }
+
+  /**
+   * Stops the write threads: writes not yet started are dropped (after {@link #awaitWrites} there are none; a drop is recorded
+   * as a failure, so a later barrier fails), and those running are waited for. Failures are thrown by {@link #awaitWrites},
+   * not here.
+   */
+  @Override
+  public void close() {
+    closed = true;
+    OutOfLineWritePool pool = writes;
+    if (pool != null) {
+      pool.close();
+    }
+  }
+
+  /** The task's write pool, started on its first background write. */
+  private OutOfLineWritePool writes() {
+    OutOfLineWritePool pool = writes;
+    if (pool == null) {
+      pool = new OutOfLineWritePool();
+      // published before closed is read: a close racing this either sees the pool or is seen here
+      writes = pool;
+      if (closed) {
+        // closed before its first background write: the refusal comes from a closed pool, as for any write after close
+        pool.close();
+      }
+    }
+    return pool;
   }
 
   /**

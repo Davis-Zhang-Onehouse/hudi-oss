@@ -55,10 +55,10 @@ public final class EmbeddingInputConfig {
       .sinceVersion("1.3.0")
       .withDocumentation("A stored input of at most this many bytes is INLINE in the row; a larger one is a managed copy. With a "
           + "Parquet older than 1.14 (e.g. the Spark 3.5 builds), which cannot turn off min/max statistics for one column, the default "
-          + "is 10240 and a value above 81920 is logged at WARN and 81920 is used.");
+          + "is 81920, the largest value used there: a value above it is logged at WARN and 81920 is used.");
   /**
    * 1 MiB, the blob table's default: a 512-px JPEG input is far below it, so out of line is the exception. On a Parquet without
-   * per-column statistics the default is 10 KiB and the threshold at most 80 KiB ({@link #inlineMaxBytes(TypedProperties)}).
+   * per-column statistics the threshold is at most 80 KiB, and that is its default ({@link #inlineMaxBytes(TypedProperties)}).
    */
   public static final long DEFAULT_INLINE_MAX_BYTES = 1024L * 1024L;
   /** Fraction in (0, 1] of the per-task heap share up to which {@link #INLINE_MAX_BYTES} may be set. */
@@ -80,7 +80,7 @@ public final class EmbeddingInputConfig {
 
   /**
    * The inline threshold a writer uses: {@link #INLINE_MAX_BYTES} as the job sets it, or {@link #DEFAULT_INLINE_MAX_BYTES}, on a
-   * Parquet with the per-column statistics switch; without it 10 KiB by default and at most 80 KiB ({@link ParquetInlineCap}).
+   * Parquet with the per-column statistics switch; without it at most 80 KiB, and 80 KiB by default ({@link ParquetInlineCap}).
    *
    * @throws IllegalArgumentException naming the key when it is not a number in [0, 2^31-9]
    */
@@ -96,7 +96,8 @@ public final class EmbeddingInputConfig {
   public static long inlineMaxBytes(TypedProperties props, boolean statisticsSwitch) {
     String raw = ConfigUtils.getStringWithAltKeys(props, INLINE_MAX_BYTES, null);
     if (raw == null) {
-      return ParquetInlineCap.effective(INLINE_MAX_BYTES.key(), null, DEFAULT_INLINE_MAX_BYTES, statisticsSwitch);
+      return ParquetInlineCap.effective(INLINE_MAX_BYTES.key(), null, DEFAULT_INLINE_MAX_BYTES, ParquetInlineCap.MAX_BYTES,
+          statisticsSwitch);
     }
     long value;
     try {
@@ -107,7 +108,8 @@ public final class EmbeddingInputConfig {
     if (value < 0 || value > MAX_INLINE_MAX_BYTES) {
       throw new IllegalArgumentException(INLINE_MAX_BYTES.key() + " must be in [0, " + MAX_INLINE_MAX_BYTES + "]: " + value);
     }
-    return ParquetInlineCap.effective(INLINE_MAX_BYTES.key(), value, DEFAULT_INLINE_MAX_BYTES, statisticsSwitch);
+    return ParquetInlineCap.effective(INLINE_MAX_BYTES.key(), value, DEFAULT_INLINE_MAX_BYTES, ParquetInlineCap.MAX_BYTES,
+        statisticsSwitch);
   }
 
   /**
