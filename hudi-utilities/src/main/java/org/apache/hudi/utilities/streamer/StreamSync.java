@@ -635,9 +635,8 @@ public class StreamSync implements Serializable, Closeable {
 
   private void initializeWriteClientAndRetryTableServices(InputBatch inputBatch, HoodieTableMetaClient metaClient) throws IOException {
     // this is the first input batch. If schemaProvider not set, use it and register Avro Schema and start
-    // compactor. A round that starts its instant before an instant-aware transformer (startsInstantBeforeTransformer) built
-    // its client from the table schema, with no schema provider yet, so that client is re-created here once, like a first one.
-    if (writeClient == null || (startsInstantBeforeTransformer() && schemaProvider == null)) {
+    // compactor
+    if (writeClient == null) {
       this.schemaProvider = inputBatch.getSchemaProvider();
       // Setup HoodieWriteClient and compaction now that we decided on schema
       setupWriteClient(inputBatch.getBatch(), metaClient);

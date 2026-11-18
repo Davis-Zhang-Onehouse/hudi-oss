@@ -996,7 +996,8 @@ public class TestStreamSyncInstantAwareTransformer extends HoodieDeltaStreamerTe
 
   /**
    * On an empty table the write client the round starts its instant with is built from the table schema, which there is none of;
-   * the round re-creates it once from the batch schema, so it commits with the batch's writer schema.
+   * the round re-creates it from the batch schema (the new-schema branch of initializeWriteClientAndRetryTableServices), so it
+   * commits with the batch's writer schema.
    */
   @Test
   void instantAwareRoundOnAnEmptyTableCommitsWithTheBatchWriterSchema() throws Exception {
