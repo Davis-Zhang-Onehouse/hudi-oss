@@ -24,6 +24,7 @@ import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.common.util.StringUtils;
+import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.utilities.exception.HoodieTransformPlanException;
 import org.apache.hudi.utilities.streamer.HoodieStreamer;
 
@@ -77,27 +78,29 @@ public class ChainedTransformer implements Transformer {
 
     Set<String> identifiers = new HashSet<>();
     for (String configuredTransformer : configuredTransformers) {
-      String[] parts = configuredTransformer.trim().split(ID_TRANSFORMER_CLASS_NAME_DELIMITER, -1);
-      if (parts.length > 2) {
-        throw new HoodieTransformPlanException("There should only be one colon in a configured transformer");
+      Pair<Option<String>, String> name = splitTransformer(configuredTransformer);
+      if (name.getLeft().isPresent()) {
+        validateIdentifier(name.getLeft().get(), identifiers, configuredTransformer);
       }
-      String className = parts[parts.length - 1].trim();
-      if (className.isEmpty() || (parts.length == 2 && parts[0].trim().isEmpty())) {
-        throw new HoodieTransformPlanException("Transformer identifier or class is empty for " + configuredTransformer);
-      }
-      if (parts.length == 1) {
-        transformers.add(new TransformerInfo(ReflectionUtils.loadClass(className)));
-      } else {
-        String id = parts[0].trim();
-        validateIdentifier(id, identifiers, configuredTransformer);
-        Transformer transformer = ReflectionUtils.loadClass(className);
-        transformers.add(new TransformerInfo(transformer, id));
-      }
+      transformers.add(TransformerInfo.from(configuredTransformer));
     }
     if (!(transformers.stream().allMatch(TransformerInfo::hasIdentifier)
         || transformers.stream().noneMatch(TransformerInfo::hasIdentifier))) {
       throw new HoodieTransformPlanException("Either all transformers should have identifier or none should");
     }
+  }
+
+  /** Splits and trims the stock class or id:class syntax for execution and schema planning alike. */
+  public static Pair<Option<String>, String> splitTransformer(String configured) {
+    String[] parts = configured.trim().split(ID_TRANSFORMER_CLASS_NAME_DELIMITER, -1);
+    if (parts.length > 2) {
+      throw new HoodieTransformPlanException("There should only be one colon in a configured transformer");
+    }
+    String className = parts[parts.length - 1].trim();
+    if (className.isEmpty() || (parts.length == 2 && parts[0].trim().isEmpty())) {
+      throw new HoodieTransformPlanException("Transformer identifier or class is empty for " + configured);
+    }
+    return Pair.of(parts.length == 2 ? Option.of(parts[0].trim()) : Option.empty(), className);
   }
 
   public List<String> getTransformersNames() {
@@ -146,9 +149,9 @@ public class ChainedTransformer implements Transformer {
     return expectedTargetStructOpt.get();
   }
 
-  protected static class TransformerInfo {
+  public static class TransformerInfo {
 
-    @Getter(AccessLevel.PROTECTED)
+    @Getter(AccessLevel.PUBLIC)
     private final Transformer transformer;
     private final Option<String> idOpt;
 
@@ -162,6 +165,13 @@ public class ChainedTransformer implements Transformer {
       this.idOpt = Option.empty();
     }
 
+    /** Resolves one configured transformer with the same name parsing as its chain. */
+    public static TransformerInfo from(String configured) {
+      Pair<Option<String>, String> name = splitTransformer(configured);
+      Transformer transformer = ReflectionUtils.loadClass(name.getRight());
+      return name.getLeft().isPresent() ? new TransformerInfo(transformer, name.getLeft().get()) : new TransformerInfo(transformer);
+    }
+
     private boolean hasIdentifier() {
       return idOpt.isPresent();
     }
@@ -170,6 +180,11 @@ public class ChainedTransformer implements Transformer {
       Set<String> transformerIds = transformers.stream().map(transformerInfo -> transformerInfo.idOpt.orElse(null))
           .filter(Objects::nonNull)
           .collect(Collectors.toSet());
+      return getProperties(properties, transformerIds);
+    }
+
+    /** The properties of this entry, excluding overrides of every other id in the chain. */
+    public TypedProperties getProperties(TypedProperties properties, Set<String> transformerIds) {
       TypedProperties transformerProps = properties;
       if (idOpt.isPresent()) {
         // Transformer specific property keys end with the id associated with the transformer.
