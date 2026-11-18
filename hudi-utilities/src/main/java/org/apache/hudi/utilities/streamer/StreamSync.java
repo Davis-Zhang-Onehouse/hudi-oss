@@ -95,6 +95,7 @@ import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.sync.common.HoodieSyncConfig;
 import org.apache.hudi.sync.common.util.SyncUtilHelpers;
 import org.apache.hudi.table.action.HoodieWriteMetadata;
+import org.apache.hudi.table.action.rollback.RestorePlanActionExecutor;
 import org.apache.hudi.util.JavaScalaConverters;
 import org.apache.hudi.util.SparkKeyGenUtils;
 import org.apache.hudi.utilities.UtilHelpers;
@@ -290,6 +291,12 @@ public class StreamSync implements Serializable, Closeable {
 
   private final boolean autoGenerateRecordKeys;
   private final boolean isErrorTableWriteUnificationEnabled;
+  /**
+   * The reason a commit whose instant was handed to the transformer before the write cannot be restored away: files the
+   * transformer wrote under the instant are not in the commit's write stats, so its rollback would leave them behind.
+   */
+  static final String RESTORE_UNSUPPORTED_REASON = "the streamer handed the instant to its transformer before the write "
+      + "(hoodie.streamer.start.commit.before.transformer); files the transformer wrote under it are not in the write stats";
   /** {@link HoodieStreamerConfig#START_COMMIT_BEFORE_TRANSFORMER}. */
   private final boolean startCommitBeforeTransformer;
   /** The instant this round started before its transformer and has not yet handed to its write. */
@@ -1018,7 +1025,8 @@ public class StreamSync implements Serializable, Closeable {
                                                                               Timer.Context overallTimerContext) {
     boolean releaseResourcesInvoked = false;
     String instantTime;
-    if (instantStartedBeforeTransformer.isPresent()) {
+    boolean startedBeforeTransformer = instantStartedBeforeTransformer.isPresent();
+    if (startedBeforeTransformer) {
       instantTime = instantStartedBeforeTransformer.get();
       instantStartedBeforeTransformer = Option.empty();
     } else {
@@ -1043,6 +1051,10 @@ public class StreamSync implements Serializable, Closeable {
         }
 
         Map<String, String> checkpointCommitMetadata = extractCheckpointMetadata(inputBatch, props, writeClient.getConfig().getWriteVersion().versionCode(), cfg);
+        if (startedBeforeTransformer) {
+          checkpointCommitMetadata = new HashMap<>(checkpointCommitMetadata);
+          checkpointCommitMetadata.put(RestorePlanActionExecutor.RESTORE_UNSUPPORTED_REASON_KEY, RESTORE_UNSUPPORTED_REASON);
+        }
         Option<String> latestCommittedInstant = getLatestCommittedInstant();
         String commitActionType = CommitUtils.getCommitActionType(cfg.operation, HoodieTableType.valueOf(cfg.tableType));
 

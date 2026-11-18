@@ -32,6 +32,7 @@ import org.apache.hudi.utilities.streamer.HoodieStreamer;
 import org.apache.hudi.utilities.testutils.UtilitiesTestBase;
 import org.apache.hudi.utilities.transform.InstantAwareTransformer;
 import org.apache.hudi.utilities.transform.SqlQueryBasedTransformer;
+import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -187,7 +188,7 @@ public class TestBlobSourceWithoutTargetPath extends UtilitiesTestBase {
       assertNotNull(receivedInstant);
       assertEquals(1, pendingAtApply.size(), pendingAtApply.toString());
       assertEquals(receivedInstant, pendingAtApply.get(0).requestedTime());
-      assertEquals(HoodieInstant.State.INFLIGHT, pendingAtApply.get(0).getState());
+      assertEquals(HoodieInstant.State.INFLIGHT, pendingAtApply.get(0).getState(), "the instant is INFLIGHT at apply");
       received.add(receivedInstant);
     }
 
@@ -244,7 +245,7 @@ public class TestBlobSourceWithoutTargetPath extends UtilitiesTestBase {
 
   private static List<String> outOfLineFiles(String basePath) throws Exception {
     Path base = Paths.get(java.net.URI.create(basePath));
-    Path blobRoot = base.resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME);
+    Path blobRoot = base.resolve(ManagedBlobPaths.FOLDER);
     if (!Files.exists(blobRoot)) {
       return Collections.emptyList();
     }

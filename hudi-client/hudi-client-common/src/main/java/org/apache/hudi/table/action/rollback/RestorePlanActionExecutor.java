@@ -26,15 +26,19 @@ import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.CompletionTimeQueryView;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
+import org.apache.hudi.common.table.timeline.TimelineUtils;
 import org.apache.hudi.common.util.ClusteringUtils;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieException;
+import org.apache.hudi.exception.HoodieRestoreException;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.action.BaseActionExecutor;
 
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -54,6 +58,11 @@ public class RestorePlanActionExecutor<T, I, K, O> extends BaseActionExecutor<T,
   public static final Integer RESTORE_PLAN_VERSION_1 = 1;
   public static final Integer RESTORE_PLAN_VERSION_2 = 2;
   public static final Integer LATEST_RESTORE_PLAN_VERSION = RESTORE_PLAN_VERSION_2;
+  /**
+   * Commit extra-metadata key a writer sets when the commit owns files its write stats do not list, so a rollback of the
+   * completed commit cannot remove them. Its value says why. A restore that would roll back such a commit is refused.
+   */
+  public static final String RESTORE_UNSUPPORTED_REASON_KEY = "hoodie.restore.unsupported.reason";
   private final String savepointToRestoreTimestamp;
 
   public RestorePlanActionExecutor(HoodieEngineContext context,
@@ -94,6 +103,10 @@ public class RestorePlanActionExecutor<T, I, K, O> extends BaseActionExecutor<T,
             .filter(instantFilter)
             .filter(instant -> !pendingClusteringInstantsToRollback.contains(instant))
             .collect(Collectors.toList());
+        if (!metaClient.isMetadataTable()) {
+          // the metadata table is restored with its data table, whose commits are checked
+          checkRestorable(commitInstantsToRollback);
+        }
 
         // Combine both lists - first rollback pending clustering and then rollback all other commits
         instantsToRollback = Stream.concat(pendingClusteringInstantsToRollback.stream(), commitInstantsToRollback.stream())
@@ -107,6 +120,23 @@ public class RestorePlanActionExecutor<T, I, K, O> extends BaseActionExecutor<T,
       return Option.of(restorePlan);
     } catch (Exception e) {
       throw new HoodieException("Unable to restore to instant: " + savepointToRestoreTimestamp, e);
+    }
+  }
+
+  /**
+   * Refuses the restore when it would roll back a completed commit whose writer set {@link #RESTORE_UNSUPPORTED_REASON_KEY}:
+   * the rollback of that commit cannot remove the files its write stats do not list. Nothing is planned or rolled back.
+   */
+  private void checkRestorable(List<HoodieInstant> instantsToRollback) throws IOException {
+    for (HoodieInstant instant : instantsToRollback) {
+      if (!instant.isCompleted() || !table.getMetaClient().getCommitsTimeline().containsInstant(instant)) {
+        continue;
+      }
+      String reason = TimelineUtils.getCommitMetadata(instant, table.getActiveTimeline()).getMetadata(RESTORE_UNSUPPORTED_REASON_KEY);
+      if (!StringUtils.isNullOrEmpty(reason)) {
+        throw new HoodieRestoreException("Cannot restore " + config.getBasePath() + " to " + savepointToRestoreTimestamp + ": it would roll back "
+            + instant + ", whose commit sets " + RESTORE_UNSUPPORTED_REASON_KEY + " (" + reason + ")");
+      }
     }
   }
 

@@ -20,7 +20,6 @@ package org.apache.hudi.utilities.unstructured.memory;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.schema.HoodieSchema;
-import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieValidationException;
@@ -46,6 +45,7 @@ import org.apache.hudi.utilities.unstructured.embedding.video.FfmpegKeyframeVide
 import org.apache.hudi.utilities.unstructured.embedding.video.JcodecKeyframeVideoFrameSource;
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoClips;
 import org.apache.hudi.utilities.unstructured.memory.VideoMemoryCellFixtures.Scene;
+import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 import org.apache.hudi.utilities.unstructured.storage.ParquetInlineCap;
 
 import org.apache.spark.SparkConf;
@@ -535,7 +535,7 @@ public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
 
   /** The payload files under the table's blob folder, the checksum files left out. */
   private long payloadFiles() throws IOException {
-    Path blob = localPath(table()).resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME);
+    Path blob = localPath(table()).resolve(ManagedBlobPaths.FOLDER);
     if (!Files.exists(blob)) {
       return 0;
     }

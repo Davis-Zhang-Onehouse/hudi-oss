@@ -45,6 +45,7 @@ import org.apache.hudi.utilities.unstructured.embedding.prep.video.ExtractedFram
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
 import org.apache.hudi.utilities.unstructured.embedding.video.FfmpegKeyframeVideoFrameSource;
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoClips;
+import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 import org.apache.hudi.utilities.unstructured.storage.ParquetInlineCap;
 
 import org.apache.spark.sql.Row;
@@ -124,7 +125,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
 
   /** The payload files under the embedding table's blob folder, relative to its base, the checksum files left out. */
   private List<String> payloadFiles() throws IOException {
-    Path blob = localPath(table()).resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME);
+    Path blob = localPath(table()).resolve(ManagedBlobPaths.FOLDER);
     if (!Files.exists(blob)) {
       return Collections.emptyList();
     }
@@ -146,7 +147,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
     assertNull(prepared.getAs(HoodieSchema.Blob.INLINE_DATA_FIELD), "the row holds the reference only: " + key);
     Row reference = prepared.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE);
     String path = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_PATH);
-    assertTrue(path.startsWith(HoodieTableMetaClient.BLOB_FOLDER_NAME + "/") && path.endsWith(".bin"), path);
+    assertTrue(ManagedBlobPaths.isManagedBlobPath(path) && path.endsWith(".bin"), path);
     assertEquals(0L, (long) reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_OFFSET));
     assertEquals((long) image.length, (long) reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_LENGTH));
     assertEquals(true, reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_IS_MANAGED), key);
@@ -288,7 +289,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
     HoodieRollbackMetadata rollback = metaClient.getActiveTimeline().readRollbackMetadata(rollbacks.get(0));
     List<String> deletedPayloads = rollback.getPartitionMetadata().values().stream()
         .flatMap(partition -> partition.getSuccessDeleteFiles().stream())
-        .filter(file -> file.contains(HoodieTableMetaClient.BLOB_FOLDER_NAME + "/") && file.endsWith(".bin"))
+        .filter(file -> file.contains(ManagedBlobPaths.FOLDER + "/") && file.endsWith(".bin"))
         .collect(Collectors.toList());
     assertEquals(frames.size(), deletedPayloads.size(), "the rollback deleted the payload files: " + rollback);
 

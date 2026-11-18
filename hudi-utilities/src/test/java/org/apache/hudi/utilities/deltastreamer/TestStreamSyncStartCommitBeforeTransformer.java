@@ -18,6 +18,8 @@
 
 package org.apache.hudi.utilities.deltastreamer;
 
+import org.apache.hudi.client.SparkRDDWriteClient;
+import org.apache.hudi.client.common.HoodieSparkEngineContext;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.schema.HoodieSchema;
@@ -26,11 +28,13 @@ import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.config.HoodieCleanConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.table.action.rollback.RestorePlanActionExecutor;
 import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.exception.HoodieSourceTimeoutException;
 import org.apache.hudi.utilities.exception.HoodieTransformException;
 import org.apache.hudi.utilities.schema.FilebasedSchemaProvider;
 import org.apache.hudi.utilities.transform.InstantAwareTransformer;
+import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -59,10 +63,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@code hoodie.streamer.start.commit.before.transformer}: with the flag on, StreamSync starts the commit before the transformer,
- * an {@link InstantAwareTransformer} receives the INFLIGHT instant and can write marked files under {@code .hoodie/.blob/}, a
- * transformer failure rolls that instant and its marked files back, and the heartbeat of the instant survives the
- * re-initialisation of the write client. With the flag off (the default) the transformer runs before any instant, as before.
+ * {@code hoodie.streamer.start.commit.before.transformer}: with the flag on, StreamSync starts the commit and moves it to INFLIGHT
+ * before the transformer, an {@link InstantAwareTransformer} receives the INFLIGHT instant and writes marked files under
+ * {@code .hoodie/.blob/} (markers after inflight, the normal protocol), the write of the round takes the instant that is already
+ * INFLIGHT, the commit keeps the marked files its rows reference, a transformer failure or a crash leaves an INFLIGHT instant that
+ * the standard marker-based rollback removes with its files, and the heartbeat of the instant survives the re-initialisation of the
+ * write client. With the flag off (the default) the transformer runs before any instant, as before.
  */
 @Tag("functional")
 public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStreamerTestBase {
@@ -122,6 +128,23 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
       } catch (IOException e) {
         throw new HoodieTransformException("Cannot read the timeline of " + basePath, e);
       }
+    }
+  }
+
+  /** Writes its payload like {@link BlobWritingTransformer}, then dies with an error the streamer does not catch: a crash. */
+  public static class CrashingAfterWriteTransformer extends BlobWritingTransformer {
+    @Override
+    public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties,
+                              String instantTime) {
+      super.apply(jsc, sparkSession, rowDataset, properties, instantTime);
+      throw new SimulatedCrash("simulated crash after the transformer wrote at " + instantTime);
+    }
+  }
+
+  /** An {@link Error}, so no rollback in the streamer runs: the round's instant stays as the crash left it. */
+  static class SimulatedCrash extends Error {
+    SimulatedCrash(String message) {
+      super(message);
     }
   }
 
@@ -239,13 +262,14 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
     assertEquals(Collections.singletonList(""), SEEN_INSTANTS, "called through the plain apply, without an instant");
     assertEquals(Collections.singletonList(Collections.emptyList()), PENDING_AT_APPLY, "no instant was pending at apply");
     assertEquals(1, completedCommits(tableBasePath).size());
-    assertFalse(fs.exists(new Path(tableBasePath, HoodieTableMetaClient.BLOB_FOLDER_NAME)), "nothing written under .hoodie/.blob");
+    assertFalse(fs.exists(new Path(tableBasePath, ManagedBlobPaths.FOLDER)), "nothing written under .hoodie/.blob");
     assertEquals(SQL_SOURCE_NUM_RECORDS, sqlContext.read().format("hudi").load(tableBasePath).count());
   }
 
   /**
-   * Two rounds (an empty table, then one with a schema): each round's transformer receives the INFLIGHT instant that the
-   * round then commits and writes under its folder; the plain transformer of the chain still runs.
+   * Two rounds (an empty table, then one with a schema): each round's transformer receives the instant, already INFLIGHT, that
+   * the round then commits and writes a marked file under its folder; the commit's marker reconciliation keeps that file, which
+   * no write stat names; the plain transformer of the chain still runs.
    */
   @Test
   void flagOnPassesTheRequestedInstantToTheTransformer() throws Exception {
@@ -265,13 +289,60 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
       assertEquals(1, pending.size(), pending.toString());
       assertEquals(instant, pending.get(0).requestedTime());
       assertEquals(HoodieInstant.State.INFLIGHT, pending.get(0).getState(), "the instant is INFLIGHT at apply");
-      assertTrue(fs.exists(payloadPath(tableBasePath, instant)), "the payload of " + instant + " is in its folder");
+      assertTrue(fs.exists(payloadPath(tableBasePath, instant)),
+          "the committed payload of " + instant + " survives the commit's marker reconciliation");
+      assertFalse(fs.exists(new Path(metaClient(tableBasePath).getMarkerFolderPath(instant))), "the commit removed its markers");
     }
     Dataset<Row> table = sqlContext.read().format("hudi").load(tableBasePath);
     long rows = table.count();
     assertTrue(rows > SQL_SOURCE_NUM_RECORDS, "both rounds wrote rows: " + rows);
     assertEquals(rows, table.where("haversine_distance is not null").count(), "the plain transformer of the chain ran");
   }
+
+  /**
+   * Restore refuses to roll back a commit whose instant was handed to the transformer before the write: the files the
+   * transformer wrote under it are not in its write stats, so a restore would leave them behind. Commits written with the
+   * option off are restored as before, and nothing changes when the restore is refused.
+   */
+  @Test
+  void flagOnRestoreRefusesToRollBackARoundStartedBeforeTheTransformer() throws Exception {
+    String tableBasePath = basePath + "/early_commit_restore";
+    HoodieDeltaStreamer.Config on = config(tableBasePath, true,
+        transformers(BlobWritingTransformer.class, TestHoodieDeltaStreamer.TripsWithDistanceTransformer.class));
+    syncOnce(on);
+    String savepoint = completedCommits(tableBasePath).get(0);
+    HoodieDeltaStreamer.Config off = config(tableBasePath, false, transformers(TestHoodieDeltaStreamer.TripsWithDistanceTransformer.class));
+    off.sourceLimit = 2000;
+    syncOnce(off);
+    assertEquals(2, completedCommits(tableBasePath).size());
+
+    try (SparkRDDWriteClient<?> client = writeClient(tableBasePath)) {
+      client.savepoint(savepoint, "test", "before the option-off round");
+      client.restoreToSavepoint(savepoint);
+    }
+    assertEquals(Collections.singletonList(savepoint), completedCommits(tableBasePath), "the option-off round was restored away");
+
+    on.sourceLimit = 3000;
+    syncOnce(on);
+    List<String> commits = completedCommits(tableBasePath);
+    String startedBeforeTransformer = commits.get(commits.size() - 1);
+    try (SparkRDDWriteClient<?> client = writeClient(tableBasePath)) {
+      Exception refused = assertThrows(Exception.class, () -> client.restoreToSavepoint(savepoint));
+      assertTrue(causes(refused).contains(startedBeforeTransformer) && causes(refused).contains(RestorePlanActionExecutor.RESTORE_UNSUPPORTED_REASON_KEY),
+          causes(refused));
+    }
+    HoodieTableMetaClient metaClient = metaClient(tableBasePath);
+    assertEquals(Arrays.asList(savepoint, startedBeforeTransformer), completedCommits(tableBasePath), "a refused restore rolls nothing back");
+    assertEquals(0, metaClient.getActiveTimeline().getRestoreTimeline().filterInflightsAndRequested().countInstants(),
+        "a refused restore leaves no pending restore");
+    assertTrue(fs.exists(payloadPath(tableBasePath, startedBeforeTransformer)), "the round's payload is still referenced");
+  }
+
+  private static SparkRDDWriteClient<?> writeClient(String tableBasePath) {
+    return new SparkRDDWriteClient<>(new HoodieSparkEngineContext(jsc),
+        HoodieWriteConfig.newBuilder().withPath(tableBasePath).withEmbeddedTimelineServerEnabled(false).build());
+  }
+
 
   /** A round with no new data starts no instant and does not call the transformer. */
   @Test
@@ -291,8 +362,8 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
   }
 
   /**
-   * A transformer failure rolls back the instant while it is still INFLIGHT, with eager or lazy OCC cleaning.
-   * The marker directory and heartbeat are removed after rollback.
+   * A transformer failure rolls back the INFLIGHT instant, and the standard marker-based rollback removes its marked files, with
+   * eager or lazy OCC cleaning. The marker directory and heartbeat are removed after rollback.
    */
   @ParameterizedTest
   @ValueSource(strings = {"EAGER", "LAZY"})
@@ -317,6 +388,8 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
     List<HoodieInstant> rollbacks = metaClient.getActiveTimeline().getRollbackTimeline().filterCompletedInstants().getInstants();
     assertEquals(1, rollbacks.size(), "the instant was rolled back explicitly");
     assertEquals(instant, metaClient.getActiveTimeline().readRollbackMetadata(rollbacks.get(0)).getCommitsRollback().get(0));
+    assertFalse(fs.exists(payloadPath(tableBasePath, instant)), "the marked copy is removed by rollback");
+    assertFalse(fs.exists(partitionedPayloadPath(tableBasePath, instant)), "and its marked copy under a partition");
     assertTrue(fs.exists(partitionedPayloadPath(tableBasePath, instant).getParent().getParent()),
         "the partition ancestors remain");
     assertFalse(fs.exists(new Path(metaClient.getMarkerFolderPath(instant))), "rollback removed its marker directory");
@@ -324,9 +397,64 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
   }
 
   /**
+   * A crash after the transformer wrote leaves the instant INFLIGHT with its marked files. The next streamer (a restart) rolls it
+   * back with the standard rollback of failed writes, which removes those files, and its round then commits cleanly.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"EAGER", "LAZY"})
+  void flagOnCrashLeavesAnInflightInstantThatTheRestartRollsBack(String cleaningPolicy) throws Exception {
+    String tableBasePath = basePath + "/early_commit_crash_" + cleaningPolicy.toLowerCase();
+    // a first round, so the crashed instant is not the first instant of the table
+    HoodieDeltaStreamer.Config first = config(tableBasePath, true,
+        transformers(BlobWritingTransformer.class, TestHoodieDeltaStreamer.TripsWithDistanceTransformer.class));
+    syncOnce(withCleaningPolicy(first, cleaningPolicy));
+    String committedFirst = SEEN_INSTANTS.get(0);
+
+    HoodieDeltaStreamer.Config crashing = config(tableBasePath, true,
+        transformers(CrashingAfterWriteTransformer.class, TestHoodieDeltaStreamer.TripsWithDistanceTransformer.class));
+    crashing.sourceLimit = 2000;
+    Throwable crash = assertThrows(Throwable.class, () -> syncOnce(withCleaningPolicy(crashing, cleaningPolicy)));
+    assertTrue(causes(crash).contains("simulated crash"), causes(crash));
+    String crashed = SEEN_INSTANTS.get(1);
+    List<HoodieInstant> pending = metaClient(tableBasePath).getActiveTimeline().filterInflightsAndRequested().getInstants();
+    assertEquals(1, pending.size(), pending.toString());
+    assertEquals(crashed, pending.get(0).requestedTime());
+    assertEquals(HoodieInstant.State.INFLIGHT, pending.get(0).getState(), "the crash left the instant INFLIGHT");
+    assertTrue(fs.exists(payloadPath(tableBasePath, crashed)), "the crash left its marked file");
+    assertTrue(fs.exists(new Path(metaClient(tableBasePath).getMarkerFolderPath(crashed))), "and its markers");
+
+    HoodieDeltaStreamer.Config restart = config(tableBasePath, true,
+        transformers(BlobWritingTransformer.class, TestHoodieDeltaStreamer.TripsWithDistanceTransformer.class));
+    restart.sourceLimit = 2000;
+    syncOnce(withCleaningPolicy(restart, cleaningPolicy));
+    String committedAfter = SEEN_INSTANTS.get(2);
+
+    HoodieTableMetaClient metaClient = metaClient(tableBasePath);
+    assertEquals(Arrays.asList(committedFirst, committedAfter), completedCommits(tableBasePath));
+    assertEquals(0, metaClient.getActiveTimeline().filterInflightsAndRequested().countInstants(), "nothing left pending");
+    List<HoodieInstant> rollbacks = metaClient.getActiveTimeline().getRollbackTimeline().filterCompletedInstants().getInstants();
+    assertEquals(1, rollbacks.size(), rollbacks.toString());
+    assertEquals(crashed, metaClient.getActiveTimeline().readRollbackMetadata(rollbacks.get(0)).getCommitsRollback().get(0));
+    assertFalse(fs.exists(payloadPath(tableBasePath, crashed)), "the standard rollback removed the crashed instant's marked file");
+    assertFalse(fs.exists(new Path(metaClient.getMarkerFolderPath(crashed))), "and its markers");
+    assertTrue(fs.exists(payloadPath(tableBasePath, committedFirst)), "committed payloads are kept");
+    assertTrue(fs.exists(payloadPath(tableBasePath, committedAfter)), "committed payloads are kept");
+  }
+
+  private static HoodieDeltaStreamer.Config withCleaningPolicy(HoodieDeltaStreamer.Config cfg, String cleaningPolicy) {
+    cfg.configs.removeIf(value -> value.startsWith(HoodieCleanConfig.FAILED_WRITES_CLEANER_POLICY.key() + "="));
+    cfg.configs.add(HoodieCleanConfig.FAILED_WRITES_CLEANER_POLICY.key() + "=" + cleaningPolicy);
+    if ("LAZY".equals(cleaningPolicy)) {
+      cfg.configs.add("hoodie.write.concurrency.mode=OPTIMISTIC_CONCURRENCY_CONTROL");
+      cfg.configs.add("hoodie.write.lock.provider=org.apache.hudi.client.transaction.lock.InProcessLockProvider");
+    }
+    return cfg;
+  }
+
+  /**
    * A source timeout after the transformer returned, in the same attempt, is retried: the retry releases the instant the first
    * attempt started and held (its heartbeat stops), starts a new one, and the round commits that one; the round's LAZY cleaning
-   * then rolls the released instant back.
+   * then rolls the released instant back, removing its marked files.
    */
   @Test
   void flagOnSourceTimeoutRetryReleasesTheHeldInstant() throws Exception {
@@ -349,6 +477,7 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
     List<HoodieInstant> rollbacks = metaClient.getActiveTimeline().getRollbackTimeline().filterCompletedInstants().getInstants();
     assertEquals(1, rollbacks.size(), "the released instant, its heartbeat gone, was rolled back by LAZY cleaning");
     assertEquals(held, metaClient.getActiveTimeline().readRollbackMetadata(rollbacks.get(0)).getCommitsRollback().get(0));
+    assertFalse(fs.exists(payloadPath(tableBasePath, held)), "the rolled-back instant's marked file is removed");
     assertTrue(fs.exists(payloadPath(tableBasePath, committed)), "the committed instant keeps its payload");
   }
 

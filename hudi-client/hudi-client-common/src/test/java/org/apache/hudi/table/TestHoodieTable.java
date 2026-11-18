@@ -35,11 +35,14 @@ import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.core.transaction.lock.InProcessLockProvider;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.metadata.HoodieTableMetadata;
+import org.apache.hudi.table.marker.WriteMarkers;
 import org.apache.hudi.table.storage.HoodieStorageLayout;
 
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.function.Function;
 
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.COMPACTION_ACTION;
@@ -187,5 +190,26 @@ class TestHoodieTable extends HoodieCommonTestHarness {
     // This should not throw and should be a no-op since auto-delete is disabled
     hoodieTable.deleteMetadataIndexIfNecessary();
     // If we reach here without exception, the test passes
+  }
+
+  /**
+   * Marked files under the table's meta folder (e.g. out-of-line files a writer marks so the rollback of its instant removes
+   * them) are not data files of the table: the commit's marker reconciliation must not treat them as invalid, or it deletes
+   * files committed rows reference. Data files with no write stat stay invalid, including one whose partition is named like
+   * the meta folder without being under it.
+   */
+  @Test
+  void getInvalidDataPathsKeepsMarkedFilesUnderTheMetaFolder() throws IOException {
+    initMetaClient();
+    HoodieWriteConfig writeConfig = HoodieWriteConfig.newBuilder().withPath(basePath).build();
+    HoodieEngineContext context = mock(HoodieEngineContext.class);
+    HoodieTable hoodieTable = new TestBaseHoodieTable(writeConfig, context, metaClient);
+    String dataFile = "2016/03/15/file-1_0-1-1_001.parquet";
+    String lookalike = ".hoodie_partition/file-2_0-1-1_001.parquet";
+    WriteMarkers markers = mock(WriteMarkers.class);
+    when(markers.createdAndMergedDataPaths(context, writeConfig.getFinalizeWriteParallelism())).thenReturn(new HashSet<>(Arrays.asList(
+        dataFile, lookalike, ".hoodie/.blob/2016/03/15/blob-1_0-1-1_001.bin", ".hoodie/.blob/blob-2_0-0-0_001.bin")));
+
+    assertEquals(new HashSet<>(Arrays.asList(dataFile, lookalike)), hoodieTable.getInvalidDataPaths(markers));
   }
 }

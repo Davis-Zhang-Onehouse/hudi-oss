@@ -57,6 +57,8 @@ import java.util.Map;
 
 /**
  * Copies managed objects to independently generated managed files. Existing paths remain ordinary upserts.
+ * The streamer hands it the round's instant, already INFLIGHT ({@code hoodie.streamer.start.commit.before.transformer=true}): each
+ * managed file is written after its CREATE marker, so a failed round's standard marker-based rollback removes it.
  * Output is persisted and materialized before returning, so copy failures occur inside the streamer's rollback boundary. Content
  * failures carry their identity in one _corrupt_record column for ordinary transformer error routing. The next round
  * releases the previous output after the preceding write has consumed it. A round that ends before the transformer (an

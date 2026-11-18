@@ -158,8 +158,12 @@ public class HoodieStreamerConfig extends HoodieConfig {
       .defaultValue(false)
       .markAdvanced()
       .sinceVersion("1.3.0")
-      .withDocumentation("When true and a transformer is configured, each round with new data starts its commit before "
-          + "transforming and passes the INFLIGHT instant to every InstantAwareTransformer; other transformers are called "
-          + "unchanged. A transformer failure rolls the instant back. Required by BlobCopyTransformer. When false (the default), "
-          + "the transformer runs before any instant is started.");
+      .withDocumentation("When true and a transformer is configured, each round with new data starts its commit and moves it "
+          + "to INFLIGHT before transforming, and passes the INFLIGHT instant to every InstantAwareTransformer; other "
+          + "transformers are called unchanged. Files a transformer writes for the instant carry its markers, so a transformer "
+          + "failure, or a crash followed by the rollback of failed writes, removes them with the standard marker-based "
+          + "rollback. The round's write takes the instant that is already INFLIGHT. Required by BlobCopyTransformer and "
+          + "EmbeddingTableTransformer. Files the transformer wrote are not in the commit's write stats, so each such commit "
+          + "sets hoodie.restore.unsupported.reason and a restore that would roll it back is refused. When false (the "
+          + "default), the transformer runs before any instant is started.");
 }

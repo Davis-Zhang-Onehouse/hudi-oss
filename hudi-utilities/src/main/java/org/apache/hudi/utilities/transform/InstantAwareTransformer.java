@@ -31,9 +31,11 @@ import org.apache.spark.sql.SparkSession;
 /**
  * A {@link Transformer} that can be given the instant the round writes to.
  *
- * <p>With {@code hoodie.streamer.start.commit.before.transformer} on, the streamer starts the commit (the instant is
- * INFLIGHT and, under LAZY failed-writes cleaning, has a heartbeat) before it transforms, and calls
- * {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)} with that instant.
+ * <p>With {@code hoodie.streamer.start.commit.before.transformer} on, the streamer starts the commit and moves it to INFLIGHT
+ * (under LAZY failed-writes cleaning it also has a heartbeat) before it transforms, and calls
+ * {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)} with that instant. A file the transformer
+ * writes for the instant follows the write protocol: its CREATE marker first, then the file, so a rollback of the instant
+ * removes it.
  * With the flag off the streamer calls the plain {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties)}
  * before any instant exists.
  */

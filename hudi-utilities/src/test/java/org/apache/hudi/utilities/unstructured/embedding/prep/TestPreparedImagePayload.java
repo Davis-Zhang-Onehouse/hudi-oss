@@ -37,6 +37,7 @@ import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
 import org.apache.hudi.utilities.unstructured.embedding.source.PrepPlatformException;
 import org.apache.hudi.utilities.unstructured.embedding.text.Tokenizer;
 import org.apache.hudi.utilities.unstructured.embedding.text.WordCountTokenizer;
+import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriterTestExtension;
 
 import org.apache.hadoop.conf.Configuration;
@@ -268,7 +269,7 @@ public class TestPreparedImagePayload {
 
   /** The payload files under the embedding table's blob folder, relative to its base, the checksum files left out. */
   private List<String> payloadFiles() throws IOException {
-    Path blob = temp.resolve("embedding").resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME);
+    Path blob = temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER);
     if (!Files.exists(blob)) {
       return Collections.emptyList();
     }
@@ -359,7 +360,7 @@ public class TestPreparedImagePayload {
     // the write fails at creating its file, whatever timeline server an earlier test left configured
     props.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
     // the blob folder is a file, so the payload file cannot be created
-    Path blobFolder = temp.resolve("embedding").resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME);
+    Path blobFolder = temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER);
     Files.createDirectories(blobFolder.getParent());
     Files.write(blobFolder, new byte[0]);
     Set<Thread> before = writeThreads();
@@ -438,7 +439,7 @@ public class TestPreparedImagePayload {
     TypedProperties props = props();
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
     // the blob folder is a file: no payload file can be created under it
-    Files.write(temp.resolve("embedding").resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME), new byte[] {0});
+    Files.write(temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER), new byte[] {0});
     byte[] declared = String.valueOf(DERIVED.length).getBytes(StandardCharsets.UTF_8);
     PreprocessingIterator iterator = storingIterator(props, embeddingTable, inlineRow("sha-ool-fail", "frm", declared));
 
@@ -447,7 +448,7 @@ public class TestPreparedImagePayload {
     // both chunks are written on the task's write pool at once: the round fails with whichever failure comes first
     assertTrue(failure.getMessage().matches("(?s).*modality=image chunk_id=[01] .*"), failure.getMessage());
     assertTrue(iterator.getSideOutputs().isEmpty(), "never a quarantine entry: " + iterator.getSideOutputs());
-    assertFalse(Files.isDirectory(temp.resolve("embedding").resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME)));
+    assertFalse(Files.isDirectory(temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER)));
   }
 
   @Test

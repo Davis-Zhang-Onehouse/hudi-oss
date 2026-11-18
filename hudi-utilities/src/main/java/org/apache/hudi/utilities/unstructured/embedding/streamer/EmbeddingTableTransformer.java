@@ -62,14 +62,15 @@ import java.util.stream.Collectors;
  * The transformer of the embedding job: one stream (the unstructured data source, which emits each announced object's
  * bytes, inline or as a reference to the object), one table, one commit per
  * round holding every row the round prepares, with its embedding under {@code prep_and_compute}. It needs
- * {@code hoodie.streamer.start.commit.before.transformer=true}: the streamer starts the commit first and hands the instant to
- * {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)}; a throw rolls the instant back and the
- * checkpoint does not move.
+ * {@code hoodie.streamer.start.commit.before.transformer=true}: the streamer starts the commit, moves it to INFLIGHT and hands
+ * the instant to {@link #apply(JavaSparkContext, SparkSession, Dataset, TypedProperties, String)}, so every out-of-line file the
+ * round writes (input-store frames and images, prepared payloads) is written after its marker under an inflight instant; a throw
+ * rolls the instant back with the standard marker-based rollback, which removes those files, and the checkpoint does not move.
  *
  * <p>One round:
  * <ol>
  *   <li>releases the previous round's caches for this table (a transformer has no hook after the commit);</li>
- *   <li>checks, at the start of the round (after the streamer fetched the batch and started the instant, before any prep
+ *   <li>checks, at the start of the round (after the streamer fetched the batch and moved the instant to INFLIGHT, before any prep
  *   work; a refusal rolls the instant back): the table's version; under
  *   {@code prep_only} no model and no compute setting; under {@code prep_and_compute} exactly one active model, whose column and
  *   dimensions name and size the VECTOR column (an existing table's column of that name has the model's dimensions), with a

@@ -25,6 +25,7 @@ import org.apache.hudi.common.table.marker.MarkerType;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 
 import org.apache.hadoop.conf.Configuration;
 import org.junit.jupiter.api.Test;
@@ -60,6 +61,6 @@ public class TestPreparedInputsWriterSetup {
         () -> new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), base, props));
     assertTrue(failure.getMessage().contains("TIMELINE_SERVER_BASED"), failure.getMessage());
     assertTrue(failure.getMessage().contains(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key() + "=false"), failure.getMessage());
-    assertFalse(Files.exists(temp.resolve("embedding").resolve(HoodieTableMetaClient.BLOB_FOLDER_NAME)), "no payload file");
+    assertFalse(Files.exists(temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER)), "no payload file");
   }
 }
