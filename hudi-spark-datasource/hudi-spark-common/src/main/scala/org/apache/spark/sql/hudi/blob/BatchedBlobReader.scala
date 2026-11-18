@@ -727,6 +727,9 @@ object BatchedBlobReader {
     } else if (tableLayoutVersion.isEmpty && (!managed || uri.getPath.startsWith(StoragePath.SEPARATOR))) {
       externalPath
     } else {
+      require(!tableLayoutVersion.contains("unknown"),
+        s"Blob reference '$externalPath' has unknown table lineage from a cached or derived source; " +
+          "use an explicit URI or read the blob column directly from its Hudi table")
       require(tableLayoutVersion.forall(_ == "1"), s"Unsupported or ambiguous blob layout version: $tableLayoutVersion")
       tableBasePath match {
         case Some(base) =>

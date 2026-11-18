@@ -26,7 +26,7 @@ import org.apache.hudi.storage.StoragePath
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration
 import org.apache.hudi.testutils.HoodieClientTestBase
 
-import org.apache.spark.sql.Row
+import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.types._
@@ -191,6 +191,70 @@ class TestBatchedBlobReaderBasePath extends HoodieClientTestBase {
     assertSqlPathResolution(versioned = true)
   }
 
+  @Test
+  def testCachedVersionedSourceRejectsSchemeLessReferences(): Unit = {
+    withSqlReference(versioned = true, explicitUri = false) { source =>
+      assertArrayEquals(Array[Byte](11, 23, 47),
+        source.selectExpr("read_blob(blob) AS data").collect().head.getAs[Array[Byte]]("data"))
+      val cached = source.cache()
+      try {
+        val error = assertThrows(classOf[Exception],
+          () => cached.selectExpr("read_blob(blob) AS data").collect())
+        assertTrue(error.toString.contains("cached or derived source"), error.toString)
+      } finally {
+        cached.unpersist(blocking = true)
+      }
+    }
+  }
+
+  @Test
+  def testKnownLegacyTableKeepsAbsoluteReference(): Unit = {
+    withSqlReference(versioned = false, explicitUri = false) { source =>
+      assertArrayEquals(Array[Byte](99),
+        source.selectExpr("read_blob(blob) AS data").collect().head.getAs[Array[Byte]]("data"))
+    }
+  }
+
+  @Test
+  def testCachedSourceKeepsExplicitUriReference(): Unit = {
+    withSqlReference(versioned = true, explicitUri = true) { source =>
+      val cached = source.cache()
+      try {
+        assertArrayEquals(Array[Byte](99),
+          cached.selectExpr("read_blob(blob) AS data").collect().head.getAs[Array[Byte]]("data"))
+      } finally {
+        cached.unpersist(blocking = true)
+      }
+    }
+  }
+
+  private def withSqlReference(versioned: Boolean, explicitUri: Boolean)(check: DataFrame => Unit): Unit = {
+    val table = new File(tempDir.toFile, "cache_table")
+    val external = new File(tempDir.toFile, "cache_external.bin")
+    Files.write(external.toPath, Array[Byte](99))
+    val reference = if (explicitUri) external.toURI.toString else external.getAbsolutePath
+    val schema = StructType(Seq(
+      StructField("fid", StringType, nullable = false),
+      StructField("blob", BlobType().asInstanceOf[StructType], nullable = true, blobMetadata)))
+    val blob = Row(HoodieSchema.Blob.OUT_OF_LINE, null, Row(reference, null, null, true))
+    val data = sparkSession.createDataFrame(sparkSession.sparkContext.parallelize(Seq(Row("a", blob)), 1), schema)
+    data.write.format("hudi").option("hoodie.table.name", "cache_table")
+      .option("hoodie.datasource.write.recordkey.field", "fid")
+      .option("hoodie.datasource.write.operation", "bulk_insert")
+      .mode("overwrite").save(table.getAbsolutePath)
+    if (versioned) {
+      val stored = new File(table, external.getAbsolutePath.stripPrefix("/"))
+      stored.getParentFile.mkdirs()
+      Files.write(stored.toPath, Array[Byte](11, 23, 47))
+      val conf = new HadoopStorageConfiguration(sparkSession.sparkContext.hadoopConfiguration)
+      val meta = HoodieTableMetaClient.builder().setConf(conf).setBasePath(table.getAbsolutePath).build()
+      val properties = new Properties()
+      properties.setProperty("hoodie.table.blob.layout.version", "1")
+      HoodieTableConfig.update(meta.getStorage, meta.getMetaPath, properties)
+    }
+    check(sparkSession.read.format("hudi").load(table.getAbsolutePath))
+  }
+
   private def assertSqlPathResolution(versioned: Boolean): Unit = {
     val conf = new HadoopStorageConfiguration(sparkSession.sparkContext.hadoopConfiguration)
     val table = new File(tempDir.toFile, s"layout_$versioned")
@@ -223,7 +287,10 @@ class TestBatchedBlobReaderBasePath extends HoodieClientTestBase {
     assertEquals(1, rows.length)
     assertArrayEquals(payload, rows.head.getAs[Array[Byte]]("data"), s"versioned=$versioned")
     if (versioned) {
-      val union = sparkSession.read.format("hudi").load(table.getAbsolutePath).select("fid", "blob").unionByName(df)
+      val externalBlob = Row(HoodieSchema.Blob.OUT_OF_LINE, null, Row(external.toURI.toString, null, null, false))
+      val externalData = sparkSession.createDataFrame(
+        sparkSession.sparkContext.parallelize(Seq(Row("a", externalBlob)), 1), schema)
+      val union = sparkSession.read.format("hudi").load(table.getAbsolutePath).select("fid", "blob").unionByName(externalData)
       val resolvedBranches = union.selectExpr("fid", "read_blob(blob) AS data").collect()
       assertEquals(Seq(Seq[Byte](99), Seq[Byte](11, 23, 47)),
         resolvedBranches.map(_.getAs[Array[Byte]]("data").toSeq).sortBy(_.length).toSeq)

@@ -56,20 +56,22 @@ object BlobTableBasePath {
       if (tables.forall(_.isDefined) && paths.size == 1) paths.headOption else None
     }
 
-  /** Layout metadata follows the same attribute lineage; mixed versions cannot reinterpret a scheme-less path. */
+  /** Unknown lineage and mixed versions cannot reinterpret a scheme-less path as a legacy reference. */
   def resolveLayoutVersion(plan: LogicalPlan, attr: Attribute): Option[String] =
-    resolveTables(plan, attr.exprId).flatMap { tables =>
+    resolveTables(plan, attr.exprId).map { tables =>
       val versions = tables.flatten.map(t => Option(t.getTableConfig.getProps.getProperty(HoodieTableConfig.BLOB_LAYOUT_VERSION.key()))).distinct
       if (versions.exists(_.isDefined) && tables.exists(_.isEmpty)) {
         Some("mixed")
+      } else if (tables.exists(_.isEmpty)) {
+        Some("unknown")
       } else if (versions.size == 1) {
         versions.head
       } else if (versions.isEmpty) {
-        None
+        Some("unknown")
       } else {
         Some("mixed")
       }
-    }
+    }.getOrElse(Some("unknown"))
 
   private def resolveTables(plan: LogicalPlan, exprId: ExprId): Option[Seq[Option[HoodieTableMetaClient]]] = plan match {
     case lr: LogicalRelation =>
