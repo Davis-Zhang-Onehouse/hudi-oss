@@ -339,8 +339,8 @@ public class EmbeddingTableConfig implements Serializable {
   public static final long DEFAULT_PREP_IMAGE_MAX_PIXELS = 100_000_000L;
   /**
    * Image data prep: the most bytes read to find an image's header; an image whose header needs more fails data prep (a
-   * quarantine entry). Over a source row (random access) it counts bytes read wherever they lie in the file; over a plain stream
-   * it is the offset the memory-cached read may reach. Default {@link #DEFAULT_PREP_IMAGE_HEADER_MAX_BYTES} (1 MiB). Must be
+   * quarantine entry). Over a source row (random access) it counts the distinct bytes read wherever they lie in the file (a byte
+   * the reader reads again counts once); over a plain stream it is the offset the memory-cached read may reach. Default {@link #DEFAULT_PREP_IMAGE_HEADER_MAX_BYTES} (1 MiB). Must be
    * positive. Part of the preprocessing style when set.
    */
   public static final ConfigProperty<Long> PREP_IMAGE_HEADER_MAX_BYTES = ConfigProperty
@@ -349,8 +349,8 @@ public class EmbeddingTableConfig implements Serializable {
       .markAdvanced()
       .sinceVersion("1.3.0")
       .withDocumentation("Image data prep: the most bytes read to find an image's header; an image whose header needs more fails data "
-          + "prep (a quarantine entry). Over a source row (random access) it counts bytes read wherever they lie in the "
-          + "file; over a plain stream it is the offset the memory-cached read may reach. Default 1048576 (1 MiB). Must be "
+          + "prep (a quarantine entry). Over a source row (random access) it counts the distinct bytes read wherever they lie in "
+          + "the file (a byte the reader reads again counts once); over a plain stream it is the offset the memory-cached read may reach. Default 1048576 (1 MiB). Must be "
           + "positive. Part of the preprocessing style when set.");
   public static final long DEFAULT_PREP_IMAGE_HEADER_MAX_BYTES = 1024L * 1024;
   /**
@@ -474,6 +474,29 @@ public class EmbeddingTableConfig implements Serializable {
           + "per-JVM caches) in the frame-heap start check (the video frame heap check); default 67108864 (64 MiB, an estimate). "
           + "Not part of the preprocessing style.");
   public static final long DEFAULT_PREP_VIDEO_HEAP_FIXED_BYTES = 64L * 1024 * 1024;
+  /**
+   * Data prep reads the next file of a task ahead, while the current one is prepared: up to this many of its leading bytes, held
+   * in memory until that file is prepared (a file no larger is read whole, and then prepared with no further storage request).
+   * A task holds at most two such buffers, the current file's and the next one's: a job that preps video reads ahead only when
+   * they fit the executor heap beside its frame decodes (2 x this per task slot), else it reads nothing ahead, with a WARN. An
+   * image is read ahead only when it is no larger than {@link #PREP_IMAGE_HEADER_MAX_BYTES}. 0 reads no file ahead. Default
+   * {@link #DEFAULT_PREP_PREFETCH_MAX_BYTES} (8 MiB). Changes no output rows: not style.
+   */
+  public static final ConfigProperty<Long> PREP_PREFETCH_MAX_BYTES = ConfigProperty
+      .key(PREP_PREFIX + "prefetch.max.bytes")
+      .defaultValue(8388608L)
+      .markAdvanced()
+      .sinceVersion("1.3.0")
+      .withDocumentation("Data prep reads the next file of a task ahead, while the current one is prepared: up to this many of its "
+          + "leading bytes, held in memory until that file is prepared (a file no larger is read whole, and then prepared with no "
+          + "further storage request). A task holds at most two such buffers, the current file's and the next one's: "
+          + "a job that preps video reads ahead only when they fit the executor heap beside its frame decodes (2 x this per task "
+          + "slot), else it reads nothing ahead, with a WARN. "
+          + "An image is read ahead only when it is no larger than hoodie.unstructured.embedding.prep.image.header.max.bytes. "
+          + "0 reads no file ahead. Default 8388608 (8 MiB). Changes no output rows: not style.");
+  public static final long DEFAULT_PREP_PREFETCH_MAX_BYTES = 8L * 1024 * 1024;
+  /** The largest {@link #PREP_PREFETCH_MAX_BYTES}: one Java array. */
+  public static final long MAX_PREP_PREFETCH_MAX_BYTES = Integer.MAX_VALUE - 8L;
   /**
    * FFmpeg decoder threads per video ({@code thread_count}); default {@link #DEFAULT_VIDEO_FFMPEG_THREADS}, at most
    * {@link #MAX_VIDEO_FFMPEG_THREADS}. Set explicitly because FFmpeg's own default (0) starts one thread per core the executor
@@ -1097,6 +1120,16 @@ public class EmbeddingTableConfig implements Serializable {
       return Collections.emptyList();
     }
     return Arrays.stream(value.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
+  }
+
+  /** {@link #PREP_PREFETCH_MAX_BYTES}, in [0, {@link #MAX_PREP_PREFETCH_MAX_BYTES}]. */
+  public long prepPrefetchMaxBytes() {
+    long bytes = longValue(PREP_PREFETCH_MAX_BYTES, DEFAULT_PREP_PREFETCH_MAX_BYTES);
+    if (bytes < 0 || bytes > MAX_PREP_PREFETCH_MAX_BYTES) {
+      throw new IllegalArgumentException("Config " + PREP_PREFETCH_MAX_BYTES.key() + " must be in [0, " + MAX_PREP_PREFETCH_MAX_BYTES
+          + "] but is " + bytes);
+    }
+    return bytes;
   }
 
   /** {@link #PREP_VIDEO_HEAP_FIXED_BYTES}, at least 0. */

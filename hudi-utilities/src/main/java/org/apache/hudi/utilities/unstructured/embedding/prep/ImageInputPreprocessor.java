@@ -64,14 +64,15 @@ import java.util.TreeSet;
  * {@code file_size} above {@link EmbeddingTableConfig#PREP_IMAGE_MAX_BYTES} when an operator set one (nothing read), no reader
  * recognises the content, a truncated or corrupt header, a dimension that is not positive, a header declaring more than
  * {@link EmbeddingTableConfig#PREP_IMAGE_MAX_PIXELS} pixels, a header not found within
- * {@link EmbeddingTableConfig#PREP_IMAGE_HEADER_MAX_BYTES} bytes, or a format that is not stored (WebP: the stored types are
+ * {@link EmbeddingTableConfig#PREP_IMAGE_HEADER_MAX_BYTES} distinct bytes read, or a format that is not stored (WebP: the stored types are
  * {@link ImageContentTypes#stored}). A source that is gone or short, or a blob row that cannot name a readable range, fails its
  * header read, so it is a quarantine entry as well, never a round that fails again on every rerun; any other storage failure
  * opening or reading it (a throttled or reset read) is a {@link SourceReadException}, an interruption of the round, so a source a
  * later run can read is never marked FAILED.
  *
  * <p>Memory: the header read is bounded by {@link EmbeddingTableConfig#PREP_IMAGE_HEADER_MAX_BYTES} (random access over the
- * source row: only the bytes the reader asks for); the payload is never read in prep, since the row stores the source's own blob
+ * source row: the file's leading bytes up to that bound, fetched in one request, then only the bytes the reader asks for past
+ * them); the payload is never read in prep, since the row stores the source's own blob
  * value, so an image of any size is prepared in bounded memory.
  */
 public class ImageInputPreprocessor implements FilePreprocessor {
@@ -173,7 +174,8 @@ public class ImageInputPreprocessor implements FilePreprocessor {
         }
         throw new SourceReadException("Failed to open the image source", e);
       }
-      // random access: only the bytes the reader asks for are read, wherever the header lies (a TIFF IFD may be at the end)
+      // random access: the leading bytes in one request, then only the bytes the reader asks for, wherever the header lies (a TIFF
+      // IFD may be at the end)
       try (ImageInputStream in = new SeekableBlobImageInputStream(blob, headerMaxBytes)) {
         return ImageHeaderReader.read(in);
       } catch (ImageHeaderException e) {
@@ -203,6 +205,11 @@ public class ImageInputPreprocessor implements FilePreprocessor {
   /** {@link EmbeddingTableConfig#PREP_IMAGE_MAX_BYTES}: positive; no limit by default. */
   private static long maxBytes(TypedProperties props) {
     return positive(props, EmbeddingTableConfig.PREP_IMAGE_MAX_BYTES.key(), EmbeddingTableConfig.DEFAULT_PREP_IMAGE_MAX_BYTES);
+  }
+
+  /** {@link EmbeddingTableConfig#PREP_IMAGE_HEADER_MAX_BYTES}, positive, read as this preprocessor reads it. */
+  static long headerMaxBytes(TypedProperties props) {
+    return positive(props, EmbeddingTableConfig.PREP_IMAGE_HEADER_MAX_BYTES.key(), EmbeddingTableConfig.DEFAULT_PREP_IMAGE_HEADER_MAX_BYTES);
   }
 
   private static long positive(TypedProperties props, String key, long defaultValue) {
