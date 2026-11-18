@@ -99,16 +99,18 @@ public class TestPdfChunkerScratchDisk {
   }
 
   @Test
-  public void undecodablePageOfAnEncryptedFileIsSkippedWhileItsScratchIsWritten() throws IOException {
+  public void undecodablePageOfAnEncryptedFileRecordsLossWhileItsScratchIsWritten() throws IOException {
     // page 2's stream is decrypted into PDFBox's scratch, then fails to decode: the file's own fault, not the disk's, and
-    // PDFBox leaves the stream out, so page 2 is empty and the round goes on
+    // page 2 fails decoding and the round goes on with a durable loss summary
     byte[] pdf = PdfFixtures.ownerPasswordOnly(PdfFixtures.brokenPage2("Page one text.", "Page two text.", "Page three text."));
     Outcome outcome = run(pdfSource -> pdfSource, new FailingScratchCache(), pdf);
     assertNull(outcome.failure, String.valueOf(outcome.failure));
     String text = outcome.chunks.stream().map(PdfChunk::text).collect(Collectors.joining(" ")).replaceAll("\\s+", " ");
     assertTrue(text.contains("Page one text.") && text.contains("Page three text.") && !text.contains("Page two"), text);
     assertTrue(outcome.chunks.stream().allMatch(c -> c.status() == PdfChunk.Status.OK), outcome.chunks.toString());
-    assertEquals(0, warnings.stream().filter(w -> w.startsWith("PDF-PAGE")).count(), String.join("\n", warnings));
+    assertTrue(outcome.chunks.get(outcome.chunks.size() - 1).statusDetail().contains("decode_failed=1"));
+    assertEquals(1, warnings.stream().filter(w -> w.startsWith("PDF-PAGE") && w.contains("code=DECODE_ERROR")).count(),
+        String.join("\n", warnings));
   }
 
   private void assertPlatformFailure(Outcome outcome) throws IOException {

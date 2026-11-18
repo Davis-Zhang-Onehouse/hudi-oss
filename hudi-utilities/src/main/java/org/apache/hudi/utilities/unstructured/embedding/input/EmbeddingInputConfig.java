@@ -47,18 +47,28 @@ public final class EmbeddingInputConfig {
 
   /** Prefix of every input-store key. */
   public static final String PREFIX = "hoodie.unstructured.embedding.input.";
-  /** A stored input of at most this many bytes is INLINE in the row; a larger one is a managed copy. */
+  /**
+   * A stored input of at most this many bytes is INLINE in the row; a larger one is a managed copy. The declared default is
+   * 1 MiB, effective on Parquet 1.14+ (the Spark 4 builds); Spark 3.5's older Parquet uses 80 KiB by default and as its cap.
+   * With this key unset, a Spark 3.5-to-4 writer upgrade raises an existing table's effective threshold from 80 KiB to 1 MiB.
+   * Subsequent writes store inputs larger than 80 KiB and at most 1 MiB inline instead of out of line. Previously stored inputs
+   * keep their existing storage shape.
+   */
   public static final ConfigProperty<Long> INLINE_MAX_BYTES = ConfigProperty
       .key(PREFIX + "inline.max.bytes")
       .defaultValue(1048576L)
       .markAdvanced()
       .sinceVersion("1.3.0")
-      .withDocumentation("A stored input of at most this many bytes is INLINE in the row; a larger one is a managed copy. With a "
-          + "Parquet older than 1.14 (e.g. the Spark 3.5 builds), which cannot turn off min/max statistics for one column, the default "
-          + "is 81920, the largest value used there: a value above it is logged at WARN and 81920 is used.");
+      .withDocumentation("A stored input of at most this many bytes is INLINE in the row; a larger one is a managed copy. The "
+          + "declared default is 1 MiB (1048576 bytes), effective on Parquet 1.14+ (the Spark 4 builds). On Spark 3.5's Parquet older "
+          + "than 1.14, which cannot turn off min/max statistics for one column, the effective default is 80 KiB (81920 bytes), also "
+          + "the cap: a configured value above it is logged at WARN and capped at 81920. With this key unset, upgrading an existing "
+          + "table's writer from Spark 3.5 to Spark 4 raises its effective threshold from 80 KiB to 1 MiB. Subsequent writes store "
+          + "inputs larger than 80 KiB and at most 1 MiB inline instead of out of line; previously stored inputs keep their existing "
+          + "storage shape.");
   /**
-   * 1 MiB, the blob table's default: a 512-px JPEG input is far below it, so out of line is the exception. On a Parquet without
-   * per-column statistics the threshold is at most 80 KiB, and that is its default ({@link #inlineMaxBytes(TypedProperties)}).
+   * Declared default of 1 MiB, used with Parquet's per-column statistics switch. Without that switch the effective default
+   * and cap are 80 KiB ({@link #inlineMaxBytes(TypedProperties)}); a Spark 3.5-to-4 writer upgrade raises the default to 1 MiB.
    */
   public static final long DEFAULT_INLINE_MAX_BYTES = 1024L * 1024L;
   /** Fraction in (0, 1] of the per-task heap share up to which {@link #INLINE_MAX_BYTES} may be set. */
@@ -81,6 +91,7 @@ public final class EmbeddingInputConfig {
   /**
    * The inline threshold a writer uses: {@link #INLINE_MAX_BYTES} as the job sets it, or {@link #DEFAULT_INLINE_MAX_BYTES}, on a
    * Parquet with the per-column statistics switch; without it at most 80 KiB, and 80 KiB by default ({@link ParquetInlineCap}).
+   * For an unset key, a Spark 3.5-to-4 writer upgrade raises the effective threshold to 1 MiB even for an existing table.
    *
    * @throws IllegalArgumentException naming the key when it is not a number in [0, 2^31-9]
    */

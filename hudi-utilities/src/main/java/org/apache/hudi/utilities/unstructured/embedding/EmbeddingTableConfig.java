@@ -549,7 +549,7 @@ public class EmbeddingTableConfig implements Serializable {
       .sinceVersion("1.3.0")
       .withDocumentation("RowBalancingStrategy implementation. The default, SizeTypeAwareBalancingStrategy, gives each "
           + "preprocessor group (pdf, image, video, a custom preprocessor) its own tasks, sized by the group's byte budget per "
-          + "task. HashBalancingStrategy spreads the files over exactly hoodie.unstructured.embedding.prep.balance.num.partitions "
+          + "task. HashBalancingStrategy spreads the files over exactly hoodie.unstructured.embedding.prep.num.partitions "
           + "tasks by a hash of their source version (path sha, modification time, size), with one shuffle and no plan: a file's "
           + "task depends on its version alone, and task file counts are balanced in expectation, not exactly equal.");
   /**
@@ -558,7 +558,7 @@ public class EmbeddingTableConfig implements Serializable {
    * {@code balance.SizeTypeAwareBalancingStrategy} (default derived from the job's executors).
    */
   public static final ConfigProperty<String> BALANCE_NUM_PARTITIONS = ConfigProperty
-      .key(BALANCE_PREFIX + "num.partitions")
+      .key(PREP_PREFIX + "num.partitions")
       .noDefaultValue("<derived>")
       .markAdvanced()
       .sinceVersion("1.3.0")

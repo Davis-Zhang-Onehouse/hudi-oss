@@ -82,7 +82,7 @@ import java.util.stream.Collectors;
  *   <li>prepares the batch ({@link PrepRound}), persisted and counted;</li>
  *   <li>{@code prep_only}: returns the prepared rows;</li>
  *   <li>{@code prep_and_compute}: spreads the prepared rows without an error over the compute tasks by a hash of their keys
- *   ({@link ComputeRound#roundRobin}, {@link EmbeddingTableConfig#COMPUTE_PARALLELISM}), embeds them, persisted and counted, and
+ *   ({@link ComputeRound#hashPartitionByKey}, {@link EmbeddingTableConfig#COMPUTE_PARALLELISM}), embeds them, persisted and counted, and
  *   returns the data rows, one error-only row per PERMANENT input, and prep's error rows. With no row left to embed it skips
  *   compute and returns prep's error rows.</li>
  * </ol>
@@ -356,7 +356,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       }
       int parallelism = config.computeParallelism(jsc.defaultParallelism());
       ComputeCounters counters = ComputeCounters.register(jsc.sc());
-      Dataset<Row> embedded = ComputeRound.embed(spark, ComputeRound.roundRobin(toEmbed, parallelism), tableSchema, model, props,
+      Dataset<Row> embedded = ComputeRound.embed(spark, ComputeRound.hashPartitionByKey(toEmbed, parallelism), tableSchema, model, props,
           new BlobBytesSource(target, storageConf, config.prepSourceRetry()), counters, level);
       caches.outputs.add(embedded);
       LOG.info("Embedding round of {} at instant {}: model {} over {} task(s): {} row(s) embedded, {} failed for good", target,

@@ -201,6 +201,8 @@ final class StreamDecodeGuard {
   private StreamStructureScanner.Operands pageOperands;
   /** Decoded bytes of the filtered /Contents streams of the page so far, each listing counted. */
   private long pageContentBytes;
+  private int pageContentStreams;
+  private int undecodableContentStreams;
 
   StreamDecodeGuard(long maxDecodedBytes, File tempDir) {
     this(maxDecodedBytes, EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_FONT_BYTES, tempDir);
@@ -229,18 +231,21 @@ final class StreamDecodeGuard {
   }
 
   /** {@link #checkPage(PDPage, int)} for a page whose number is not known; its log names no page number. */
-  void checkPage(PDPage page) {
-    checkPage(page, 0);
+  int checkPage(PDPage page) {
+    return checkPage(page, 0);
   }
 
   /**
    * @param pageNumber the page's 1-based number in the document, for the log; 0 when not known
-   * @throws PageFailure {@code DECODE_LIMIT} or {@code PAGE_ERROR} when the page must not be extracted
+   * @return content streams skipped on a partially decodable page
+   * @throws PageFailure {@code DECODE_ERROR}, {@code DECODE_LIMIT} or {@code PAGE_ERROR} when the page must not be extracted
    * @throws PrepPlatformException when a temp file of the guard cannot be created, written or read back
    */
-  void checkPage(PDPage page, int pageNumber) {
+  int checkPage(PDPage page, int pageNumber) {
     visited = 0;
     pageContentBytes = 0;
+    pageContentStreams = 0;
+    undecodableContentStreams = 0;
     chargedFontObjects = new HashSet<>();
     fontVisits = 0;
     fontBytes = new FontBytes(maxPageFontBytes);
@@ -268,6 +273,10 @@ final class StreamDecodeGuard {
           }
         }
       }
+      if (pageContentStreams > 0 && undecodableContentStreams == pageContentStreams) {
+        warnSkippedContent(pageNumber);
+        throw new PageFailure(PdfFailureCode.DECODE_ERROR, "all " + pageContentStreams + " content streams failed to decode");
+      }
       pageOperands.finish();
       pageOperands = null;
       DrawnResources drawn = drawnBy(page);
@@ -275,6 +284,7 @@ final class StreamDecodeGuard {
         walkResources(page.getResources().getCOSObject(), 0, drawn);
       }
       warnSkippedContent(pageNumber);
+      return undecodableContentStreams;
     } catch (PageFailure | PrepPlatformException e) {
       throw e;
     } catch (IOException | RuntimeException e) {
@@ -491,12 +501,18 @@ final class StreamDecodeGuard {
     boolean streamingContent = pageContent && stream == streamingFlateContent;
     Set<COSObjectKey> streamFailures = streamingContent ? streamingContentFailed : failed;
     Set<COSObjectKey> streamUndecodable = streamingContent ? streamingContentUndecodable : undecodable;
+    if (pageContent) {
+      pageContentStreams++;
+    }
     if (key != null) {
       if (streamFailures.contains(key)) {
         throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "stream " + key + " already failed the decode guard");
       }
       if (streamUndecodable.contains(key)) {
         noteSkippedContent(kind, charProc, key, null);
+        if (pageContent) {
+          undecodableContentStreams++;
+        }
         return null;                                   // skipped again, as on the page that first met it
       }
       EnumMap<Kind, Long> kinds = passed.get(key);
@@ -548,6 +564,7 @@ final class StreamDecodeGuard {
         streamUndecodable.add(key);
       }
       if (pageContent) {
+        undecodableContentStreams++;
         pageOperands = beforeStream;                   // PDFBox parses the page without any byte of this stream
       }
       noteSkippedContent(kind, charProc, key, e);

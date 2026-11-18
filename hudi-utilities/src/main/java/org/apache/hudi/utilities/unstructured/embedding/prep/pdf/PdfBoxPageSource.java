@@ -247,9 +247,7 @@ public final class PdfBoxPageSource implements PageSource {
   }
 
   private PageText extract(PDPage page, int pageNumber) throws IOException {
-    if (guardEnabled) {
-      guard.checkPage(page, pageNumber);
-    }
+    int skippedContentStreams = guardEnabled ? guard.checkPage(page, pageNumber) : 0;
     // the glyph-text cap is max.page.glyphs, not max.page.chars: text between the two is truncated,
     // text beyond it fails the page
     GuardedPageStripper stripper = new GuardedPageStripper(config.maxPageGlyphs(), config.maxPageGlyphs(),
@@ -265,7 +263,7 @@ public final class PdfBoxPageSource implements PageSource {
         guard.endFontMaterializations();
       }
     }
-    return new PageText(writer.text(), writer.truncated());
+    return new PageText(writer.text(), writer.truncated(), skippedContentStreams + stripper.skippedContentStreams());
   }
 
   @Override

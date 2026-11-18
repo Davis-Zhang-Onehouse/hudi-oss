@@ -28,7 +28,7 @@ public enum PdfFailureCode {
   // file level
   INPUT_LIMIT, SOURCE_IO, ENCRYPTED, LOAD_ERROR, ALL_PAGES_FAILED, PAGE_LIMIT, TOKENIZER_ERROR, INTERNAL,
   // page level
-  PAGE_ERROR, PAGE_TRUNCATED, PAGE_GLYPH_LIMIT, DECODE_LIMIT, GRAPHICS_DEPTH_LIMIT;
+  PAGE_ERROR, PAGE_TRUNCATED, PAGE_GLYPH_LIMIT, DECODE_LIMIT, DECODE_ERROR, GRAPHICS_DEPTH_LIMIT;
 
   /** Maximum length of a formatted detail (the embedding table's {@code prep_error} limit). */
   public static final int MAX_DETAIL_CHARS = 1024;
