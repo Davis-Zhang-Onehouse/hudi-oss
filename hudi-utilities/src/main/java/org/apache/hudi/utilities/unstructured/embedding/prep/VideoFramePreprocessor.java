@@ -84,7 +84,7 @@ import java.util.Set;
  * reads keys only, and a JVM without FFmpeg fails the first video's speech with a configuration error naming
  * {@value #FFMPEG_JARS_SETTING} and {@link AudioConfigKeys#SEGMENT_SOURCE_CLASS}.
  *
- * <p>Failures: a {@code file_size} above {@link EmbeddingTableConfig#PREP_VIDEO_MAX_BYTES} fails the file before any read
+ * <p>Failures: a {@code file_size} above {@link EmbeddingTableConfig#PREP_VIDEO_MAX_BYTES}, when set, fails the file before any read
  * (frames and speech). A content failure of the frames (a video refused by the pixel guard, a corrupt or undecodable stream
  * ({@link VideoDecodeException}), no video stream, a source that is gone, short or whose blob row names no readable range
  * ({@link SourceFailures})) keeps the frames already emitted; with audio off it fails the file at once, with audio on the speech
@@ -420,17 +420,22 @@ public class VideoFramePreprocessor implements FilePreprocessor, AutoCloseable {
     return false;
   }
 
+  /** {@link EmbeddingTableConfig#PREP_VIDEO_MAX_BYTES}; {@code Long.MAX_VALUE} when unset (no cap). */
   private static long maxBytes(TypedProperties props) {
+    String raw = ConfigUtils.getStringWithAltKeys(props, EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES, null);
+    if (raw == null || raw.trim().isEmpty()) {
+      return Long.MAX_VALUE;
+    }
     long maxBytes;
     try {
-      maxBytes = ConfigUtils.getLongWithAltKeys(props, EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES);
+      maxBytes = Long.parseLong(raw.trim());
     } catch (NumberFormatException e) {
       throw new IllegalArgumentException("Config " + EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key() + " must be an integer, got "
-          + ConfigUtils.getStringWithAltKeys(props, EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES, null), e);
+          + raw, e);
     }
     if (maxBytes <= 0) {
-      throw new IllegalArgumentException("Config " + EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key() + " must be positive, got "
-          + maxBytes);
+      throw new IllegalArgumentException("Config " + EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key() + " must be a positive byte "
+          + "count, got " + maxBytes + "; leave it unset for no cap");
     }
     return maxBytes;
   }

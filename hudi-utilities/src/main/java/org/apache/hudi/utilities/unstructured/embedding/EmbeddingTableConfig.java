@@ -236,14 +236,20 @@ public class EmbeddingTableConfig implements Serializable {
 
   /** Prefix of the PDF extraction keys; every set one is part of the style. */
   public static final String PDF_PREFIX = UNSTRUCTURED_PREFIX + "pdf.";
-  /** Largest PDF chunked (bytes); a larger one is a FAILED {@code INPUT_LIMIT} row; default 512 MiB. */
-  public static final ConfigProperty<Long> PDF_MAX_INPUT_BYTES = ConfigProperty
+  /**
+   * Largest PDF chunked (bytes): a larger one is a FAILED {@code INPUT_LIMIT} row, refused before any read when its size is
+   * declared. Unset (the default): no cap. A set value must be a positive byte count; 0 or a negative value is refused when
+   * the job starts. The file is staged to local disk whole and PDFBox reads it from there, so the cap bounds disk, not heap
+   * (heap follows the per-page and per-stream caps).
+   */
+  public static final ConfigProperty<String> PDF_MAX_INPUT_BYTES = ConfigProperty
       .key(PDF_PREFIX + "max.input.bytes")
-      .defaultValue(536870912L)
+      .noDefaultValue("<unset: no cap>")
       .markAdvanced()
       .sinceVersion("1.3.0")
-      .withDocumentation("Largest PDF chunked (bytes); a larger one is a FAILED INPUT_LIMIT row; default 512 MiB.");
-  public static final long DEFAULT_PDF_MAX_INPUT_BYTES = 512L * 1024 * 1024;
+      .withDocumentation("Largest PDF chunked (bytes); a larger one is a FAILED INPUT_LIMIT row, refused before any read when its "
+          + "size is declared. Unset by default: no cap. A set value must be a positive byte count (0 or a negative value is "
+          + "refused at job start). The file is staged whole to local disk, so the cap bounds disk use, not heap.");
   /**
    * Pages read per PDF; the rest is dropped with a {@code PAGE_LIMIT} warning, and a file without text in the pages read
    * fails with {@code PAGE_LIMIT}; default 10 000.
@@ -422,18 +428,20 @@ public class EmbeddingTableConfig implements Serializable {
   /** Default video preprocessor: the FFmpeg frame preprocessor, named by class so this class does not depend on it. */
   public static final String DEFAULT_PREP_VIDEO_PREPROCESSOR_CLASS = PREP_VIDEO_PREPROCESSOR_CLASS.defaultValue();
   /**
-   * Video data prep: a video whose source row declares more bytes ({@code source_file_size}) fails data prep (a quarantine entry) before any
-   * byte is read; default {@link #DEFAULT_PREP_VIDEO_MAX_BYTES}. Part of the preprocessing style when set.
+   * Video data prep: a video whose source row declares more bytes ({@code source_file_size}) fails data prep (a quarantine entry)
+   * before any byte is read. Unset (the default): no cap. A set value must be a positive byte count; 0 or a negative value is
+   * refused on the driver when the job starts. Part of the preprocessing style when set. The video is read through seekable
+   * range reads with a fixed block buffer, so memory does not grow with its size; decode time and frame rows grow with its
+   * duration.
    */
-  public static final ConfigProperty<Long> PREP_VIDEO_MAX_BYTES = ConfigProperty
+  public static final ConfigProperty<String> PREP_VIDEO_MAX_BYTES = ConfigProperty
       .key(PREP_PREFIX + "video.max.bytes")
-      .defaultValue(2147483648L)
+      .noDefaultValue("<unset: no cap>")
       .markAdvanced()
       .sinceVersion("1.3.0")
       .withDocumentation("Video data prep: a video whose source row declares more bytes (source_file_size) fails data prep (a quarantine "
-          + "entry) before any byte is read; default 2147483648. Part of the preprocessing style when set.");
-  /** Default video size guard: 2 GiB. */
-  public static final long DEFAULT_PREP_VIDEO_MAX_BYTES = 2L * 1024 * 1024 * 1024;
+          + "entry) before any byte is read. Unset by default: no cap. A set value must be a positive byte count (0 or a negative "
+          + "value is refused at job start). Part of the preprocessing style when set.");
   /**
    * X of the video frame source's "closest keyframe every X" ({@code video.FfmpegKeyframeVideoFrameSource}), in milliseconds;
    * default {@link #DEFAULT_PREP_VIDEO_KEYFRAME_INTERVAL_MS}. A frame-extraction parameter, so part of the preprocessing style

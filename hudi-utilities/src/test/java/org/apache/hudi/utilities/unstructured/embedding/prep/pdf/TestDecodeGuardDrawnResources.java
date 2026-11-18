@@ -384,6 +384,81 @@ public class TestDecodeGuardDrawnResources {
     assertTrue(warning.length() < 600, "decode errors are truncated: " + warning.length());
   }
 
+  /**
+   * A large resource dictionary shared through inheritance by many pages, of which each page draws one font, one form and
+   * one graphics state: the walk looks up those entries, it does not visit the whole dictionary on every page.
+   */
+  @Test
+  public void largeSharedDictionaryCostsTheDrawnEntriesNotItsSize() throws IOException {
+    int entries = 2000;
+    int pages = 50;
+    byte[] pdf;
+    try (PDDocument document = new PDDocument()) {
+      PDResources shared = PdfFixtures.helvetica();
+      COSDictionary fontsInShared = fonts(shared);
+      COSDictionary xobjectsInShared = xobjects(shared);
+      COSDictionary states = new COSDictionary();
+      COSBase helvetica = fontsInShared.getItem(COSName.getPDFName("F1"));
+      for (int i = 0; i < entries; i++) {
+        fontsInShared.setItem(COSName.getPDFName("Fn" + i), helvetica);
+        COSStream form = PdfFixtures.stream(document, "0 0 m\n");
+        markForm(form);
+        xobjectsInShared.setItem(COSName.getPDFName("Fm" + i), form);
+        states.setItem(COSName.getPDFName("GS" + i), new COSDictionary());
+      }
+      shared.getCOSObject().setItem(COSName.EXT_G_STATE, states);
+      for (int p = 0; p < pages; p++) {
+        PDPage page = new PDPage();
+        document.addPage(page);
+        setContents(document, page, "/GS7 gs /Fm7 Do BT /Fn7 10 Tf 50 700 Td (Page text.) Tj ET\n");
+      }
+      document.getPages().getCOSObject().setItem(COSName.RESOURCES, shared.getCOSObject());
+      pdf = PdfFixtures.save(document);
+    }
+    try (PDDocument document = Loader.loadPDF(pdf)) {
+      StreamDecodeGuard guard = new StreamDecodeGuard(CAP, staging.toFile());
+      for (int p = 0; p < pages; p++) {
+        guard.checkPage(document.getPage(p), p + 1);
+      }
+      assertTrue(guard.resourceEntriesVisited() <= 3L * pages, "visited " + guard.resourceEntriesVisited()
+          + " resource entries for " + pages + " pages drawing 3 entries each of a " + 3 * entries + "-entry dictionary");
+    }
+  }
+
+  /**
+   * A resource name whose bytes are not UTF-8 (/X#E9 is X and the single byte E9): PDFBox resolves it by its bytes, so the
+   * guard must too, or the entry it draws goes unchecked.
+   */
+  @Test
+  public void drawnNameThatIsNotUtf8IsCheckedLikeAnyOther() throws IOException {
+    COSName xobject = COSName.getPDFName(new byte[] {'X', (byte) 0xE9});
+    byte[] form = build((document, page) -> {
+      xobjects(page.getResources()).setItem(xobject, oversizedForm(document));
+      setContents(document, page, "/X#E9 Do " + TEXT);
+    });
+    assertEquals(PdfFailureCode.DECODE_LIMIT, assertThrows(PageFailure.class, () -> check(form, 0)).code());
+    COSName font = COSName.getPDFName(new byte[] {'F', (byte) 0xE9});
+    byte[] fontPage = build((document, page) -> {
+      fonts(page.getResources()).setItem(font, toUnicodeFont(PdfFixtures.oversizedFlateStream(document, OVERSIZED)));
+      setContents(document, page, TEXT + "BT /F#E9 10 Tf 50 650 Td (x) Tj ET\n");
+    });
+    assertEquals(PdfFailureCode.DECODE_LIMIT, assertThrows(PageFailure.class, () -> check(fontPage, 0)).code());
+  }
+
+  @Test
+  public void pageNamingMoreThanTheNameBudgetChecksEveryEntry() throws IOException {
+    // past DrawnResources.MAX_NAMES the record means every resource: the walk then checks each entry, undrawn ones too
+    StringBuilder ops = new StringBuilder();
+    for (int i = 0; i <= DrawnResources.MAX_NAMES; i++) {
+      ops.append("/X").append(i).append(" Do\n");
+    }
+    byte[] pdf = build((document, page) -> {
+      xobjects(page.getResources()).setItem(BIG, oversizedForm(document));
+      setContents(document, page, ops + TEXT);
+    });
+    assertEquals(PdfFailureCode.DECODE_LIMIT, assertThrows(PageFailure.class, () -> check(pdf, 0)).code());
+  }
+
   // ------------------------------------------------------------------ helpers
 
   /** The first operand PDFBox's own content parser hands to the first {@code Do} of {@code content}. */

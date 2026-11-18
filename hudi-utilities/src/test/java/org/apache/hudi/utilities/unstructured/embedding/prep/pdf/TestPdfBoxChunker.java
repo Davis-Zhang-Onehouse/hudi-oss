@@ -343,10 +343,12 @@ public class TestPdfBoxChunker {
   public void oversizeDeclaredRejectedWithoutRead() {
     AtomicInteger opened = new AtomicInteger();
     List<PdfChunk> chunks = new ArrayList<>();
+    // the input size is uncapped by default; an explicit cap refuses a larger declared size before any read
+    PdfChunkerConfig capped = config(BPE, EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), String.valueOf(512L << 20));
     try (PdfChunkIterator iterator = chunker().open(() -> {
       opened.incrementAndGet();
       throw new IOException("must not be read");
-    }, new PdfFileMeta("big", "big.pdf", 1L << 30), defaults(), warnings::add)) {
+    }, new PdfFileMeta("big", "big.pdf", 1L << 30), capped, warnings::add)) {
       while (iterator.hasNext()) {
         chunks.add(iterator.next());
       }
@@ -354,6 +356,23 @@ public class TestPdfBoxChunker {
     assertEquals(0, opened.get());
     assertEquals(PdfChunk.Status.FAILED, chunks.get(0).status());
     assertTrue(chunks.get(0).statusDetail().startsWith("INPUT_LIMIT: "));
+  }
+
+  @Test
+  public void largeDeclaredSizeIsPreparedByDefault() throws IOException {
+    // 1 GiB declared, above the former 512 MiB default: no cap unless one is set
+    byte[] pdf = textPdf(3, 30);
+    List<PdfChunk> chunks = new ArrayList<>();
+    try (PdfChunkIterator iterator = chunker().open(() -> new ByteArrayInputStream(pdf), new PdfFileMeta("big", "big.pdf", 1L << 30),
+        defaults(), warnings::add)) {
+      while (iterator.hasNext()) {
+        chunks.add(iterator.next());
+      }
+    }
+    assertFalse(chunks.isEmpty());
+    for (PdfChunk chunk : chunks) {
+      assertEquals(PdfChunk.Status.OK, chunk.status(), chunk.statusDetail());
+    }
   }
 
   @Test

@@ -133,7 +133,18 @@ public class TestVideoFramePreprocessor {
         + " = 4999; refused before any read", refused.getMessage());
     assertEquals(0, opens.get());
     assertEquals(0, strategy.opened.get(), "the strategy is never asked for frames");
-    assertEquals(2L * 1024 * 1024 * 1024, EmbeddingTableConfig.DEFAULT_PREP_VIDEO_MAX_BYTES);
+  }
+
+  @Test
+  public void videoAboveTheFormerDefaultIsPreparedWhenNoCapIsSet() throws IOException {
+    // 3 GiB declared, above the former 2 GiB default: no cap unless one is set
+    ScriptedStrategy strategy = new ScriptedStrategy(3, -1, null);
+    try (ClosableIterator<Chunk> chunks = new ScriptedPreprocessor(strategy).open(() -> {
+      throw new AssertionError("the scripted strategy reads no bytes");
+    }, file(3L << 30), null, new TypedProperties())) {
+      assertTrue(chunks.hasNext());
+    }
+    assertEquals(1, strategy.opened.get());
   }
 
   /** The default (FFmpeg) preprocessor checks the frame keys itself, without loading FFmpeg, naming the offending key. */
@@ -143,6 +154,7 @@ public class TestVideoFramePreprocessor {
     preprocessor.validateConfig(new TypedProperties(), null);
     String[][] bad = {
         {EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "0"},
+        {EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "-1"},
         {EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "2GiB"},
         {EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS.key(), "-1"},
         {EmbeddingTableConfig.PREP_VIDEO_DEDUP_METHOD.key(), "phash"},

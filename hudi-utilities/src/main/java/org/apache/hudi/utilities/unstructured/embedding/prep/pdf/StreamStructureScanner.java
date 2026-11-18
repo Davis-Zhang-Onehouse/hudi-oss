@@ -35,6 +35,10 @@ import java.nio.charset.StandardCharsets;
  * </ul>
  * Embedded Type1 fonts are checked by {@link Type1FontCheck}, which needs PDFBox's segmentation of the whole
  * file.
+ *
+ * <p>These scanners read the guard's own decoding with their own grammar, which on some token sequences differs from
+ * PDFBox's, and a single /FlateDecode /Contents stream is parsed by PDFBox without its predictor; the content budgets
+ * are therefore enforced again on PDFBox's own tokens by {@link BoundedContentParser}.
  */
 final class StreamStructureScanner {
 

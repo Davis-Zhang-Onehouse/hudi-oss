@@ -34,9 +34,7 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.FixtureFile;
 import org.apache.hudi.utilities.unstructured.embedding.compute.DummyMultimodalEmbeddingClient;
 import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
-import org.apache.hudi.utilities.unstructured.embedding.prep.JcodecVideoFramePreprocessor;
 import org.apache.hudi.utilities.unstructured.embedding.prep.VideoFrameHeapCheck;
-import org.apache.hudi.utilities.unstructured.embedding.prep.VideoFramePreprocessor;
 import org.apache.hudi.utilities.unstructured.embedding.prep.video.ExtractedFrame;
 import org.apache.hudi.utilities.unstructured.embedding.prep.video.FrameExtractionStrategy;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
@@ -241,9 +239,13 @@ public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
     assertEquals(0L, table.filter(functions.col(EmbeddingStreamers.MODEL_COLUMN).isNull()).count(), "every row has its embedding");
     assertEquals(Collections.singletonMap(EmbeddingTableSchema.MODALITY_IMAGE, rows),
         counts(table, functions.col(EmbeddingTableSchema.MODALITY)), "every row is a frame");
-    assertEquals(Collections.singletonMap(jcodec ? JcodecVideoFramePreprocessor.NAME : VideoFramePreprocessor.INPUT_LOGIC, rows),
-        counts(table, functions.col(EmbeddingTableSchema.AUX).getItem(EmbeddingTableSchema.AUX_INPUT_LOGIC)),
-        "every frame is the expected preprocessor's");
+    // row assembly replaces the preprocessor's logic hint with the table-pinned video contract, which names the cell's
+    // preprocessor class; which preprocessor decoded is graded above (FFMPEG_ON_CLASS_PATH, VIDEO_DECODES)
+    String videoContract = prepLogicVersion("video");
+    assertTrue(videoContract != null && !videoContract.isEmpty(), "the table pins a video prep contract");
+    assertEquals(Collections.singletonMap(videoContract, rows),
+        counts(table, functions.col(EmbeddingTableSchema.AUX).getItem(EmbeddingTableSchema.AUX_PREP_LOGIC_VERSION)),
+        "every frame carries the table's video prep contract");
     Map<String, Long> storage = counts(table, functions.col(EmbeddingTableSchema.PREPARED_IMAGE).getField(HoodieSchema.Blob.TYPE));
     long payloadFiles = payloadFiles();
     if (store) {
@@ -604,6 +606,8 @@ public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
         || line.startsWith("RESULT "))
         .forEach(line -> System.out.println("child: " + line));
     System.out.println("child exit " + child.exitValue());
+    // the child prints RESULT ok before stopping Spark: a shutdown that throws or exhausts the heap fails the cell too
+    assertEquals(0, child.exitValue(), "the cell's child exited nonzero, see " + log.toAbsolutePath());
     return output;
   }
 

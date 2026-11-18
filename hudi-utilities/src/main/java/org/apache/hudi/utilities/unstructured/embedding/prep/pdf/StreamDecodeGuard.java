@@ -35,7 +35,6 @@ import org.apache.pdfbox.filter.FilterFactory;
 import org.apache.pdfbox.filter.FlateFilterDecoderStream;
 import org.apache.pdfbox.io.RandomAccessInputStream;
 import org.apache.pdfbox.io.RandomAccessRead;
-import org.apache.pdfbox.pdfparser.PDFStreamParser;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDResources;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -75,11 +74,16 @@ import java.util.function.Consumer;
  * page lists but never draws, such as an oversized form or font shared through inherited resources, does not fail the
  * page. The names come from PDFBox's own content parser ({@link DrawnResources#collect}), run over the page (the same
  * /Contents sequence extraction parses) and over each drawn form, after this guard has checked those streams: the parse
- * is the one extraction does next, so no name PDFBox resolves is missed. It allocates what that extraction parse would.
- * Page content decoding follows PDFBox's single scalar-Flate fast path; arrays use ordinary filter decoding. The
- * structure pre-scan has its own tokenization, which can differ from PDFStreamParser on malformed tokens (see
- * {@link StreamStructureScanner}). A parse that fails, or a form whose names were not
- * kept, checks every entry of the dictionary, as before.
+ * is the one extraction does next, so no name PDFBox resolves is missed.
+ *
+ * <p>That parse is a {@link BoundedContentParser}, which holds the structure budgets (operands pending at an operator,
+ * objects inside one array or dictionary operand, bytes of one token) on the tokens PDFBox itself reads. The pre-scan
+ * evaluates the same budgets on the guard's own decoding and tokenization, which can differ from PDFBox's: on unusual
+ * token sequences, and for a page whose /Contents is a single /FlateDecode stream, which PDPage parses without its
+ * /DecodeParms predictor (that parse also gets a {@code maxDecodedBytes} budget for the whole content). A budget passed in
+ * either fails the page with {@code DECODE_LIMIT}. Drawn forms and the CharProcs of checked Type3 fonts (which extraction
+ * parses for glyph widths and boxes) get the same budgeted parse, once per document; one it refuses is cached as failed.
+ * A parse that fails for another reason, or a form whose names were not kept, checks every entry of the dictionary.
  *
  * <ul>
  *   <li>a stream decoding to more than {@code maxDecodedBytes} fails the page with {@code DECODE_LIMIT}, and so do, without
@@ -176,7 +180,11 @@ final class StreamDecodeGuard {
   private final Set<COSObjectKey> streamingContentUndecodable = new HashSet<>();
   /** What each passed form draws, within {@link #MAX_CACHED_DRAWN_NAMES}. */
   private final Map<COSObjectKey, DrawnResources> drawnByStream = new HashMap<>();
+  /** Forms and CharProcs whose budgeted PDFBox parse passed; never parsed again in this document. */
+  private final Set<COSObjectKey> parsedWithinBudgets = new HashSet<>();
   private long cachedDrawnNames;
+  /** Resource-dictionary lookups and fallback entries the walks have examined, for tests of the walk's cost. */
+  private long resourceEntriesVisited;
   private final Consumer<String> warn;
   private long decodedStreams;
 
@@ -223,6 +231,11 @@ final class StreamDecodeGuard {
   /** Streams decoded so far (each indirect stream at most once per document). */
   long decodedStreams() {
     return decodedStreams;
+  }
+
+  /** Resource-dictionary entries the resource walks have looked at in this document. */
+  long resourceEntriesVisited() {
+    return resourceEntriesVisited;
   }
 
   /** Content streams whose drawn names are cached for the rest of the document. */
@@ -279,7 +292,7 @@ final class StreamDecodeGuard {
       }
       pageOperands.finish();
       pageOperands = null;
-      DrawnResources drawn = drawnBy(page);
+      DrawnResources drawn = drawnBy(page, readsUnpredictedFlate(page) ? maxDecodedBytes : Long.MAX_VALUE);
       if (page.getResources() != null) {
         walkResources(page.getResources().getCOSObject(), 0, drawn);
       }
@@ -352,10 +365,7 @@ final class StreamDecodeGuard {
   private void walkResources(COSDictionary resources, int level, DrawnResources drawn) throws IOException {
     COSDictionary xobjects = dictionary(resources.getItem(COSName.XOBJECT));
     if (xobjects != null && level < MAX_FORM_LEVEL) {
-      for (COSName name : xobjects.keySet()) {
-        if (!drawn.draws(DrawnResources.Category.XOBJECT, name)) {
-          continue;
-        }
+      for (COSName name : drawnEntries(xobjects, DrawnResources.Category.XOBJECT, drawn)) {
         COSBase item = xobjects.getItem(name);
         COSBase xobject = resolve(item);
         if (xobject instanceof COSStream && COSName.FORM.equals(((COSStream) xobject).getCOSName(COSName.SUBTYPE))) {
@@ -365,18 +375,13 @@ final class StreamDecodeGuard {
     }
     COSDictionary fonts = dictionary(resources.getItem(COSName.FONT));
     if (fonts != null) {
-      for (COSName name : fonts.keySet()) {
-        if (drawn.draws(DrawnResources.Category.FONT, name)) {
-          checkFont(fonts.getItem(name));
-        }
+      for (COSName name : drawnEntries(fonts, DrawnResources.Category.FONT, drawn)) {
+        checkFont(fonts.getItem(name));
       }
     }
     COSDictionary states = dictionary(resources.getItem(COSName.EXT_G_STATE));
     if (states != null) {
-      for (COSName name : states.keySet()) {
-        if (!drawn.draws(DrawnResources.Category.EXT_G_STATE, name)) {
-          continue;
-        }
+      for (COSName name : drawnEntries(states, DrawnResources.Category.EXT_G_STATE, drawn)) {
         COSDictionary state = dictionary(states.getItem(name));
         COSBase font = state == null ? null : resolve(state.getItem(COSName.FONT));
         if (font instanceof COSArray && ((COSArray) font).size() > 0) {
@@ -384,6 +389,28 @@ final class StreamDecodeGuard {
         }
       }
     }
+  }
+
+  /**
+   * The entries of {@code entries} that {@code drawn} names in {@code category}, looked up by name, so the cost of a walk
+   * follows what the content draws, not the dictionary's size (a large dictionary shared by many pages is not scanned on
+   * each); every entry when the record means every resource.
+   */
+  private List<COSName> drawnEntries(COSDictionary entries, DrawnResources.Category category, DrawnResources drawn) {
+    List<COSName> found = new ArrayList<>();
+    if (drawn.drawsEverything()) {
+      found.addAll(entries.keySet());
+      resourceEntriesVisited += entries.size();
+    } else {
+      // looked up by the COSName itself: its bytes, as PDFBox resolves it (a name need not be UTF-8)
+      for (COSName name : drawn.names(category)) {
+        if (entries.containsKey(name)) {
+          found.add(name);
+        }
+      }
+      resourceEntriesVisited += drawn.names(category).size();
+    }
+    return found;
   }
 
   /**
@@ -524,7 +551,7 @@ final class StreamDecodeGuard {
         }
       }
       if (!pageContent && kinds != null && kinds.containsKey(kind)) {
-        return kind == Kind.CONTENT ? drawnByStream.getOrDefault(key, DrawnResources.everything()) : null;
+        return kind == Kind.CONTENT ? contentParsed(key, stream, charProc) : null;
       }
     }
     if (key == null && countFont && firstFontStreamVisit(stream)) {
@@ -582,12 +609,55 @@ final class StreamDecodeGuard {
     if (key != null && !pageContent) {
       passed.computeIfAbsent(key, k -> new EnumMap<>(Kind.class)).put(kind, length);
     }
-    if (kind != Kind.CONTENT || pageContent || charProc) {
-      return null;                                     // a CharProc's names are never resolved here
+    if (kind != Kind.CONTENT || pageContent) {
+      return null;
     }
-    DrawnResources drawn = drawnBy(new FormContent(stream));
+    return contentParsed(key, stream, charProc);
+  }
+
+  /**
+   * Whether PDPage#getContentsForStreamParsing inflates this page's /Contents itself, ignoring /DecodeParms: one stream
+   * whose /Filter is exactly /FlateDecode. The guard decoded that stream with its predictor, so PDFBox may read more (or
+   * other) bytes than were checked; the parse gets its own byte budget then.
+   */
+  private static boolean readsUnpredictedFlate(PDPage page) {
+    COSStream contents = page.getCOSObject().getCOSStream(COSName.CONTENTS);
+    return contents != null && COSName.FLATE_DECODE.equals(contents.getFilters());
+  }
+
+  /**
+   * The budgeted PDFBox parse of a form or a Type3 CharProc, which text extraction parses too (a form when drawn; a
+   * CharProc for a glyph's width when /Widths lacks it, and for glyph boxes when /FontBBox is empty). Each indirect
+   * stream is parsed once per document: a pass is remembered, a refusal is cached as failed like a stream past the
+   * decoded-size cap. A form's drawn names are kept within {@link #MAX_CACHED_DRAWN_NAMES}; a form parsed before whose
+   * names were not kept draws every resource.
+   *
+   * @return what a form draws; null for a CharProc, whose names are never resolved here
+   */
+  private DrawnResources contentParsed(COSObjectKey key, COSStream stream, boolean charProc) {
+    if (key != null && parsedWithinBudgets.contains(key)) {
+      DrawnResources cached = drawnByStream.get(key);
+      return charProc ? null : cached != null ? cached : DrawnResources.everything();
+    }
+    DrawnResources drawn;
+    try {
+      drawn = drawnBy(new FormContent(stream), Long.MAX_VALUE);
+    } catch (PageFailure e) {
+      if (key != null) {
+        passed.remove(key);
+        failed.add(key);
+      }
+      throw e;
+    }
+    if (key == null) {
+      return charProc ? null : drawn;
+    }
+    parsedWithinBudgets.add(key);
+    if (charProc) {
+      return null;
+    }
     long cost = Math.max(1, drawn.size());             // an entry with no names still holds memory
-    if (key != null && cachedDrawnNames + cost <= MAX_CACHED_DRAWN_NAMES) {
+    if (cachedDrawnNames + cost <= MAX_CACHED_DRAWN_NAMES) {
       cachedDrawnNames += cost;
       drawnByStream.put(key, drawn);
     }
@@ -596,14 +666,18 @@ final class StreamDecodeGuard {
 
   /**
    * The resources {@code content} hands to Do, Tf and gs, read by PDFBox's own parser; every resource when it cannot be
-   * parsed. A scratch-disk failure is not the page's and fails the round, as in {@link #checkStream}. Called only after
-   * this guard has checked the streams it parses (decoded size; structure caps as the pre-scan tokenizes them).
+   * parsed. A budget refusal fails the page; a scratch-disk failure is not the page's and fails the round, as in
+   * {@link #checkStream}. Called only after this guard has checked the streams it parses.
+   *
+   * @param maxContentBytes bytes the whole content may be read from; {@code Long.MAX_VALUE} where PDFBox reads exactly
+   *                        the bytes the guard decoded
    */
-  private static DrawnResources drawnBy(PDContentStream content) {
-    try {
-      return DrawnResources.collect(new PDFStreamParser(content));
-    } catch (PrepPlatformException e) {
-      throw e;                                         // the executor's scratch disk, never the page
+  private DrawnResources drawnBy(PDContentStream content, long maxContentBytes) {
+    try (BoundedContentParser parser = BoundedContentParser.of(content, StreamStructureScanner.MAX_OPERANDS,
+        maxDecodedBytes, maxContentBytes)) {
+      return DrawnResources.collect(parser);
+    } catch (PageFailure | PrepPlatformException e) {
+      throw e;                                         // a budget refusal; the executor's scratch disk, never the page
     } catch (IOException e) {
       RuntimeException round = PrepFailures.roundFailure(e);
       if (round != null) {

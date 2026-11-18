@@ -45,10 +45,10 @@ import java.util.stream.Stream;
 /**
  * The in-JVM PDFBox 3.0.8 page source, with the best-effort guard.
  * <ul>
- *   <li>a declared size above {@code max.input.bytes} fails {@code INPUT_LIMIT} without reading; otherwise the
+ *   <li>a declared size above {@code max.input.bytes}, when set, fails {@code INPUT_LIMIT} without reading; otherwise the
  *       stream is copied through one 64 KiB buffer into a per-file scratch dir under the staging dir (the first Spark local
  *       dir inside a task, else {@code java.io.tmpdir}), aborting with {@code INPUT_LIMIT} past the cap;</li>
- *   <li>loaded from the staged FILE with PDFBox's scratch on disk, capped at {@code max.input.bytes}
+ *   <li>loaded from the staged FILE with PDFBox's scratch on disk, capped at {@code max.input.bytes} when set (else unrestricted)
  *       ({@code ENCRYPTED} for a non-empty user password, else {@code LOAD_ERROR}); PDFBox is never handed an
  *       InputStream or a byte array, which it would copy into heap;</li>
  *   <li>pages in document order, each through the {@link StreamDecodeGuard} and a fresh
@@ -69,13 +69,13 @@ public final class PdfBoxPageSource implements PageSource {
   interface ScratchCacheFactory {
     /**
      * @param scratchDir the file's own scratch dir, deleted with everything in it on {@link #close()}
-     * @param maxBytes   the most scratch the file may use, {@code max.input.bytes}
+     * @param maxBytes   the most scratch the file may use: {@code max.input.bytes}, or -1 (unrestricted) when it is unset
      */
     StreamCacheCreateFunction create(File scratchDir, long maxBytes);
   }
 
   /**
-   * The default: PDFBox's temp-file cache in the file's scratch dir, capped at {@code max.input.bytes}, so a file is loaded from its
+   * The default: PDFBox's temp-file cache in the file's scratch dir (capped at {@code max.input.bytes} when set), so a file is loaded from its
    * staged copy with its scratch on disk, never on the heap.
    */
   static final ScratchCacheFactory PDFBOX_SCRATCH_FILE =
@@ -137,7 +137,8 @@ public final class PdfBoxPageSource implements PageSource {
     }
     File staged = scratchDir.resolve("input.pdf").toFile();
     stage(staged, max);
-    scratchCache = new PdfBoxScratchCache(scratchCacheFactory.create(scratchDir.toFile(), max));
+    // PDFBox's scratch storage is held to the input cap when one is set; -1 is PDFBox's "unrestricted"
+    scratchCache = new PdfBoxScratchCache(scratchCacheFactory.create(scratchDir.toFile(), config.inputBytesCapped() ? max : -1));
     RandomAccessRead input;
     try {
       input = new RandomAccessReadBufferedFile(staged);
