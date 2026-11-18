@@ -42,13 +42,13 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Exercises built-in provider registration through a real local HTTP call, with no provider class reference. */
-public class TestTextProviderAvailability {
+class TestTextProviderAvailability {
 
   @TempDir
   Path temp;
 
   @Test
-  public void openAiFactorySendsTextAndMapsVectorsByResponseIndex() throws Exception {
+  void openAiFactorySendsTextAndMapsVectorsByResponseIndex() throws Exception {
     AtomicReference<String> body = new AtomicReference<>();
     AtomicReference<String> authorization = new AtomicReference<>();
     HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -97,7 +97,7 @@ public class TestTextProviderAvailability {
       "vertex-multimodal,multimodalembedding@001,128,vertex.VertexMultimodalEmbeddingClient",
       "jina,jina-embeddings-v3,256,jina.JinaEmbeddingClient"
   })
-  public void remainingTextProvidersInitializeThroughFactory(String provider, String model, int dimensions,
+  void remainingTextProvidersInitializeThroughFactory(String provider, String model, int dimensions,
                                                             String expectedClass) throws Exception {
     Path key = temp.resolve("fake-provider.key");
     Files.writeString(key, "fake-local-token");
@@ -114,7 +114,7 @@ public class TestTextProviderAvailability {
   }
 
   @Test
-  public void dummyFactoryStillEmbedsWithoutAnyProviderConfiguration() throws Exception {
+  void dummyFactoryStillEmbedsWithoutAnyProviderConfiguration() throws Exception {
     EmbeddingModelSpec spec = new EmbeddingModelSpec("local", "emb_local", 4, null, "dummy", "local");
     try (EmbeddingClient client = EmbeddingClientFactory.create(spec, new TypedProperties())) {
       List<EmbeddingResult> results = client.embed(Collections.singletonList(new EmbeddingInput("a", 0, "text", "first")));

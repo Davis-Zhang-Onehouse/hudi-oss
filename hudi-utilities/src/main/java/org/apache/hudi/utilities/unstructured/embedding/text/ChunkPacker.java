@@ -219,6 +219,26 @@ public final class ChunkPacker {
     return pending.length() > 0;
   }
 
+  /** The tokens of a cut chunk, re-counted; a chunk over any limit is an internal failure. */
+  private int recountedTokens(String chunkText, int words) {
+    int tokens = chunkText.length() <= window ? budget.count(chunkText) : Integer.MAX_VALUE;
+    if (chunkText.length() > window || words > maxWords || tokens > maxTokens) {
+      throw budget.failure(PackFailures.Kind.INTERNAL, "re-count after cut: " + chunkText.length() + " chars, " + words
+          + " words, " + tokens + " tokens exceed the limits");
+    }
+    return tokens;
+  }
+
+  /** The overlap the next chunk starts with: none at the end of the file or without overlap tokens. */
+  private void nextOverlap(String slice, String ov, int cutPos, boolean fileDone) {
+    if (overlapTokens > 0 && !fileDone) {
+      // the overlap comes from the stream slice, never from the prefix
+      chooseOverlap(slice, chunkBoundaries(ov, cutPos), chunkMarks(ov, cutPos), ov.isEmpty() && pendingStartsMidWord);
+    } else {
+      clearOverlap();
+    }
+  }
+
   /**
    * Cuts the next chunk, or returns null when nothing is pending. Call only when {@link #needsMoreText()} is false or
    * {@code endOfInput} is true.
@@ -260,22 +280,12 @@ public final class ChunkPacker {
     String slice = ov.isEmpty() ? text.substring(0, cutPos) : ov + text.substring(0, cutPos);
     String chunkText = pre.isEmpty() ? slice : pre + slice;
     int words = TokenBudget.words(chunkText);
-    int tokens = chunkText.length() <= window ? budget.count(chunkText) : Integer.MAX_VALUE;
-    if (chunkText.length() > window || words > maxWords || tokens > maxTokens) {
-      throw budget.failure(PackFailures.Kind.INTERNAL, "re-count after cut: " + chunkText.length() + " chars, " + words
-          + " words, " + tokens + " tokens exceed the limits");
-    }
+    int tokens = recountedTokens(chunkText, words);
     int pageStart = ov.isEmpty() ? pageAt(0) : overlapMarkPages[0];
     int pageEnd = pageAt(cutPos - 1);
     PackedChunk chunk = new PackedChunk(chunkText, ov.length(), pre.length(), pageStart, pageEnd, tokens, words);
 
-    boolean fileDone = endOfInput && cutPos == len;
-    if (overlapTokens > 0 && !fileDone) {
-      // the overlap comes from the stream slice, never from the prefix
-      chooseOverlap(slice, chunkBoundaries(ov, cutPos), chunkMarks(ov, cutPos), ov.isEmpty() && pendingStartsMidWord);
-    } else {
-      clearOverlap();
-    }
+    nextOverlap(slice, ov, cutPos, endOfInput && cutPos == len);
     consume(cutPos);
     pendingStartIsBoundary = !forced;
     pendingStartsMidWord = cutInsideWord;
@@ -333,10 +343,10 @@ public final class ChunkPacker {
 
   /** Start of the last sentence of the pending text, which is shorter than 2 windows here. */
   private int lastSentenceStart() {
-    SentenceCursor sentences = cursor();
-    sentences.setText(pending);
-    sentences.last();
-    int start = sentences.previous();
+    SentenceCursor last = cursor();
+    last.setText(pending);
+    last.last();
+    int start = last.previous();
     return start == BreakIterator.DONE ? 0 : start;
   }
 
@@ -351,15 +361,10 @@ public final class ChunkPacker {
     int len = text.length();
     int[] ends = new int[16];
     int count = 0;
-    SentenceCursor sentences = cursor();
-    sentences.setText(text);
-    int start = sentences.first();
-    for (int b = sentences.next(); b != BreakIterator.DONE; b = sentences.next()) {
-      boolean finished = b < len
-          || (len == pendingLength && (endOfInput || start >= window || len - start >= window));
-      if (!finished) {
-        break;
-      }
+    SentenceCursor scan = cursor();
+    scan.setText(text);
+    int start = scan.first();
+    for (int b = scan.next(); b != BreakIterator.DONE && sentenceFinished(b, len, pendingLength, endOfInput, start); b = scan.next()) {
       if (count == ends.length) {
         ends = Arrays.copyOf(ends, count * 2);
       }
@@ -374,6 +379,14 @@ public final class ChunkPacker {
   }
 
   /**
+   * Whether the sentence ending at {@code b} of a scanned prefix of {@code len} chars is finished: it ends inside the prefix, or the
+   * prefix is the whole pending text and the input has ended, the sentence starts at or beyond the window or is a window long.
+   */
+  private boolean sentenceFinished(int b, int len, int pendingLength, boolean endOfInput, int start) {
+    return b < len || (len == pendingLength && (endOfInput || start >= window || len - start >= window));
+  }
+
+  /**
    * The longest run of whole sentences that fits after {@code ov}; 0 when not even the first does. The candidates share
    * one {@link TokenBudget.Prefixes}, so each is counted by its new part.
    */
@@ -382,10 +395,7 @@ public final class ChunkPacker {
         budget.prefixes(ov + text.substring(0, Math.min(text.length(), Math.max(0, window - ov.length()))));
     int cut = 0;
     for (int end : ends) {
-      if (ov.length() + end > window) {
-        break;
-      }
-      if (!candidates.fits(ov.length() + end)) {
+      if (ov.length() + end > window || !candidates.fits(ov.length() + end)) {
         break;
       }
       cut = end;
@@ -447,8 +457,13 @@ public final class ChunkPacker {
     if (lastFit > 0) {
       return lastFit;
     }
+    return splitInsideWord(text, pre, firstWordEnd < 0 ? limit : firstWordEnd, room);
+  }
+
+  /** No whole word fits: the longest prefix of the first word (capped at the window) that fits, cut inside the word. */
+  private int splitInsideWord(String text, String pre, int wordEnd, int room) {
     // cap at the window on a code-point boundary, so a split never falls inside a surrogate pair
-    String word = text.substring(0, Utf16.floor(text, Math.max(0, Math.min(firstWordEnd < 0 ? limit : firstWordEnd, room))));
+    String word = text.substring(0, Utf16.floor(text, Math.max(0, Math.min(wordEnd, room))));
     int preTokens = pre.isEmpty() ? 0 : budget.count(pre);
     int end = preTokens < maxTokens ? budget.prefixEndWithin(word, maxTokens - preTokens) : 0;
     end = Math.max(0, Math.min(end, word.length()));
@@ -540,29 +555,10 @@ public final class ChunkPacker {
     int n = chunk.length();
     int minStart = Math.max(0, n - window / 2);
     TokenBudget.Suffixes suffixes = budget.suffixes(chunk, minStart);
-    int chosen = -1;
-    boolean aligned = false;
-    for (int b : boundaries) {
-      if (b < minStart || b >= n) {
-        continue;
-      }
-      if (qualifiesAsOverlap(suffixes, b)) {
-        chosen = b;
-        aligned = true;
-        break;
-      }
-    }
-    if (chosen < 0) {
-      // longest first: scan every whole-word start from the char cap on (BPE counts are not monotone, so a tokenizer
-      // seed could skip a longer qualifying suffix); bounded by window / 2 starts
-      for (int p = minStart; p < n; p++) {
-        boolean wordStart = !Character.isWhitespace(chunk.charAt(p))
-            && (p == 0 ? !startsMidWord : Character.isWhitespace(chunk.charAt(p - 1)));
-        if (wordStart && qualifiesAsOverlap(suffixes, p)) {
-          chosen = p;
-          break;
-        }
-      }
+    int chosen = boundaryOverlapStart(suffixes, boundaries, minStart, n);
+    boolean aligned = chosen >= 0;
+    if (!aligned) {
+      chosen = wordOverlapStart(suffixes, chunk, minStart, startsMidWord);
     }
     if (chosen < 0) {
       clearOverlap();
@@ -590,6 +586,32 @@ public final class ChunkPacker {
       overlapMarkOffsets[i - first] = i == first ? 0 : offsets[i] - chosen;
       overlapMarkPages[i - first] = pages[i];
     }
+  }
+
+  /** The first recorded stream boundary in {@code [minStart, n)} that qualifies as an overlap start; -1 if none. */
+  private int boundaryOverlapStart(TokenBudget.Suffixes suffixes, int[] boundaries, int minStart, int n) {
+    for (int b : boundaries) {
+      if (b >= minStart && b < n && qualifiesAsOverlap(suffixes, b)) {
+        return b;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * The longest qualifying whole-word suffix start from {@code minStart} on; -1 if none. Longest first: every whole-word start
+   * from the char cap on is scanned (BPE counts are not monotone, so a tokenizer seed could skip a longer qualifying suffix);
+   * bounded by window / 2 starts.
+   */
+  private int wordOverlapStart(TokenBudget.Suffixes suffixes, String chunk, int minStart, boolean startsMidWord) {
+    for (int p = minStart; p < chunk.length(); p++) {
+      boolean wordStart = !Character.isWhitespace(chunk.charAt(p))
+          && (p == 0 ? !startsMidWord : Character.isWhitespace(chunk.charAt(p - 1)));
+      if (wordStart && qualifiesAsOverlap(suffixes, p)) {
+        return p;
+      }
+    }
+    return -1;
   }
 
   private boolean qualifiesAsOverlap(TokenBudget.Suffixes suffixes, int start) {

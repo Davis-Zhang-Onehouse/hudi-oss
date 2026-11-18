@@ -116,48 +116,19 @@ final class StreamStructureScanner {
     @Override
     void accept(int b) {
       if (inComment) {
-        if (b == 10 || b == 13) {
-          inComment = false;
-        }
+        acceptCommentByte(b);
         return;
       }
       if (stringDepth > 0) {
-        if (cmapGrammar()) {
-          if (b == ')') {                              // CMapParser.readString: no escapes, no nesting
-            stringDepth = 0;
-            onOperand();
-          }
-          return;
-        }
-        if (escape) {
-          escape = false;
-        } else if (b == '\\') {
-          escape = true;
-        } else if (b == '(') {
-          stringDepth++;
-        } else if (b == ')' && --stringDepth == 0) {
-          onOperand();
-        }
+        acceptStringByte(b);
         return;
       }
       if (inHex) {
-        if (b == '>') {
-          inHex = false;
-          onHexEnd();
-        } else if (!isWhitespace(b)) {
-          onHexDigit(b);
-        }
+        acceptHexByte(b);
         return;
       }
       if (pendingLt > 0) {
-        pendingLt = 0;
-        if (b == '<') {
-          onDictionaryOpen();                          // "<<" opens a dictionary
-          return;
-        }
-        inHex = true;                                  // "<" starts a hex string
-        onHexStart();
-        accept(b);
+        acceptAfterLt(b);
         return;
       }
       if (pendingGt > 0) {
@@ -167,21 +138,8 @@ final class StreamStructureScanner {
           return;
         }
       }
-      if (splitContentNumbers() && numericToken && !Character.isDigit((char) b) && b != '-'
-          && !(b == '.' && !numberHasDot)) {
+      if (endsContentToken(b) || endsCmapToken(b)) {
         endToken();
-        accept(b);
-        return;
-      }
-      if (splitContentNumbers() && !inName && !numericToken && token.length() > 0 && !readStringToken
-          && b >= '0' && b <= '9' && !(lastTokenByte == 'd' && (b == '0' || b == '1'))) {
-        endToken();
-        accept(b);
-        return;
-      }
-      if (cmapGrammar() && !inName && token.length() > 0
-          && (numericToken ? !Character.isDigit((char) b) && b != '.' : b >= '0' && b <= '9')) {
-        endToken();                                    // CMapParser.readNumber and readOperator stop at this byte
         accept(b);
         return;
       }
@@ -193,35 +151,110 @@ final class StreamStructureScanner {
       }
       if (isWhitespace(b) || isDelimiter(b)) {
         endToken();
-        switch (b) {
-          case '(':
-            stringDepth = 1;
-            break;
-          case '<':
-            pendingLt = 1;
-            break;
-          case '>':
-            pendingGt = 1;
-            break;
-          case '[':
-          case '{':
-            onOpen();
-            break;
-          case ']':
-          case '}':
-            onClose();
-            break;
-          case '/':
-            inName = true;
-            break;
-          case '%':
-            inComment = true;
-            break;
-          default:
-            break;
+        acceptDelimiter(b);
+        return;
+      }
+      appendTokenByte(b);
+    }
+
+    /** A byte inside a comment: a line end closes it. */
+    private void acceptCommentByte(int b) {
+      if (b == 10 || b == 13) {
+        inComment = false;
+      }
+    }
+
+    /** A byte inside a literal string: tracks escapes and nesting until the closing parenthesis. */
+    private void acceptStringByte(int b) {
+      if (cmapGrammar()) {
+        if (b == ')') {                                // CMapParser.readString: no escapes, no nesting
+          stringDepth = 0;
+          onOperand();
         }
         return;
       }
+      if (escape) {
+        escape = false;
+      } else if (b == '\\') {
+        escape = true;
+      } else if (b == '(') {
+        stringDepth++;
+      } else if (b == ')' && --stringDepth == 0) {
+        onOperand();
+      }
+    }
+
+    /** A byte inside a hex string: {@code >} ends it, whitespace is skipped. */
+    private void acceptHexByte(int b) {
+      if (b == '>') {
+        inHex = false;
+        onHexEnd();
+      } else if (!isWhitespace(b)) {
+        onHexDigit(b);
+      }
+    }
+
+    /** The byte after a {@code <}: a second {@code <} opens a dictionary, anything else starts a hex string. */
+    private void acceptAfterLt(int b) {
+      pendingLt = 0;
+      if (b == '<') {
+        onDictionaryOpen();                            // "<<" opens a dictionary
+        return;
+      }
+      inHex = true;                                    // "<" starts a hex string
+      onHexStart();
+      accept(b);
+    }
+
+    /** Whether {@code b} ends the token being read at a content-stream number or operator boundary. */
+    private boolean endsContentToken(int b) {
+      if (splitContentNumbers() && numericToken && !Character.isDigit((char) b) && b != '-'
+          && !(b == '.' && !numberHasDot)) {
+        return true;
+      }
+      return splitContentNumbers() && !inName && !numericToken && token.length() > 0 && !readStringToken
+          && b >= '0' && b <= '9' && !(lastTokenByte == 'd' && (b == '0' || b == '1'));
+    }
+
+    /** Whether {@code b} ends the token being read where CMapParser.readNumber and readOperator stop. */
+    private boolean endsCmapToken(int b) {
+      return cmapGrammar() && !inName && token.length() > 0
+          && (numericToken ? !Character.isDigit((char) b) && b != '.' : b >= '0' && b <= '9');
+    }
+
+    /** Reacts to a whitespace or delimiter byte, the token before it already ended. */
+    private void acceptDelimiter(int b) {
+      switch (b) {
+        case '(':
+          stringDepth = 1;
+          break;
+        case '<':
+          pendingLt = 1;
+          break;
+        case '>':
+          pendingGt = 1;
+          break;
+        case '[':
+        case '{':
+          onOpen();
+          break;
+        case ']':
+        case '}':
+          onClose();
+          break;
+        case '/':
+          inName = true;
+          break;
+        case '%':
+          inComment = true;
+          break;
+        default:
+          break;
+      }
+    }
+
+    /** Adds a regular byte to the token being read, classifying the token at its first byte; past the limit, marks it truncated. */
+    private void appendTokenByte(int b) {
       if (splitContentNumbers() && token.length() == 0 && !inName) {
         numericToken = b >= '0' && b <= '9' || b == '+' || b == '-' || b == '.';
         readStringToken = b == 'B' || b == 'n' || b == 't' || b == 'f';
@@ -364,18 +397,28 @@ final class StreamStructureScanner {
         super.accept(b);
         return;
       }
+      acceptInline(b);
+    }
+
+    /** The byte after an {@code EI} candidate: whitespace starts the lookahead, else the search restarts. */
+    private void acceptAfterEi(int b) {
+      if (b == 10 || b == 13 || b == 32) {
+        inlineState = 3;
+        inlineLookahead[lookaheadLength++] = (byte) b;
+      } else {
+        inlineState = b == 'E' ? 1 : 0;
+      }
+    }
+
+    /** One byte of an inline image's data: looks for its {@code EI} end, followed by whitespace and then a lookahead. */
+    private void acceptInline(int b) {
       if (inlineState == 3) {
         inlineLookahead[lookaheadLength++] = (byte) b;
         if (lookaheadLength == inlineLookahead.length) {
           resolveInlineCandidate();
         }
       } else if (inlineState == 2) {
-        if (b == 10 || b == 13 || b == 32) {
-          inlineState = 3;
-          inlineLookahead[lookaheadLength++] = (byte) b;
-        } else {
-          inlineState = b == 'E' ? 1 : 0;
-        }
+        acceptAfterEi(b);
       } else if (inlineState == 1 && b == 'I') {
         inlineState = 2;
       } else {
@@ -424,34 +467,72 @@ final class StreamStructureScanner {
 
     /** Matches PDFStreamParser.hasNoFollowingBinData, including its signed-byte and short-EOF behavior. */
     private boolean hasNoFollowingBinaryData(int length) {
-      int start = -1;
-      int end = -1;
-      for (int i = 0; i < length; i++) {
-        byte value = inlineLookahead[i];
-        if (value != 0 && value < 9 || value > 10 && value < 32 && value != 13) {
-          return false;
-        }
-        boolean blank = value == 0 || value == 9 || value == 32 || value == 10 || value == 13;
-        if (start == -1 && !blank) {
-          start = i;
-        } else if (start != -1 && end == -1 && blank) {
-          end = i;
-        }
+      if (containsBinaryByte(length)) {
+        return false;
       }
-      String next = end == -1 || start == -1 ? ""
-          : new String(inlineLookahead, start, end - start, StandardCharsets.US_ASCII);
-      if (end != -1 && start != -1 && !"Q".equals(next) && !"EMC".equals(next) && !"S".equals(next)
-          && !isInlineNumber(next)) {
+      int start = firstNonBlank(length);
+      int end = firstBlankAfter(start, length);
+      if (end != -1 && start != -1
+          && !endsInlineImage(new String(inlineLookahead, start, end - start, StandardCharsets.US_ASCII))) {
         return false;
       }
       if (start != -1 && length == inlineLookahead.length) {
-        if (end == -1) {
-          end = length;
-          next = new String(inlineLookahead, start, end - start, StandardCharsets.US_ASCII);
-        }
-        return end - start <= 3 || isInlineNumber(next);
+        return isShortOrNumberToken(start, end, length);
       }
       return true;
+    }
+
+    /** Whether the first {@code length} lookahead bytes hold a byte PDFBox takes for binary data. */
+    private boolean containsBinaryByte(int length) {
+      for (int i = 0; i < length; i++) {
+        if (isBinaryByte(inlineLookahead[i])) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    private static boolean isBinaryByte(byte value) {
+      return value != 0 && value < 9 || value > 10 && value < 32 && value != 13;
+    }
+
+    private static boolean isBlank(byte value) {
+      return value == 0 || value == 9 || value == 32 || value == 10 || value == 13;
+    }
+
+    /** The index of the first non-blank lookahead byte; -1 when there is none. */
+    private int firstNonBlank(int length) {
+      for (int i = 0; i < length; i++) {
+        if (!isBlank(inlineLookahead[i])) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    /** The index of the first blank lookahead byte after {@code start}; -1 when there is none or no start. */
+    private int firstBlankAfter(int start, int length) {
+      if (start == -1) {
+        return -1;
+      }
+      for (int i = start + 1; i < length; i++) {
+        if (isBlank(inlineLookahead[i])) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    /** Whether a token after {@code EI} lets it end the inline image, as PDFStreamParser accepts it. */
+    private static boolean endsInlineImage(String next) {
+      return "Q".equals(next) || "EMC".equals(next) || "S".equals(next) || isInlineNumber(next);
+    }
+
+    /** A full lookahead: whether its token (to the end when unterminated) is short or a number. */
+    private boolean isShortOrNumberToken(int start, int end, int length) {
+      int tokenEnd = end == -1 ? length : end;
+      return tokenEnd - start <= 3
+          || isInlineNumber(new String(inlineLookahead, start, tokenEnd - start, StandardCharsets.US_ASCII));
     }
 
     private static boolean isInlineNumber(String text) {

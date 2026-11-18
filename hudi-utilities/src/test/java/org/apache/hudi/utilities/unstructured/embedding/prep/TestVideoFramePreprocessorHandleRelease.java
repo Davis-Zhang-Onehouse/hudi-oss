@@ -55,13 +55,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The video preprocessor's main path with FFmpeg frames and FFmpeg speech segments (stub transcriber and chunker): every blob the
  * frames and the speech open is closed when the file's chunks are drained, abandoned, or fail part way.
  */
-public class TestVideoFramePreprocessorHandleRelease {
+class TestVideoFramePreprocessorHandleRelease {
 
   /** 12 s of speech over H.264 video. */
   private static final String SPEECH_CLIP = "/video/h264-aac-speech-12s.mp4";
 
   @Test
-  public void framesAndSpeechDrainedCloseEveryBlob() throws Exception {
+  void framesAndSpeechDrainedCloseEveryBlob() throws Exception {
     Path clip = clip();
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip);
     List<String> modalities = new ArrayList<>();
@@ -77,7 +77,7 @@ public class TestVideoFramePreprocessorHandleRelease {
   }
 
   @Test
-  public void abandonedAfterTheFirstChunkClosesEveryBlob() throws Exception {
+  void abandonedAfterTheFirstChunkClosesEveryBlob() throws Exception {
     Path clip = clip();
     for (TypedProperties props : new TypedProperties[] {audioOn(), new TypedProperties()}) {
       TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip);
@@ -95,17 +95,14 @@ public class TestVideoFramePreprocessorHandleRelease {
 
   /** The frames fail part way (held behind the speech with audio on, thrown at once with audio off). */
   @Test
-  public void framesThatFailPartWayCloseEveryBlob() throws Exception {
+  void framesThatFailPartWayCloseEveryBlob() throws Exception {
     Path clip = clip();
     for (TypedProperties props : new TypedProperties[] {audioOn(), new TypedProperties()}) {
       TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip);
       VideoDecodeException corrupt = new VideoDecodeException("test: frame 1 cannot be decoded");
+      FileMeta file = file(clip);
       try (VideoFramePreprocessor preprocessor = new FailingFrames(corrupt)) {
-        assertThrows(VideoDecodeException.class, () -> {
-          try (ClosableIterator<Chunk> chunks = preprocessor.open(bytes, file(clip), new WordCountTokenizer(), props)) {
-            chunks.forEachRemaining(chunk -> { });
-          }
-        });
+        assertThrows(VideoDecodeException.class, () -> readEveryChunk(preprocessor, bytes, file, props));
       }
       assertTrue(bytes.opened() > 0, "the video was opened");
       assertEquals(Collections.emptyList(), bytes.unclosed(), "unclosed handles after the frames failed part way, audio "
@@ -152,6 +149,13 @@ public class TestVideoFramePreprocessorHandleRelease {
           };
         }
       });
+    }
+  }
+
+  private static void readEveryChunk(VideoFramePreprocessor preprocessor, BlobBytesSupplier bytes, FileMeta file, TypedProperties props)
+      throws IOException {
+    try (ClosableIterator<Chunk> chunks = preprocessor.open(bytes, file, new WordCountTokenizer(), props)) {
+      chunks.forEachRemaining(chunk -> { });
     }
   }
 

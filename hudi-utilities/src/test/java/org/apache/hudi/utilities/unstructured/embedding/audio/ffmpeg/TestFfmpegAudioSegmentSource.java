@@ -61,6 +61,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -68,7 +69,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /** The FFmpeg audio track source over generated clips and one public-domain speech clip. */
-public class TestFfmpegAudioSegmentSource {
+class TestFfmpegAudioSegmentSource {
 
   /** Tone 0-2 s, silence 1 s, tone 1.5 s, silence 0.3 s (shorter than vad.min.silence.ms: merged), tone 1.2 s, silence 2 s, tone 3 s. */
   private static final long[] LAYOUT = {2000, 1000, 1500, 300, 1200, 2000, 3000};
@@ -88,7 +89,7 @@ public class TestFfmpegAudioSegmentSource {
   private static Path speech;
 
   @BeforeAll
-  public static void generate() throws IOException, URISyntaxException {
+  static void generate() throws IOException, URISyntaxException {
     aac = AudioClips.generate(dir.resolve("mpeg4-aac.mp4"), AudioClips.Codec.AAC, 44100, 2, LAYOUT);
     mp3 = AudioClips.generate(dir.resolve("mpeg4-mp3.mp4"), AudioClips.Codec.MP3, 44100, 2, LAYOUT);
     speech = Paths.get(Objects.requireNonNull(TestFfmpegAudioSegmentSource.class.getResource(SPEECH_CLIP)).toURI());
@@ -148,6 +149,17 @@ public class TestFfmpegAudioSegmentSource {
     return seen;
   }
 
+  private static void drain(FfmpegAudioSegmentSource source, AudioInput input, boolean failIfDrained) throws IOException {
+    try (FfmpegAudioSegmentSource.Segments iterator = source.segments(input, 0, 0, new TypedProperties())) {
+      while (iterator.hasNext()) {
+        iterator.next();
+      }
+      if (failIfDrained) {
+        fail("ended as: " + iterator.endReason());
+      }
+    }
+  }
+
   private static List<Seen> segments(Path clip) throws IOException {
     return segments(clip, 0, 0, new TypedProperties());
   }
@@ -164,7 +176,7 @@ public class TestFfmpegAudioSegmentSource {
 
   @ParameterizedTest
   @ValueSource(strings = {"aac", "mp3"})
-  public void segmentsFollowTheToneLayout(String codec) throws IOException {
+  void segmentsFollowTheToneLayout(String codec) throws IOException {
     List<Seen> seen = segments(codec.equals("aac") ? aac : mp3);
     assertEquals(LAYOUT_SEGMENTS.length, seen.size(), "segments " + seen);
     for (int k = 0; k < seen.size(); k++) {
@@ -178,7 +190,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void speechClipIsCutAtItsPauses() throws IOException {
+  void speechClipIsCutAtItsPauses() throws IOException {
     // the clip's pauses of at least 0.5 s by FFmpeg's own detector (silencedetect, -30 dB peak, 0.5 s, on this file): 0.08-0.59,
     // 3.08-3.70, 5.53-6.37, 9.46-10.04; the speech ends at 11.58 s (-35 dB on the source recording)
     List<Seen> seen = segments(speech);
@@ -198,7 +210,7 @@ public class TestFfmpegAudioSegmentSource {
    */
   @ParameterizedTest
   @ValueSource(strings = {"aac", "mp3", "speech"})
-  public void resumeFromEveryCheckpointYieldsTheSameSegments(String clipName) throws IOException {
+  void resumeFromEveryCheckpointYieldsTheSameSegments(String clipName) throws IOException {
     Path clip = clipName.equals("aac") ? aac : clipName.equals("mp3") ? mp3 : speech;
     TypedProperties props = props(AudioConfigKeys.SEGMENT_MAX_MS.key(), 1500);
     List<Seen> full = segments(clip, 0, 0, props);
@@ -228,19 +240,15 @@ public class TestFfmpegAudioSegmentSource {
    * reports no audio stream, as FFmpeg would. The result is a retryable storage failure, not an empty iterator with "no audio stream".
    */
   @Test
-  public void storageFailureSwallowedByTheProbeIsRetryableNotNoAudio() {
+  void storageFailureSwallowedByTheProbeIsRetryableNotNoAudio() {
     FfmpegAudioSegmentSource probeSwallowsAFailure = new FfmpegAudioSegmentSource() {
       @Override
       FFmpegFrameGrabber newGrabber(InputStream stream) {
         return new FFmpegFrameGrabber(stream) {
           @Override
           public void start() {
-            try {
-              stream.read(new byte[64]);
-              fail("the read budget is 0: the first read fails in storage");
-            } catch (IOException readFailure) {
-              // JavaCV's read callback reports it to FFmpeg as an end of file; the stream remembers it
-            }
+            // JavaCV's read callback reports it to FFmpeg as an end of file; the stream remembers it
+            assertThrows(IOException.class, () -> stream.read(new byte[64]), "the read budget is 0: the first read fails in storage");
           }
 
           @Override
@@ -251,14 +259,7 @@ public class TestFfmpegAudioSegmentSource {
       }
     };
     AudioInput failing = AudioClips.input("f", aac, VideoClips.failingAfterBytesRead(aac, 0));
-    UncheckedIOException failure = assertThrows(UncheckedIOException.class, () -> {
-      try (FfmpegAudioSegmentSource.Segments iterator = probeSwallowsAFailure.segments(failing, 0, 0, new TypedProperties())) {
-        while (iterator.hasNext()) {
-          iterator.next();
-        }
-        fail("ended as: " + iterator.endReason());
-      }
-    });
+    UncheckedIOException failure = assertThrows(UncheckedIOException.class, () -> drain(probeSwallowsAFailure, failing, true));
     assertTrue(BlobReadException.isStorageFailure(failure), "RETRYABLE: " + failure);
   }
 
@@ -270,7 +271,7 @@ public class TestFfmpegAudioSegmentSource {
    */
   @ParameterizedTest
   @ValueSource(strings = {"mpegts", "mp4"})
-  public void storageFailureSwallowedWhileProbingIsRetryable(String format) throws IOException {
+  void storageFailureSwallowedWhileProbingIsRetryable(String format) throws IOException {
     Path clip = format.equals("mp4") ? aac
         : AudioClips.generate(dir.resolve("probe-aac.ts"), "mpegts", AudioClips.Codec.AAC, 44100, 2, LAYOUT);
     long size = Files.size(clip);
@@ -287,7 +288,7 @@ public class TestFfmpegAudioSegmentSource {
       } catch (UncheckedIOException | VideoDecodeException e) {
         failure = e;
       }
-      assertTrue(failure != null, "budget " + budget + " of " + size + " ended without a failure, as: " + endReason);
+      assertNotNull(failure, "budget " + budget + " of " + size + " ended without a failure, as: " + endReason);
       assertTrue(BlobReadException.isStorageFailure(failure), "budget " + budget + " of " + size + ": RETRYABLE: " + failure);
     }
   }
@@ -297,7 +298,7 @@ public class TestFfmpegAudioSegmentSource {
    * by decoding from the start and skipping, and the resumed segments are then identical, payloads included.
    */
   @Test
-  public void resumeInAContainerWithRoundedTimestampsYieldsTheSameSegments() throws IOException {
+  void resumeInAContainerWithRoundedTimestampsYieldsTheSameSegments() throws IOException {
     Path mkv = AudioClips.generate(dir.resolve("aac.mkv"), "matroska", AudioClips.Codec.AAC, 44100, 2, LAYOUT);
     TypedProperties props = props(AudioConfigKeys.SEGMENT_MAX_MS.key(), 1500);
     List<Seen> full = segments(mkv, 0, 0, props);
@@ -309,7 +310,7 @@ public class TestFfmpegAudioSegmentSource {
 
   /** Two recordings joined byte for byte: the second one's timestamps start again, which is a data error, never a short result. */
   @Test
-  public void timestampsThatJumpBackArePermanent() throws IOException {
+  void timestampsThatJumpBackArePermanent() throws IOException {
     Path first = AudioClips.generate(dir.resolve("part1.ts"), "mpegts", AudioClips.Codec.AAC, 44100, 1, 4000);
     Path second = AudioClips.generate(dir.resolve("part2.ts"), "mpegts", AudioClips.Codec.AAC, 44100, 1, 4000);
     byte[] a = Files.readAllBytes(first);
@@ -322,7 +323,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void resumeAfterTheLastSegmentEndsWithoutAReason() throws IOException {
+  void resumeAfterTheLastSegmentEndsWithoutAReason() throws IOException {
     List<Seen> full = segments(aac);
     try (FfmpegAudioSegmentSource.Segments iterator = new FfmpegAudioSegmentSource().segments(input(aac), full.size(),
         full.get(full.size() - 1).endMs, new TypedProperties())) {
@@ -332,7 +333,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void longSpeechIsCutAtTheTimeBound() throws IOException {
+  void longSpeechIsCutAtTheTimeBound() throws IOException {
     Path clip = AudioClips.generate(dir.resolve("long-tone.mp4"), AudioClips.Codec.AAC, 44100, 1, 70_000);
     List<Seen> seen = segments(clip);
     assertEquals(3, seen.size(), "70 s at 30 s each: " + seen);
@@ -346,7 +347,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void byteBoundBindsBeforeTheTimeBound() throws IOException {
+  void byteBoundBindsBeforeTheTimeBound() throws IOException {
     // 96,000 bytes = 3 s of 16 kHz mono 16-bit
     List<Seen> seen = segments(aac, 0, 0, props(AudioConfigKeys.SEGMENT_MAX_BYTES.key(), 96_000));
     assertTrue(seen.size() >= 5, "segments " + seen);
@@ -356,7 +357,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void otherSampleRateIsHonoured() throws IOException {
+  void otherSampleRateIsHonoured() throws IOException {
     TypedProperties props = props(AudioConfigKeys.SAMPLE_RATE.key(), 8000);
     try (FfmpegAudioSegmentSource.Segments iterator = new FfmpegAudioSegmentSource().segments(input(aac), 0, 0, props)) {
       AudioSegment first = iterator.next();
@@ -366,7 +367,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void videoWithoutAudioStreamHasNoSpeech() throws IOException {
+  void videoWithoutAudioStreamHasNoSpeech() throws IOException {
     Path clip = VideoClips.generate(dir.resolve("video-only.mp4"), 4, 5, 1, 64, 48, -1, -1);
     try (FfmpegAudioSegmentSource.Segments iterator = new FfmpegAudioSegmentSource().segments(input(clip), 0, 0,
         new TypedProperties())) {
@@ -376,7 +377,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void silentAudioTrackHasNoSpeech() throws IOException {
+  void silentAudioTrackHasNoSpeech() throws IOException {
     Path clip = AudioClips.generate(dir.resolve("silent.mp4"), AudioClips.Codec.AAC, 44100, 2, 0, 5000);
     try (FfmpegAudioSegmentSource.Segments iterator = new FfmpegAudioSegmentSource().segments(input(clip), 0, 0,
         new TypedProperties())) {
@@ -386,7 +387,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void truncatedContainerIsPermanent() throws IOException {
+  void truncatedContainerIsPermanent() throws IOException {
     byte[] bytes = Files.readAllBytes(aac);
     Path truncated = Files.write(dir.resolve("truncated.mp4"), Arrays.copyOf(bytes, bytes.length * 6 / 10));
     RuntimeException failure = assertThrows(RuntimeException.class, () -> segments(truncated));
@@ -395,7 +396,7 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void unreadableBytesArePermanent() throws IOException {
+  void unreadableBytesArePermanent() throws IOException {
     byte[] garbage = new byte[64 * 1024];
     new Random(7).nextBytes(garbage);
     Path file = Files.write(dir.resolve("garbage.mp4"), garbage);
@@ -409,7 +410,7 @@ public class TestFfmpegAudioSegmentSource {
    */
   @ParameterizedTest
   @ValueSource(strings = {"garbage", "cut-10", "cut-35", "cut-80", "cut-99", "header-then-zeros", "flipped-middle", "flipped-header"})
-  public void corruptContentIsNeverAnIllegalArgumentException(String kind) throws IOException {
+  void corruptContentIsNeverAnIllegalArgumentException(String kind) throws IOException {
     byte[] bytes = Files.readAllBytes(aac);
     byte[] corrupt;
     Random random = new Random(kind.hashCode());
@@ -438,26 +439,22 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void bytesThatAreNotSeekableOrAbsentArePermanent() {
+  void bytesThatAreNotSeekableOrAbsentArePermanent() {
     BlobBytesSupplier plain = () -> new ByteArrayInputStream(new byte[0]);
-    assertThrows(VideoDecodeException.class, () -> new FfmpegAudioSegmentSource().segments(AudioClips.input("f", aac, plain), 0, 0,
-        new TypedProperties()));
-    assertThrows(VideoDecodeException.class, () -> new FfmpegAudioSegmentSource().segments(AudioClips.input("f", aac, null), 0, 0,
-        new TypedProperties()));
+    FfmpegAudioSegmentSource source = new FfmpegAudioSegmentSource();
+    AudioInput notSeekable = AudioClips.input("f", aac, plain);
+    AudioInput absent = AudioClips.input("f", aac, null);
+    TypedProperties props = new TypedProperties();
+    assertThrows(VideoDecodeException.class, () -> source.segments(notSeekable, 0, 0, props));
+    assertThrows(VideoDecodeException.class, () -> source.segments(absent, 0, 0, props));
   }
 
   @ParameterizedTest
   @ValueSource(longs = {2_000, 30_000})
-  public void storageFailureIsRetryableWhereverItHappens(long budget) {
+  void storageFailureIsRetryableWhereverItHappens(long budget) {
     AudioInput failing = AudioClips.input("f", aac, VideoClips.failingAfterBytesRead(aac, budget));
-    UncheckedIOException failure = assertThrows(UncheckedIOException.class, () -> {
-      try (FfmpegAudioSegmentSource.Segments iterator = new FfmpegAudioSegmentSource().segments(failing, 0, 0,
-          new TypedProperties())) {
-        while (iterator.hasNext()) {
-          iterator.next();
-        }
-      }
-    });
+    FfmpegAudioSegmentSource source = new FfmpegAudioSegmentSource();
+    UncheckedIOException failure = assertThrows(UncheckedIOException.class, () -> drain(source, failing, false));
     assertTrue(BlobReadException.isStorageFailure(failure), "RETRYABLE: " + failure);
   }
 
@@ -466,7 +463,7 @@ public class TestFfmpegAudioSegmentSource {
    * be) is rethrown as it is, and the blob stream the grabber was given is closed: opening leaves nothing open on any way out.
    */
   @Test
-  public void errorWhileOpeningClosesTheBlobStreamAndIsRethrown() {
+  void errorWhileOpeningClosesTheBlobStreamAndIsRethrown() {
     LinkageError linkFailure = new LinkageError("test: a native library failed to link while the grabber started");
     AtomicInteger opened = new AtomicInteger();
     AtomicInteger closed = new AtomicInteger();
@@ -514,8 +511,10 @@ public class TestFfmpegAudioSegmentSource {
         return Files.newInputStream(aac);
       }
     };
-    Error thrown = assertThrows(Error.class, () -> new FfmpegAudioSegmentSource().segments(AudioClips.input("f", aac, bytes), 0, 0,
-        new TypedProperties()));
+    FfmpegAudioSegmentSource source = new FfmpegAudioSegmentSource();
+    AudioInput input = AudioClips.input("f", aac, bytes);
+    TypedProperties props = new TypedProperties();
+    Error thrown = assertThrows(Error.class, () -> source.segments(input, 0, 0, props));
     assertSame(linkFailure, thrown);
     assertEquals(1, opened.get(), "one blob stream opened");
     assertEquals(1, closed.get(), "the blob stream is closed once");
@@ -526,7 +525,7 @@ public class TestFfmpegAudioSegmentSource {
    * resampled: the resampler's table and its work per output sample grow with the declared input rate.
    */
   @Test
-  public void declaredSampleRateAboveTheCeilingIsPermanentBeforeDecoding() throws IOException {
+  void declaredSampleRateAboveTheCeilingIsPermanentBeforeDecoding() throws IOException {
     Path oversized = wav(dir.resolve("rate-1000000.wav"), 1_000_000, 300);
     VideoDecodeException failure = assertThrows(VideoDecodeException.class, () -> segments(oversized));
     assertTrue(failure.getMessage().contains("1000000 Hz"), failure.getMessage());
@@ -535,7 +534,7 @@ public class TestFfmpegAudioSegmentSource {
 
   /** Control: a track declaring the ceiling itself decodes and is segmented. */
   @Test
-  public void declaredSampleRateAtTheCeilingStillDecodes() throws IOException {
+  void declaredSampleRateAtTheCeilingStillDecodes() throws IOException {
     List<Seen> seen = segments(wav(dir.resolve("rate-384000.wav"), 384_000, 1500));
     assertFalse(seen.isEmpty(), "the tone is speech");
     assertTrue(seen.get(seen.size() - 1).endMs >= 1000, "the tone: " + seen);
@@ -543,7 +542,7 @@ public class TestFfmpegAudioSegmentSource {
 
   /** A blob stream that fails to close changes no outcome but leaves a WARN naming the video. */
   @Test
-  public void closeFailureIsLoggedWithTheVideoName() throws IOException {
+  void closeFailureIsLoggedWithTheVideoName() throws IOException {
     SeekableBlobBytesSupplier bytes = new SeekableBlobBytesSupplier() {
       @Override
       public SeekableBlob openSeekable() throws IOException {
@@ -582,7 +581,7 @@ public class TestFfmpegAudioSegmentSource {
    * throws would): the blob stream is still closed afterwards, and the failure is logged.
    */
   @Test
-  public void blobStreamIsClosedWhenTheGrabbersCloseFails() throws IOException {
+  void blobStreamIsClosedWhenTheGrabbersCloseFails() throws IOException {
     AtomicInteger closeCalls = new AtomicInteger();
     AtomicInteger closed = new AtomicInteger();
     SeekableBlobBytesSupplier bytes = new SeekableBlobBytesSupplier() {
@@ -621,14 +620,14 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void trackLongerThanTheMaximumIsPermanentBeforeDecoding() {
-    VideoDecodeException failure = assertThrows(VideoDecodeException.class,
-        () -> segments(aac, 0, 0, props(AudioConfigKeys.MAX_DURATION_MS.key(), 5000)));
+  void trackLongerThanTheMaximumIsPermanentBeforeDecoding() {
+    TypedProperties props = props(AudioConfigKeys.MAX_DURATION_MS.key(), 5000);
+    VideoDecodeException failure = assertThrows(VideoDecodeException.class, () -> segments(aac, 0, 0, props));
     assertTrue(failure.getMessage().contains(AudioConfigKeys.MAX_DURATION_MS.key()), failure.getMessage());
   }
 
   @Test
-  public void payloadIsReleasedWhenTheNextSegmentIsRequested() throws IOException {
+  void payloadIsReleasedWhenTheNextSegmentIsRequested() throws IOException {
     try (FfmpegAudioSegmentSource.Segments iterator = new FfmpegAudioSegmentSource().segments(input(aac), 0, 0,
         new TypedProperties())) {
       AudioSegment first = iterator.next();
@@ -642,15 +641,15 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   @Test
-  public void invalidSettingsNameTheirKey() {
+  void invalidSettingsNameTheirKey() {
     FfmpegAudioSegmentSource source = new FfmpegAudioSegmentSource();
     for (String[] bad : new String[][] {
         {AudioConfigKeys.SAMPLE_RATE.key(), "22050"}, {AudioConfigKeys.SAMPLE_RATE.key(), "4000"}, {AudioConfigKeys.VAD_THRESHOLD_DB.key(), "0"},
         {AudioConfigKeys.VAD_MIN_SILENCE_MS.key(), "10"}, {AudioConfigKeys.SEGMENT_MAX_MS.key(), "29"}, {AudioConfigKeys.SEGMENT_MAX_BYTES.key(), "100"},
         {AudioConfigKeys.MAX_DURATION_MS.key(), "0"}, {AudioConfigKeys.MAX_DURATION_MS.key(), String.valueOf(Long.MAX_VALUE)},
         {AudioConfigKeys.SEGMENT_MAX_MS.key(), "abc"}}) {
-      IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> source.validate(props(bad[0], bad[1])),
-          bad[0] + "=" + bad[1]);
+      TypedProperties props = props(bad[0], bad[1]);
+      IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> source.validate(props), bad[0] + "=" + bad[1]);
       assertTrue(failure.getMessage().contains(bad[0]), failure.getMessage());
     }
     source.validate(new TypedProperties());

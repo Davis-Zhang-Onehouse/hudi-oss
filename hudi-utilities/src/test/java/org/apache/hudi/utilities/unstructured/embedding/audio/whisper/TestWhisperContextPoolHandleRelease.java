@@ -31,18 +31,20 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Every whisper context (a native model and its buffers) the pool opens is closed once the last transcriber of its model closes,
  * whatever the transcriptions did. The engines are test doubles: no native library is loaded.
  */
-public class TestWhisperContextPoolHandleRelease {
+class TestWhisperContextPoolHandleRelease {
 
   /** Engines that record their close; each may be told to fail its transcription or its close. */
   private static final class Engines implements WhisperEngine.Factory {
     final List<Engine> opened = new ArrayList<>();
     volatile RuntimeException transcribeFailure;
     volatile boolean closeFails;
+    volatile boolean closeErrors;
 
     @Override
     public synchronized WhisperEngine open(WhisperConfig config) {
@@ -80,6 +82,9 @@ public class TestWhisperContextPoolHandleRelease {
       @Override
       public void close() {
         closed = true;
+        if (closeErrors) {
+          throw new LinkageError("test: whisper context #" + number + " failed to free");
+        }
         if (closeFails) {
           throw new IllegalStateException("test: whisper context #" + number + " failed to free");
         }
@@ -91,7 +96,7 @@ public class TestWhisperContextPoolHandleRelease {
   private final WhisperContextPool pool = new WhisperContextPool(engines);
 
   @Test
-  public void transcriberCloseFreesTheContextItUsed() throws IOException {
+  void transcriberCloseFreesTheContextItUsed() throws IOException {
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       for (int i = 0; i < 3; i++) {
         drain(transcriber.transcribe(WhisperTestSegments.pcm(i, i * 2_000L, WhisperTestSegments.tone(1)), props()));
@@ -103,12 +108,13 @@ public class TestWhisperContextPoolHandleRelease {
   }
 
   @Test
-  public void failedTranscriptionReturnsTheContextAndCloseFreesIt() {
+  void failedTranscriptionReturnsTheContextAndCloseFreesIt() {
     RuntimeException failure = new IllegalStateException("test: full() failed");
     engines.transcribeFailure = failure;
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      assertEquals(failure, assertThrows(IllegalStateException.class,
-          () -> transcriber.transcribe(WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(1)), props())));
+      WhisperTestSegments.TestSegment segment = WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(1));
+      TypedProperties props = props();
+      assertEquals(failure, assertThrows(IllegalStateException.class, () -> transcriber.transcribe(segment, props)));
       assertEquals(1, pool.idle(WhisperConfig.from(props())), "the context went back to the pool");
     }
     assertEquals(Collections.emptyList(), engines.unclosed(), "unclosed contexts after a failed transcription");
@@ -116,7 +122,7 @@ public class TestWhisperContextPoolHandleRelease {
 
   /** A context released after its last transcriber closed (a transcription in flight at close) is freed at once. */
   @Test
-  public void contextReleasedAfterTheLastUnregisterIsFreed() {
+  void contextReleasedAfterTheLastUnregisterIsFreed() {
     WhisperConfig config = WhisperConfig.from(props());
     pool.register(config);
     WhisperEngine engine = pool.acquire(config);
@@ -128,7 +134,7 @@ public class TestWhisperContextPoolHandleRelease {
 
   /** Two idle contexts of one model: the first fails to free, the second must still be freed. */
   @Test
-  public void contextThatFailsToFreeDoesNotKeepTheOthersAlive() {
+  void contextThatFailsToFreeDoesNotKeepTheOthersAlive() {
     WhisperConfig config = WhisperConfig.from(props());
     pool.register(config);
     WhisperEngine first = pool.acquire(config);
@@ -143,6 +149,31 @@ public class TestWhisperContextPoolHandleRelease {
       // whether the free failure is thrown or logged is not under test; that every context is freed is
     }
     assertEquals(Collections.emptyList(), engines.unclosed(), "unclosed contexts after one failed to free");
+  }
+
+  /**
+   * Three idle contexts of one model, each failing to free with an {@link Error}: every context is still freed, and the first
+   * failure is rethrown with the others suppressed.
+   */
+  @Test
+  void contextsThatFailToFreeWithAnErrorAreAllFreedAndTheFirstErrorIsRethrown() {
+    WhisperConfig config = WhisperConfig.from(props());
+    pool.register(config);
+    List<WhisperEngine> acquired = new ArrayList<>();
+    for (int i = 0; i < 3; i++) {
+      acquired.add(pool.acquire(config));
+    }
+    for (WhisperEngine engine : acquired) {
+      pool.release(config, engine);
+    }
+    assertEquals(3, pool.idle(config));
+    engines.closeErrors = true;
+    LinkageError error = assertThrows(LinkageError.class, () -> pool.unregister(config));
+    assertEquals(Collections.emptyList(), engines.unclosed(), "unclosed contexts after an Error freeing one");
+    assertEquals(2, error.getSuppressed().length, "the other two failures are suppressed on the first");
+    for (Throwable suppressed : error.getSuppressed()) {
+      assertTrue(suppressed instanceof LinkageError, String.valueOf(suppressed));
+    }
   }
 
   private static TypedProperties props() {

@@ -44,6 +44,10 @@ public enum PdfFailureCode {
       return name();
     }
     Throwable root = ExceptionUtil.getRootCause(cause);
+    if (root == null) {
+      // getRootCause returns null only for a null failure, handled above
+      root = cause;
+    }
     String detail = name() + ": " + root.getClass().getName() + ": " + root.getMessage()
         + (root == cause ? "" : " (" + cause.getMessage() + ")");
     return ErrorText.truncate(detail, MAX_DETAIL_CHARS);

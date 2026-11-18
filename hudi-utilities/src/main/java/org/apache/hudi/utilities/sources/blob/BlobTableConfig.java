@@ -47,6 +47,8 @@ import java.util.stream.Collectors;
     description = "Configurations controlling how unstructured files are ingested into a Hudi blob table.")
 public class BlobTableConfig extends HoodieConfig {
 
+  private static final String SINCE_VERSION = "1.3.0";
+
   public static final String PREFIX = "hoodie.blob.table.";
 
   /**
@@ -67,7 +69,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "inline.max.bytes")
       .defaultValue(1024L * 1024L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Files with size <= this many bytes are stored inline in the blob column. Larger files are not copied: "
           + "they stay where they are and are referenced out of line (managed=false, external_path = the object's own URI as "
           + "listed, offset and length null: the whole current file). A later overwrite or delete of a referenced source "
@@ -122,7 +124,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "inline.max.heap.fraction")
       .defaultValue(1.0 / 64)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Fraction in (0, 1] of the per-task heap share up to which " + PREFIX + "inline.max.bytes may be set. "
           + "Per-task share = (executor heap - Spark's reserved system memory, 300 MiB outside tests) / task slots, task slots = "
           + "executor cores / spark.task.cpus; in local mode the executor heap is the driver JVM's maximum heap and the cores are "
@@ -141,7 +143,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "inline.ceiling.enforce")
       .defaultValue(true)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("When true (default), an " + PREFIX + "inline.max.bytes above the per-task inline ceiling ("
           + PREFIX + "inline.max.heap.fraction x the per-task heap share) fails the job before any file is read. When false, "
           + "it is only logged at WARN and the threshold is used as configured: the blob job's memory is then no longer "
@@ -154,7 +156,7 @@ public class BlobTableConfig extends HoodieConfig {
   public static final ConfigProperty<String> FILE_EXTENSIONS = ConfigProperty
       .key(PREFIX + "file.extensions")
       .defaultValue("pdf,png,jpg,jpeg,gif,bmp,tif,tiff,mp4,mov,avi,mkv,webm")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Comma-separated file extensions (without the dot) of the object keys to ingest: pdf, image and "
           + "video files by default. Matched case-sensitively against the end of the key, dot included: a key ending in "
           + ".JPG is not ingested. The list may only narrow the default: an empty list, or one naming any other extension, is "

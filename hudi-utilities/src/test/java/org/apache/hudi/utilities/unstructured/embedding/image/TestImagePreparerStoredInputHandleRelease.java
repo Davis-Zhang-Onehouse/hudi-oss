@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * over {@link BlobBytesSource#openSeekable}) and prepared by {@link ImagePreparer}; each of its two opens (plan, decode) is
  * closed, on the main path and when the image is refused, unreadable or its read fails.
  */
-public class TestImagePreparerStoredInputHandleRelease {
+class TestImagePreparerStoredInputHandleRelease {
 
   private static final String STORED = ".hoodie/.blob/p1/stored.bin";
 
@@ -57,19 +57,19 @@ public class TestImagePreparerStoredInputHandleRelease {
   private Path table;
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     HandleCountingFileSystem.reset();
     table = tempDir.resolve("embedding");
     Files.createDirectories(table.resolve(STORED).getParent());
   }
 
   @AfterEach
-  public void resetRegistry() {
+  void resetRegistry() {
     HandleCountingFileSystem.reset();
   }
 
   @Test
-  public void mainPathClosesThePlanAndDecodeStreams() throws IOException {
+  void mainPathClosesThePlanAndDecodeStreams() throws IOException {
     PreparedImage prepared = prepare(ImageFixtures.image("png", 50, 30), spec(ImagePreprocessingSpec.DEFAULT_MAX_PIXELS));
     assertTrue(prepared.getEncoded().length > 0);
     assertEquals(2, HandleCountingFileSystem.opened(), "one stream for the plan and one for the decode");
@@ -77,21 +77,21 @@ public class TestImagePreparerStoredInputHandleRelease {
   }
 
   @Test
-  public void refusedImageClosesThePlanStream() {
+  void refusedImageClosesThePlanStream() {
     assertThrows(ImageRefusedException.class, () -> prepare(ImageFixtures.image("png", 50, 30), spec(100)));
     assertEquals(1, HandleCountingFileSystem.opened());
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "stored-input streams left open by a refused image");
   }
 
   @Test
-  public void unreadableImageClosesItsStreams() {
+  void unreadableImageClosesItsStreams() {
     assertThrows(IOException.class, () -> prepare(ImageFixtures.headerCorrupt("png"), spec(ImagePreprocessingSpec.DEFAULT_MAX_PIXELS)));
     assertThrows(IOException.class, () -> prepare(ImageFixtures.garbage(), spec(ImagePreprocessingSpec.DEFAULT_MAX_PIXELS)));
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "stored-input streams left open by an unreadable image");
   }
 
   @Test
-  public void failedStoredReadClosesItsStream() throws IOException {
+  void failedStoredReadClosesItsStream() throws IOException {
     byte[] png = ImageFixtures.image("png", 50, 30);
     Files.write(table.resolve(STORED), png);
     HandleCountingFileSystem.inject(table.resolve(STORED), HandleCountingFileSystem.Fault.READ, 1000);

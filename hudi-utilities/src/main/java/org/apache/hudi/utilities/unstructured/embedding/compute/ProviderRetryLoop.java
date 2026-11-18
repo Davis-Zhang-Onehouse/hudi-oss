@@ -40,6 +40,7 @@ public final class ProviderRetryLoop {
   public static final String OUTAGE = "provider outage short-circuit";
   public static final String DEADLINE_EXCEEDED = "deadline exceeded";
   public static final String INTERRUPTED = "interrupted";
+  private static final String NOT_SENT = ": the request was not sent";
 
   /** Waits between attempts; injectable so tests advance a fake clock instead of sleeping. */
   @FunctionalInterface
@@ -66,14 +67,14 @@ public final class ProviderRetryLoop {
     private final T value;
     private final String error;
     private final long retryAfterMillis;
-    private final boolean interrupted;
+    private final boolean byInterrupt;
 
     private Answer(ProviderResponseKind kind, T value, String error, long retryAfterMillis, boolean interrupted) {
       this.kind = kind;
       this.value = value;
       this.error = error;
       this.retryAfterMillis = retryAfterMillis;
-      this.interrupted = interrupted;
+      this.byInterrupt = interrupted;
     }
 
     public static <T> Answer<T> ok(T value) {
@@ -103,7 +104,7 @@ public final class ProviderRetryLoop {
 
     /** The calling thread was interrupted: RETRYABLE, but not a provider failure. */
     public boolean isInterrupted() {
-      return interrupted;
+      return byInterrupt;
     }
   }
 
@@ -115,7 +116,7 @@ public final class ProviderRetryLoop {
   private final Random jitter;
   private int consecutiveFailures;
   private boolean outageOpen;
-  private boolean interrupted;
+  private boolean interruptedInCall;
   private long deadline;
   private long callStart;
   private int requests;
@@ -140,7 +141,7 @@ public final class ProviderRetryLoop {
     requests = 0;
     retries = 0;
     rateLimitWaitMillis = 0;
-    interrupted = false;
+    interruptedInCall = false;
   }
 
   /** The current call's counts. */
@@ -163,8 +164,8 @@ public final class ProviderRetryLoop {
   }
 
   /** Set once the calling thread was interrupted in this call: nothing more is sent. */
-  public boolean interrupted() {
-    return interrupted;
+  public boolean wasInterrupted() {
+    return interruptedInCall;
   }
 
   /** The non-negative time left for this call, including permit waiting. */
@@ -181,14 +182,14 @@ public final class ProviderRetryLoop {
    * or null when it may be sent.
    */
   public String notSentReason() {
-    if (interrupted) {
-      return INTERRUPTED + ": the request was not sent";
+    if (interruptedInCall) {
+      return INTERRUPTED + NOT_SENT;
     }
     if (outageOpen) {
-      return OUTAGE + ": the request was not sent";
+      return OUTAGE + NOT_SENT;
     }
     if (pastDeadline()) {
-      return DEADLINE_EXCEEDED + ": the request was not sent";
+      return DEADLINE_EXCEEDED + NOT_SENT;
     }
     return null;
   }
@@ -212,7 +213,7 @@ public final class ProviderRetryLoop {
         LOG.warn("EMBED-PROVIDER-OUTAGE {}: {} consecutive requests failed; later requests are not sent", name, consecutiveFailures);
       }
     } else if (answer.isInterrupted()) {
-      interrupted = true;
+      interruptedInCall = true;
     }
     return answer;
   }
@@ -220,22 +221,9 @@ public final class ProviderRetryLoop {
   private <T> Answer<T> attempts(Preparation preparation, Sender<T> sender) {
     String lastError = null;
     for (int attempt = 1; attempt <= settings.retryMaxAttempts(); attempt++) {
-      String notSent = notSentReason();
-      if (notSent != null) {
-        return Answer.failed(ProviderResponseKind.RETRYABLE, notSent, -1);
-      }
-      try {
-        rateLimitWaitMillis += rateLimiter.acquire(remainingMillis());
-        if (!pastDeadline()) {
-          preparation.prepare();
-        }
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return Answer.interrupted(lastError == null ? INTERRUPTED : lastError + " (" + INTERRUPTED + ")");
-      }
-      if (pastDeadline()) {
-        String notSentMessage = DEADLINE_EXCEEDED + ": the request was not sent";
-        return Answer.failed(ProviderResponseKind.RETRYABLE, lastError == null ? notSentMessage : lastError + " (" + notSentMessage + ")", -1);
+      Answer<T> stop = beforeSend(preparation, lastError);
+      if (stop != null) {
+        return stop;
       }
       if (attempt > 1) {
         retries++;
@@ -252,33 +240,69 @@ public final class ProviderRetryLoop {
         return answer;
       }
       lastError = answer.error();
-      if (attempt == settings.retryMaxAttempts()) {
-        return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (after " + attempt + " attempts)", -1);
-      }
-      long hint = answer.retryAfterMillis;
-      if (hint > settings.maxBackoffMs()) {
-        return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (provider asks to wait " + hint + " ms, over the "
-            + settings.maxBackoffMs() + " ms max backoff)", -1);
-      }
-      long wait = hint >= 0 ? hint : backoff(attempt);
-      if (clock.getAsLong() + wait >= deadline) {
-        return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (" + DEADLINE_EXCEEDED + " before the next attempt)",
-            -1);
-      }
-      LOG.debug("EMBED-PROVIDER-RETRY {} attempt={} waitMs={}: {}", name, attempt, wait, lastError);
-      try {
-        sleeper.sleep(wait);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return Answer.interrupted(lastError + " (" + INTERRUPTED + ")");
+      stop = retryOrStop(attempt, answer.retryAfterMillis, lastError);
+      if (stop != null) {
+        return stop;
       }
     }
     return Answer.failed(ProviderResponseKind.RETRYABLE, lastError, -1);
   }
 
+  /**
+   * Before a request: nothing is sent once the call is stopped; else waits for the rate limit and prepares the request.
+   * Returns the answer that ends the call (not sent, interrupted, or past the deadline), or null to send.
+   */
+  private <T> Answer<T> beforeSend(Preparation preparation, String lastError) {
+    String notSent = notSentReason();
+    if (notSent != null) {
+      return Answer.failed(ProviderResponseKind.RETRYABLE, notSent, -1);
+    }
+    try {
+      rateLimitWaitMillis += rateLimiter.acquire(remainingMillis());
+      if (!pastDeadline()) {
+        preparation.prepare();
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return Answer.interrupted(lastError == null ? INTERRUPTED : lastError + " (" + INTERRUPTED + ")");
+    }
+    if (pastDeadline()) {
+      String notSentMessage = DEADLINE_EXCEEDED + NOT_SENT;
+      return Answer.failed(ProviderResponseKind.RETRYABLE, lastError == null ? notSentMessage : lastError + " (" + notSentMessage + ")", -1);
+    }
+    return null;
+  }
+
+  /**
+   * After a RETRYABLE answer of attempt {@code attempt}: the answer that ends the call (attempts exhausted, a provider hint
+   * over the max backoff, the deadline before the next attempt, or an interrupt while waiting), or null after the wait.
+   */
+  private <T> Answer<T> retryOrStop(int attempt, long hint, String lastError) {
+    if (attempt == settings.retryMaxAttempts()) {
+      return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (after " + attempt + " attempts)", -1);
+    }
+    if (hint > settings.maxBackoffMs()) {
+      return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (provider asks to wait " + hint + " ms, over the "
+          + settings.maxBackoffMs() + " ms max backoff)", -1);
+    }
+    long wait = hint >= 0 ? hint : backoff(attempt);
+    if (clock.getAsLong() + wait >= deadline) {
+      return Answer.failed(ProviderResponseKind.RETRYABLE, lastError + " (" + DEADLINE_EXCEEDED + " before the next attempt)",
+          -1);
+    }
+    LOG.debug("EMBED-PROVIDER-RETRY {} attempt={} waitMs={}: {}", name, attempt, wait, lastError);
+    try {
+      sleeper.sleep(wait);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return Answer.interrupted(lastError + " (" + INTERRUPTED + ")");
+    }
+    return null;
+  }
+
   /** Full jitter: uniform in [0, min(max, initial * 2^(attempt-1))]. */
   private long backoff(int attempt) {
-    long ceiling = (long) Math.min(settings.maxBackoffMs(), settings.initialBackoffMs() * Math.pow(2, attempt - 1));
-    return (long) (jitter.nextDouble() * (ceiling + 1));
+    long ceiling = (long) Math.min(settings.maxBackoffMs(), settings.initialBackoffMs() * Math.pow(2, attempt - 1.0));
+    return Math.floorMod(jitter.nextLong(), ceiling + 1);
   }
 }

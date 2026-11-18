@@ -95,16 +95,28 @@ final class SourceObjectOpener {
       // the same wrapping HoodieStorage#openSeekable applies, so a failure reads as it did before
       throw new HoodieIOException(String.format("Exception creating input stream from file: %s", path), e);
     }
-    if (readaheadBytes > 0) {
-      setReadahead(in, readaheadBytes);
+    try {
+      if (readaheadBytes > 0) {
+        setReadahead(in, readaheadBytes);
+      }
+      return new HadoopSeekableDataInputStream(in);
+    } catch (RuntimeException | Error failure) {
+      try {
+        in.close();
+      } catch (IOException | RuntimeException | Error closeFailure) {
+        if (closeFailure != failure) {
+          failure.addSuppressed(closeFailure);
+        }
+      }
+      throw failure;
     }
-    return new HadoopSeekableDataInputStream(in);
   }
 
   private static void setReadahead(FSDataInputStream in, long readaheadBytes) {
     try {
       in.setReadahead(readaheadBytes);
     } catch (IOException | RuntimeException e) {
+      SourceFailures.rethrowJvmFailure(e);
       // a stream without read-ahead (a local file: UnsupportedOperationException) reads as it always has
       LOG.debug("Stream does not take a read-ahead of {} bytes", readaheadBytes, e);
     }
@@ -151,14 +163,33 @@ final class SourceObjectOpener {
 
   /** An S3AFileStatus of the object: its length and path, no etag or version (S3A then takes them from the first GET). */
   private static FileStatus s3aStatus(FileSystem fs, Path path, long length) {
+    return s3aStatus(fs.getClass().getClassLoader(), S3A_FILE_STATUS, fs, path, length);
+  }
+
+  /**
+   * {@link #s3aStatus(FileSystem, Path, long)} with the status class named and loaded explicitly: a class or constructor that is
+   * absent is an optional API missing (null, the caller falls back); a JVM failure while constructing or initializing it is not.
+   */
+  static FileStatus s3aStatus(ClassLoader loader, String statusClassName, FileSystem fs, Path path, long length) {
+    Constructor<?> constructor;
     try {
-      Class<?> statusClass = Class.forName(S3A_FILE_STATUS, true, fs.getClass().getClassLoader());
-      Constructor<?> constructor = statusClass.getConstructor(long.class, long.class, Path.class, long.class, String.class,
+      Class<?> statusClass = Class.forName(statusClassName, false, loader);
+      constructor = statusClass.getConstructor(long.class, long.class, Path.class, long.class, String.class,
           String.class, String.class);
+    } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+      if (!(e instanceof LinkageError)) {
+        SourceFailures.rethrowJvmFailure(e);
+      }
+      LOG.debug("No S3AFileStatus for {}; opening it with a status request", path, e);
+      return null;
+    }
+    try {
+      // Initialize only during invocation: a constructor or initializer failure is not an absent optional API.
       Path qualified = fs.makeQualified(path);
       return (FileStatus) constructor.newInstance(length, 0L, qualified, fs.getDefaultBlockSize(qualified), null, null, null);
     } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
-      LOG.debug("No S3AFileStatus for {}; opening it with a status request", path, e);
+      SourceFailures.rethrowJvmFailure(e);
+      LOG.debug("Cannot construct S3AFileStatus for {}; opening it with a status request", path, e);
       return null;
     }
   }
@@ -184,6 +215,9 @@ final class SourceObjectOpener {
         return new OpenFileApi(openFile, builder.getMethod("withFileStatus", FileStatus.class),
             builder.getMethod("opt", String.class, String.class), builder.getMethod("build"));
       } catch (NoSuchMethodException | RuntimeException | LinkageError e) {
+        if (!(e instanceof LinkageError)) {
+          SourceFailures.rethrowJvmFailure(e);
+        }
         return new OpenFileApi(null, null, null, null);
       }
     }
@@ -201,6 +235,7 @@ final class SourceObjectOpener {
         builder = opt.invoke(builder, "fs.option.openfile.buffer.size", Integer.toString(bufferSize));
         future = build.invoke(builder);
       } catch (InvocationTargetException e) {
+        SourceFailures.rethrowJvmFailure(e);
         Throwable cause = e.getCause();
         if (cause instanceof IOException) {
           throw (IOException) cause;
@@ -209,6 +244,7 @@ final class SourceObjectOpener {
         warnOnce("openFile refused the file status (" + cause + ")");
         return null;
       } catch (IllegalAccessException | RuntimeException e) {
+        SourceFailures.rethrowJvmFailure(e);
         warnOnce("openFile is not callable (" + e + ")");
         return null;
       }
@@ -238,29 +274,35 @@ final class SourceObjectOpener {
         interrupted.initCause(e);
         throw interrupted;
       } catch (ExecutionException e) {
-        Throwable cause = e.getCause();
-        while ((cause instanceof CompletionException || cause instanceof ExecutionException)
-            && cause.getCause() != null) {
-          cause = cause.getCause();
-        }
-        if (cause instanceof UncheckedIOException) {
-          throw ((UncheckedIOException) cause).getCause();
-        }
-        if (cause instanceof IOException) {
-          throw (IOException) cause;
-        }
-        if (cause instanceof IllegalArgumentException) {
-          warnOnce("openFile refused the file status of " + path + " (" + cause + ")");
-          return null;
-        }
-        if (cause instanceof RuntimeException) {
-          throw (RuntimeException) cause;
-        }
-        if (cause instanceof Error) {
-          throw (Error) cause;
-        }
-        throw new IOException(cause);
+        return openFailure(e, path);
       }
+    }
+
+    /** Unwraps a failed open: rethrows its cause, or returns null (after a warning) for an IllegalArgumentException. */
+    private static FSDataInputStream openFailure(ExecutionException e, Path path) throws IOException {
+      SourceFailures.rethrowJvmFailure(e);
+      Throwable cause = e.getCause();
+      while ((cause instanceof CompletionException || cause instanceof ExecutionException)
+          && cause.getCause() != null) {
+        cause = cause.getCause();
+      }
+      if (cause instanceof UncheckedIOException) {
+        throw ((UncheckedIOException) cause).getCause();
+      }
+      if (cause instanceof IOException) {
+        throw (IOException) cause;
+      }
+      if (cause instanceof IllegalArgumentException) {
+        warnOnce("openFile refused the file status of " + path + " (" + cause + ")");
+        return null;
+      }
+      if (cause instanceof RuntimeException) {
+        throw (RuntimeException) cause;
+      }
+      if (cause instanceof Error) {
+        throw (Error) cause;
+      }
+      throw new IOException(cause);
     }
   }
 }

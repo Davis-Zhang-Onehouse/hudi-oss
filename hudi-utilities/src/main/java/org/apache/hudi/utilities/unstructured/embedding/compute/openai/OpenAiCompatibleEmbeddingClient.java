@@ -46,6 +46,7 @@ import org.slf4j.LoggerFactory;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -55,8 +56,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 /**
  * An {@link EmbeddingClient} for the endpoints that speak the OpenAI embeddings wire format
@@ -104,6 +105,7 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
   static final String BISECT_BUDGET_EXHAUSTED = "bisection budget exhausted";
   static final String INTERRUPTED = "interrupted";
   static final String REQUEST_REJECTED = "request rejected as a whole";
+  private static final String NOT_SENT = ": the request was not sent";
   private static final int INITIAL_VECTOR_CAPACITY = 1024;
   private static final String MODEL_KEY_PREFIX = EmbeddingTableConfig.MODEL_PREFIX;
   private static final String DIMENSIONS_KEY_SUFFIX = EmbeddingTableConfig.MODEL_DIMENSIONS_SUFFIX;
@@ -117,7 +119,7 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
   private final LongSupplier clock;
   private final Sleeper sleeper;
   private final Random jitter;
-  private final Function<String, String> environment;
+  private final UnaryOperator<String> environment;
 
   private EmbeddingModelSpec spec;
   private OpenAiClientConfig config;
@@ -133,11 +135,11 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
 
   /** Production wiring: the JDK HTTP client, the system clock, real sleeps, the process environment. */
   public OpenAiCompatibleEmbeddingClient() {
-    this(new JdkHttpTransport(), System::currentTimeMillis, Thread::sleep, new Random(), System::getenv);
+    this(new JdkHttpTransport(), System::currentTimeMillis, Thread::sleep, new SecureRandom(), System::getenv);
   }
 
   OpenAiCompatibleEmbeddingClient(HttpTransport transport, LongSupplier clock, Sleeper sleeper, Random jitter,
-                                  Function<String, String> environment) {
+                                  UnaryOperator<String> environment) {
     this.transport = transport;
     this.clock = clock;
     this.sleeper = sleeper;
@@ -183,7 +185,6 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
     lastCallStats = EmbeddingCallStats.NONE;
     checkUniqueIds(inputs);
     if (outageOpen) {
-      lastCallStats = EmbeddingCallStats.NONE;
       throw new EmbeddingProviderUnavailableException(OUTAGE + " is open for model " + spec.getName() + " ("
           + config.provider().id() + " " + config.endpoint() + ") after " + consecutiveFailures
           + " consecutive failed requests; the remaining rows of this task are left for a later run");
@@ -191,6 +192,33 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
     Call call = new Call(inputs, clock.getAsLong() + config.deadlineMs());
     List<Integer> sendable = new ArrayList<>(inputs.size());
     List<Integer> tokenCounts = new ArrayList<>(inputs.size());
+    route(inputs, call, sendable, tokenCounts);
+    int[] counts = tokenCounts.stream().mapToInt(Integer::intValue).toArray();
+    try {
+      for (int[] range : RequestPlanner.plan(counts, maxInputs, maxTokens)) {
+        List<Integer> request = sendable.subList(range[0], range[1]);
+        if (call.interrupted) {
+          call.fill(request, EmbeddingResult.retryable(INTERRUPTED + NOT_SENT));
+        } else if (outageOpen) {
+          call.fill(request, EmbeddingResult.retryable(OUTAGE + NOT_SENT));
+        } else if (call.pastDeadline()) {
+          call.fill(request, EmbeddingResult.retryable(DEADLINE_EXCEEDED + NOT_SENT));
+        } else {
+          sendAndResolve(call, request);
+        }
+      }
+    } finally {
+      // also when a config failure is thrown: the stats then describe the requests that led to it
+      lastCallStats = call.stats();
+    }
+    return Arrays.asList(call.results);
+  }
+
+  /**
+   * Sorts the inputs of a call into the sendable ones (with their token counts); a non-text, empty or over-long input gets its
+   * PERMANENT result here.
+   */
+  private void route(List<EmbeddingInput> inputs, Call call, List<Integer> sendable, List<Integer> tokenCounts) {
     for (int i = 0; i < inputs.size(); i++) {
       EmbeddingInput input = inputs.get(i);
       String text = input.getText();
@@ -211,25 +239,6 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
         }
       }
     }
-    int[] counts = tokenCounts.stream().mapToInt(Integer::intValue).toArray();
-    try {
-      for (int[] range : RequestPlanner.plan(counts, maxInputs, maxTokens)) {
-        List<Integer> request = sendable.subList(range[0], range[1]);
-        if (call.interrupted) {
-          call.fill(request, EmbeddingResult.retryable(INTERRUPTED + ": the request was not sent"));
-        } else if (outageOpen) {
-          call.fill(request, EmbeddingResult.retryable(OUTAGE + ": the request was not sent"));
-        } else if (call.pastDeadline()) {
-          call.fill(request, EmbeddingResult.retryable(DEADLINE_EXCEEDED + ": the request was not sent"));
-        } else {
-          sendAndResolve(call, request);
-        }
-      }
-    } finally {
-      // also when a config failure is thrown: the stats then describe the requests that led to it
-      lastCallStats = call.stats();
-    }
-    return Arrays.asList(call.results);
   }
 
   /** Sends {@code request} and settles its inputs, bisecting when the provider rejects one of them. */
@@ -322,7 +331,9 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
       }
     }
     call.results[index] = EmbeddingResult.permanent(error);
-    LOG.warn("EMBED-OPENAI-INPUT-REJECTED model={} {}: {}", spec.getName(), call.inputs.get(index).describeIdentity(), error);
+    if (LOG.isWarnEnabled()) {
+      LOG.warn("EMBED-OPENAI-INPUT-REJECTED model={} {}: {}", spec.getName(), call.inputs.get(index).describeIdentity(), error);
+    }
   }
 
   private void bisect(Call call, List<Integer> request, String parentError) {
@@ -333,9 +344,9 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
         continue;
       }
       if (call.interrupted) {
-        call.fill(half, EmbeddingResult.retryable(INTERRUPTED + ": the request was not sent"));
+        call.fill(half, EmbeddingResult.retryable(INTERRUPTED + NOT_SENT));
       } else if (outageOpen) {
-        call.fill(half, EmbeddingResult.retryable(OUTAGE + ": the request was not sent"));
+        call.fill(half, EmbeddingResult.retryable(OUTAGE + NOT_SENT));
       } else if (call.bisectRequests >= config.bisectMaxRequests()) {
         call.fill(half, EmbeddingResult.retryable(BISECT_BUDGET_EXHAUSTED + " (" + config.bisectMaxRequests()
             + " requests) isolating: " + parentError));
@@ -377,77 +388,143 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
     String url = config.endpoint() + "/embeddings";
     String lastError = null;
     for (int attempt = 1; attempt <= config.retryMaxAttempts(); attempt++) {
-      if (call.pastDeadline()) {
-        return attempt == 1 ? Outcome.notSent(DEADLINE_EXCEEDED + ": the request was not sent")
-            : Outcome.failed(ProviderResponseKind.RETRYABLE, lastError + " (" + DEADLINE_EXCEEDED + " before the next attempt)");
-      }
-      try {
-        // the one send point: every attempt of every request, bisection's included, takes a token first
-        call.rateLimitWaitMillis += rateLimiter.acquire(Math.max(0L, call.deadline - clock.getAsLong()));
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return Outcome.interrupted(lastError == null ? INTERRUPTED : lastError + " (" + INTERRUPTED + ")");
-      }
-      if (call.pastDeadline()) {
-        return attempt == 1 ? Outcome.notSent(DEADLINE_EXCEEDED + ": the request was not sent")
-            : Outcome.failed(ProviderResponseKind.RETRYABLE, lastError + " (" + DEADLINE_EXCEEDED + " before the next attempt)");
+      Outcome notSent = awaitSendSlot(call, attempt, lastError);
+      if (notSent != null) {
+        return notSent;
       }
       if (attempt > 1) {
         call.retries++;
       }
       call.requests++;
-      HttpReply reply = null;
-      ProviderResponseKind kind;
-      try {
-        reply = post(url, headers, body);
-        ErrorBody error = reply.status() / 100 == 2 ? null : ErrorBody.parse(reply.body(), this::redact);
-        kind = ErrorClassifier.classify(config.provider(), reply.status(), error == null ? ErrorBody.parse(null) : error);
-        if (kind == ProviderResponseKind.OK) {
-          try {
-            Parsed parsed = parse(reply.body(), request.size());
-            call.addPromptTokens(parsed.promptTokens);
-            return Outcome.ok(parsed.vectors);
-          } catch (IOException e) {
-            kind = ProviderResponseKind.RETRYABLE;
-            lastError = "malformed response: " + redact(e.getMessage());
-          }
-        } else {
-          lastError = "HTTP " + reply.status() + (isAuthFailure(reply.status()) ? describeAuth(error) : describe(error));
-        }
-      } catch (IOException e) {
-        kind = ProviderResponseKind.RETRYABLE;
-        lastError = e.getClass().getSimpleName() + ": " + redact(e.getMessage());
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return Outcome.interrupted(INTERRUPTED);
-      } catch (UnsendableRequestException e) {
-        return Outcome.failed(ProviderResponseKind.CONFIG, e.getMessage());
+      Attempt result = sendOnce(call, request, url, headers, body);
+      if (result.outcome != null) {
+        return result.outcome;
       }
-      if (kind != ProviderResponseKind.RETRYABLE) {
-        return Outcome.failed(kind, lastError);
-      }
-      if (attempt == config.retryMaxAttempts()) {
-        return Outcome.failed(kind, lastError + " (after " + attempt + " attempts)");
-      }
-      long hint = reply == null ? -1
-          : RetryAfter.hintMillis(reply.header("retry-after-ms"), reply.header("Retry-After"), clock.getAsLong());
-      if (hint > config.maxBackoffMs()) {
-        return Outcome.failed(kind, lastError + " (provider asks to wait " + hint + " ms, over the "
-            + config.maxBackoffMs() + " ms max backoff)");
-      }
-      long wait = hint >= 0 ? hint : backoff(attempt);
-      if (clock.getAsLong() + wait >= call.deadline) {
-        return Outcome.failed(kind, lastError + " (" + DEADLINE_EXCEEDED + " before the next attempt)");
-      }
-      LOG.debug("EMBED-OPENAI-RETRY model={} attempt={} waitMs={}: {}", spec.getName(), attempt, wait, lastError);
-      try {
-        sleeper.sleep(wait);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return Outcome.interrupted(lastError + " (" + INTERRUPTED + ")");
+      lastError = result.error;
+      Outcome stop = retryOrStop(call, attempt, result);
+      if (stop != null) {
+        return stop;
       }
     }
     return Outcome.failed(ProviderResponseKind.RETRYABLE, lastError);
+  }
+
+  /**
+   * The deadline checks around taking a rate-limit token for one attempt.
+   *
+   * @return the outcome when the attempt must not be sent; null when it may be sent
+   */
+  private Outcome awaitSendSlot(Call call, int attempt, String lastError) {
+    if (call.pastDeadline()) {
+      return deadlineBeforeSend(attempt, lastError);
+    }
+    try {
+      // the one send point: every attempt of every request, bisection's included, takes a token first
+      call.rateLimitWaitMillis += rateLimiter.acquire(Math.max(0L, call.deadline - clock.getAsLong()));
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return Outcome.interrupted(lastError == null ? INTERRUPTED : lastError + " (" + INTERRUPTED + ")");
+    }
+    if (call.pastDeadline()) {
+      return deadlineBeforeSend(attempt, lastError);
+    }
+    return null;
+  }
+
+  /** The deadline passed before an attempt: not sent at all on the first attempt, a retryable failure after. */
+  private static Outcome deadlineBeforeSend(int attempt, String lastError) {
+    return attempt == 1 ? Outcome.notSent(DEADLINE_EXCEEDED + NOT_SENT)
+        : Outcome.failed(ProviderResponseKind.RETRYABLE, lastError + " (" + DEADLINE_EXCEEDED + " before the next attempt)");
+  }
+
+  /** One attempt of one request: the final outcome, or the failure that may be retried. */
+  private Attempt sendOnce(Call call, List<Integer> request, String url, Map<String, String> headers, byte[] body) {
+    try {
+      return classifyReply(call, request, post(url, headers, body));
+    } catch (IOException e) {
+      return Attempt.failure(ProviderResponseKind.RETRYABLE, e.getClass().getSimpleName() + ": " + redact(e.getMessage()),
+          null);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return Attempt.done(Outcome.interrupted(INTERRUPTED));
+    } catch (UnsendableRequestException e) {
+      return Attempt.done(Outcome.failed(ProviderResponseKind.CONFIG, e.getMessage()));
+    }
+  }
+
+  /** The vectors of a 2xx reply, or the classified failure of any reply. */
+  private Attempt classifyReply(Call call, List<Integer> request, HttpReply reply) {
+    ErrorBody error = reply.status() / 100 == 2 ? null : ErrorBody.parse(reply.body(), this::redact);
+    ProviderResponseKind kind = ErrorClassifier.classify(config.provider(), reply.status(),
+        error == null ? ErrorBody.parse(null) : error);
+    if (kind != ProviderResponseKind.OK) {
+      return Attempt.failure(kind, "HTTP " + reply.status() + (isAuthFailure(reply.status()) ? describeAuth(error)
+          : describe(error)), reply);
+    }
+    try {
+      Parsed parsed = parse(reply.body(), request.size());
+      call.addPromptTokens(parsed.promptTokens);
+      return Attempt.done(Outcome.ok(parsed.vectors));
+    } catch (IOException e) {
+      return Attempt.failure(ProviderResponseKind.RETRYABLE, "malformed response: " + redact(e.getMessage()), reply);
+    }
+  }
+
+  /**
+   * After a failed attempt: the final outcome when it is not retried (not retryable, attempts or deadline used up,
+   * backoff over the limit, interrupted while waiting); null after waiting for the next attempt.
+   */
+  private Outcome retryOrStop(Call call, int attempt, Attempt failure) {
+    ProviderResponseKind kind = failure.kind;
+    String lastError = failure.error;
+    if (kind != ProviderResponseKind.RETRYABLE) {
+      return Outcome.failed(kind, lastError);
+    }
+    if (attempt == config.retryMaxAttempts()) {
+      return Outcome.failed(kind, lastError + " (after " + attempt + " attempts)");
+    }
+    HttpReply reply = failure.reply;
+    long hint = reply == null ? -1
+        : RetryAfter.hintMillis(reply.header("retry-after-ms"), reply.header("Retry-After"), clock.getAsLong());
+    if (hint > config.maxBackoffMs()) {
+      return Outcome.failed(kind, lastError + " (provider asks to wait " + hint + " ms, over the "
+          + config.maxBackoffMs() + " ms max backoff)");
+    }
+    long wait = hint >= 0 ? hint : backoff(attempt);
+    if (clock.getAsLong() + wait >= call.deadline) {
+      return Outcome.failed(kind, lastError + " (" + DEADLINE_EXCEEDED + " before the next attempt)");
+    }
+    LOG.debug("EMBED-OPENAI-RETRY model={} attempt={} waitMs={}: {}", spec.getName(), attempt, wait, lastError);
+    try {
+      sleeper.sleep(wait);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return Outcome.interrupted(lastError + " (" + INTERRUPTED + ")");
+    }
+    return null;
+  }
+
+  /** One attempt: a final outcome, or a failure with its kind, error and reply (null when nothing was received). */
+  private static final class Attempt {
+    private final Outcome outcome;
+    private final ProviderResponseKind kind;
+    private final String error;
+    private final HttpReply reply;
+
+    private Attempt(Outcome outcome, ProviderResponseKind kind, String error, HttpReply reply) {
+      this.outcome = outcome;
+      this.kind = kind;
+      this.error = error;
+      this.reply = reply;
+    }
+
+    private static Attempt done(Outcome outcome) {
+      return new Attempt(outcome, null, null, null);
+    }
+
+    private static Attempt failure(ProviderResponseKind kind, String error, HttpReply reply) {
+      return new Attempt(null, kind, error, reply);
+    }
   }
 
   /**
@@ -479,8 +556,8 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
 
   /** Full jitter: uniform in [0, min(max, initial * 2^(attempt-1))]. */
   private long backoff(int attempt) {
-    long ceiling = (long) Math.min(config.maxBackoffMs(), config.initialBackoffMs() * Math.pow(2, attempt - 1));
-    return (long) (jitter.nextDouble() * (ceiling + 1));
+    long ceiling = (long) Math.min(config.maxBackoffMs(), config.initialBackoffMs() * Math.pow(2, attempt - 1.0));
+    return Math.floorMod(jitter.nextLong(), ceiling + 1);
   }
 
   private String describe(ErrorBody error) {
@@ -600,23 +677,32 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
             readEntry(json, vectors);
           }
         } else if ("usage".equals(field) && value == JsonToken.START_OBJECT) {
-          while (json.nextToken() == JsonToken.FIELD_NAME) {
-            String usageField = json.getCurrentName();
-            json.nextToken();
-            if ("prompt_tokens".equals(usageField) && json.currentToken() == JsonToken.VALUE_NUMBER_INT
-                && json.getNumberType() != JsonParser.NumberType.BIG_INTEGER) {
-              // usage is optional metadata: anything but an integer leaves it unreported (-1), never fails the vectors
-              promptTokens = json.getLongValue();
-            } else {
-              json.skipChildren();
-            }
-          }
+          promptTokens = readPromptTokens(json, promptTokens);
         } else {
           json.skipChildren();
         }
       }
     }
     return new Parsed(vectors, promptTokens);
+  }
+
+  /**
+   * Reads a {@code usage} object: its {@code prompt_tokens}, or {@code promptTokens} as it was when there is none. Usage is
+   * optional metadata: anything but an integer leaves it unreported, never fails the vectors.
+   */
+  private static long readPromptTokens(JsonParser json, long promptTokens) throws IOException {
+    long tokens = promptTokens;
+    while (json.nextToken() == JsonToken.FIELD_NAME) {
+      String usageField = json.getCurrentName();
+      json.nextToken();
+      if ("prompt_tokens".equals(usageField) && json.currentToken() == JsonToken.VALUE_NUMBER_INT
+          && json.getNumberType() != JsonParser.NumberType.BIG_INTEGER) {
+        tokens = json.getLongValue();
+      } else {
+        json.skipChildren();
+      }
+    }
+    return tokens;
   }
 
   private static void readEntry(JsonParser json, float[][] vectors) throws IOException {

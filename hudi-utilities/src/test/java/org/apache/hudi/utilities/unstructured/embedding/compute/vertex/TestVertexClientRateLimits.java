@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The request rate limit at the send point of {@link VertexMultimodalEmbeddingClient} (one request per input), against
  * {@link VertexStubServer} recording each arrival on the test's fake clock; a sleep only advances that clock.
  */
-public class TestVertexClientRateLimits {
+class TestVertexClientRateLimits {
 
   private static final String ALIAS = "mm";
   private static final int DIM = 128;
@@ -63,7 +63,7 @@ public class TestVertexClientRateLimits {
   private final List<Long> sleeps = new ArrayList<>();
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     stub = new VertexStubServer();
     stub.recordArrivalsOn(now::get);
     Path tokenFile = tempDir.resolve("token");
@@ -74,13 +74,13 @@ public class TestVertexClientRateLimits {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     stub.close();
   }
 
   /** On the Vertex send point: at 4 requests/s (burst 2) no half-open 1 s window holds more than 5 requests. */
   @Test
-  public void testVertexRateIsRespected() throws Exception {
+  void testVertexRateIsRespected() throws Exception {
     props.setProperty(key(RequestRateLimiter.RATE_LIMIT_REQUESTS_PER_SECOND_SUFFIX), "4");
     props.setProperty(key(RequestRateLimiter.RATE_LIMIT_BURST_SUFFIX), "2");
     VertexMultimodalEmbeddingClient client = client();
@@ -100,7 +100,7 @@ public class TestVertexClientRateLimits {
 
   /** On the Vertex send point: no key, no wait, no sleep; the call's requests are reported. */
   @Test
-  public void testVertexNoSettingDoesNotPace() throws Exception {
+  void testVertexNoSettingDoesNotPace() throws Exception {
     VertexMultimodalEmbeddingClient client = client();
     client.embed(texts(6));
     assertEquals(Collections.singletonList(2_000_000L), distinct(stub.arrivals()));
@@ -111,10 +111,11 @@ public class TestVertexClientRateLimits {
 
   /** On the Vertex send point: a bad rate fails {@code init} with the key named, before any request. */
   @Test
-  public void testVertexBadRateFailsInit() {
+  void testVertexBadRateFailsInit() {
     props.setProperty(key(RequestRateLimiter.RATE_LIMIT_REQUESTS_PER_SECOND_SUFFIX), "-1");
     VertexMultimodalEmbeddingClient client = new VertexMultimodalEmbeddingClient(now::get, sleeps::add);
-    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class, () -> client.init(spec(), props));
+    EmbeddingModelSpec model = spec();
+    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class, () -> client.init(model, props));
     assertTrue(thrown.getMessage().contains(key(RequestRateLimiter.RATE_LIMIT_REQUESTS_PER_SECOND_SUFFIX)), thrown.getMessage());
     assertEquals(0, stub.requests().size());
   }
@@ -130,7 +131,7 @@ public class TestVertexClientRateLimits {
 
   private static int maxInAnyWindow(List<Long> times) {
     List<Long> sorted = new ArrayList<>(times);
-    Collections.sort(sorted);
+    sorted.sort(null);
     int max = 0;
     int start = 0;
     for (int end = 0; end < sorted.size(); end++) {

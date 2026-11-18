@@ -19,6 +19,7 @@
 package org.apache.hudi.utilities.unstructured.embedding.prep;
 
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.common.util.Option;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
 
@@ -38,7 +39,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -64,7 +64,7 @@ class TestSourcePrefetcherLifecycle {
       @SuppressWarnings("unchecked")
       Future<byte[]> original = (Future<byte[]>) field.get(prefetch);
       field.set(prefetch, new WaitingFuture(original, waiting));
-      Future<byte[]> taken = consumer.submit(() -> {
+      Future<Option<byte[]>> taken = consumer.submit(() -> {
         try {
           return prefetch.take(row);
         } finally {
@@ -74,7 +74,7 @@ class TestSourcePrefetcherLifecycle {
       assertTrue(waiting.await(5, TimeUnit.SECONDS));
       prefetch.close();
       assertTrue(returned.await(2, TimeUnit.SECONDS), "close releases the consumer without waiting for the backend read");
-      assertNull(taken.get(5, TimeUnit.SECONDS));
+      assertTrue(taken.get(5, TimeUnit.SECONDS).isEmpty());
       assertEquals(0, input.closes.get(), "the backend worker still owns its uncompleted stream");
     } finally {
       input.release.countDown();
@@ -93,7 +93,7 @@ class TestSourcePrefetcherLifecycle {
     Row row = row();
     try (SourcePrefetcher prefetch = new SourcePrefetcher(source(input), 1024)) {
       prefetch.start(row, 1, 1024);
-      assertArrayEquals(new byte[] {7}, prefetch.take(row));
+      assertArrayEquals(new byte[] {7}, prefetch.take(row).get());
     }
     assertEquals(1, input.closes.get());
   }

@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.IllformedLocaleException;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.CHUNK_MAX_TOKENS;
 import static org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig.CHUNK_MAX_WORDS;
@@ -153,13 +154,13 @@ public final class PdfChunkerConfig {
 
   /** Holds the config, built once per (props, tokenizer) identity. */
   public static final class Cache {
-    private volatile Entry entry;
+    private final AtomicReference<Entry> entry = new AtomicReference<>();
 
     public PdfChunkerConfig get(TypedProperties props, Tokenizer tokenizer) {
-      Entry current = entry;
+      Entry current = entry.get();
       if (current == null || current.props != props || current.tokenizer != tokenizer) {
         current = new Entry(props, tokenizer, from(props, tokenizer));
-        entry = current;
+        entry.set(current);
       }
       return current.config;
     }

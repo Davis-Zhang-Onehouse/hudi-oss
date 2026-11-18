@@ -51,7 +51,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the call deadline and the outage short-circuit as the OpenAI, Bedrock and Jina clients do, and a vector of the wrong
  * dimension is the configuration's, failing the run.
  */
-public class TestVertexRetryLoop {
+class TestVertexRetryLoop {
 
   private static final String ALIAS = "mm";
   private static final String BUSY = "{\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\"}}";
@@ -64,7 +64,7 @@ public class TestVertexRetryLoop {
   private final List<Long> sleeps = new ArrayList<>();
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     stub = new VertexStubServer();
     Path tokenFile = tempDir.resolve("token");
     Files.write(tokenFile, "recorded-test-token-0001\n".getBytes(StandardCharsets.UTF_8));
@@ -74,12 +74,12 @@ public class TestVertexRetryLoop {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     stub.close();
   }
 
   @Test
-  public void throttledRequestWaitsTheRetryAfterHintThenSucceeds() throws Exception {
+  void throttledRequestWaitsTheRetryAfterHintThenSucceeds() throws Exception {
     stub.enqueueStatus(429, BUSY, "2");
     EmbeddingResult result = client().embed(Collections.singletonList(text("a"))).get(0);
     assertEquals(EmbeddingResult.Status.OK, result.getStatus(), result.getError());
@@ -88,7 +88,7 @@ public class TestVertexRetryLoop {
   }
 
   @Test
-  public void retryThatWouldPassTheDeadlineIsNotSent() throws Exception {
+  void retryThatWouldPassTheDeadlineIsNotSent() throws Exception {
     props.setProperty(key(".request.deadline.ms"), "1000");
     stub.enqueueStatus(503, BUSY, "2");
     EmbeddingResult result = client().embed(Collections.singletonList(text("a"))).get(0);
@@ -98,7 +98,7 @@ public class TestVertexRetryLoop {
   }
 
   @Test
-  public void consecutiveFailedRequestsOpenTheOutageShortCircuit() throws Exception {
+  void consecutiveFailedRequestsOpenTheOutageShortCircuit() throws Exception {
     props.setProperty(key(".retry.max.attempts"), "1");
     props.setProperty(key(".outage.consecutive.failures"), "2");
     for (int i = 0; i < 3; i++) {
@@ -111,15 +111,17 @@ public class TestVertexRetryLoop {
       assertEquals(EmbeddingResult.Status.RETRYABLE_FAILURE, result.getStatus());
     }
     assertTrue(results.get(2).getError().contains("provider outage short-circuit"), results.get(2).getError());
-    assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(Collections.singletonList(text("d"))));
+    List<EmbeddingInput> next = Collections.singletonList(text("d"));
+    assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(next));
     assertEquals(2, stub.requests().size());
   }
 
   @Test
-  public void vectorOfTheWrongDimensionFailsTheRun() {
+  void vectorOfTheWrongDimensionFailsTheRun() {
     stub.enqueueBody("{\"predictions\":[{\"textEmbedding\":[0.1,0.2,0.3]}]}");
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class,
-        () -> client().embed(Collections.singletonList(text("a"))));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = Collections.singletonList(text("a"));
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(e.getMessage().contains("3") && e.getMessage().contains("128"), e.getMessage());
     assertEquals(1, stub.requests().size());
   }

@@ -48,6 +48,9 @@ import java.net.URISyntaxException;
     description = "Per-model endpoint, credentials and request limits for OpenAI-compatible embedding providers.")
 public final class OpenAiClientConfig implements Serializable {
 
+  private static final String SINCE_VERSION = "1.3.0";
+  private static final String PROVIDER_DEPENDENT = "<provider-dependent>";
+
   private static final long serialVersionUID = 1L;
 
   /** Base URL; requests go to {@code <endpoint>/embeddings}. Default: OpenAI's; required for azure-openai and hf-tei. */
@@ -56,8 +59,8 @@ public final class OpenAiClientConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.endpoint family. */
   public static final ConfigProperty<String> ENDPOINT_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.endpoint")
-      .noDefaultValue("<provider-dependent>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(PROVIDER_DEPENDENT)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Base URL; requests go to <endpoint>/embeddings. Default: OpenAI's; required for azure-openai and hf-tei. "
           + "Replace <alias> with the declared model alias. openai https://api.openai.com/v1; azure-openai/hf-tei "
           + "required. Default: <provider-dependent>.");
@@ -68,7 +71,7 @@ public final class OpenAiClientConfig implements Serializable {
   public static final ConfigProperty<String> BASE_MODEL_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.base.model")
       .noDefaultValue("<model name>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("The documented OpenAI model whose limits apply (an Azure deployment's model); default the model name. "
           + "Replace <alias> with the declared model alias. alias when model.name absent. Default: <model name>.");
   /** Path of a file whose trimmed content is the API key; wins over {@link #CREDENTIAL_ENV_SUFFIX}. */
@@ -78,7 +81,7 @@ public final class OpenAiClientConfig implements Serializable {
   public static final ConfigProperty<String> CREDENTIAL_FILE_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.credential.file")
       .noDefaultValue("<unset>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Path of a file whose trimmed content is the API key; wins over "
           + "hoodie.unstructured.embedding.model.<alias>.credential.env. Replace <alias> with the declared model alias. "
           + "Default: <unset>.");
@@ -94,8 +97,8 @@ public final class OpenAiClientConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.credential.env family. */
   public static final ConfigProperty<String> CREDENTIAL_ENV_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.credential.env")
-      .noDefaultValue("<provider-dependent>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(PROVIDER_DEPENDENT)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("NAME of the env var holding the API key; default OPENAI_API_KEY / AZURE_OPENAI_API_KEY / none (hf-tei). "
           + "Deliver it as a secret reference (spark.kubernetes.executor.secretKeyRef.<ENV>=<secret>:<key>), never as "
           + "spark.executorEnv.<ENV>=<value>: Spark's default spark.redaction.regex does not match OPENAI_API_KEY, so "
@@ -109,9 +112,9 @@ public final class OpenAiClientConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.request.max.inputs family. */
   public static final ConfigProperty<String> REQUEST_MAX_INPUTS_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.request.max.inputs")
-      .noDefaultValue("<provider-dependent>")
+      .noDefaultValue(PROVIDER_DEPENDENT)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Most inputs per request; default (and maximum) the provider's: 2048, or TEI's max_client_batch_size. "
           + "Replace <alias> with the declared model alias. openai/azure 2048; hf-tei -1 then GET /info; shared key "
           + "also Jina 64, Vertex 1, Bedrock Titan 1/Cohere 96. Default: <provider-dependent>.");
@@ -121,9 +124,9 @@ public final class OpenAiClientConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.request.max.tokens family. */
   public static final ConfigProperty<String> REQUEST_MAX_TOKENS_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.request.max.tokens")
-      .noDefaultValue("<provider-dependent>")
+      .noDefaultValue(PROVIDER_DEPENDENT)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Most summed tokens per request; default (and maximum) the provider's: 300000, or TEI's max_batch_tokens. "
           + "Replace <alias> with the declared model alias. openai/azure 300000; hf-tei -1 then GET /info. Default: "
           + "<provider-dependent>.");
@@ -141,7 +144,7 @@ public final class OpenAiClientConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.request.max.input.tokens")
       .noDefaultValue("<model-dependent>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Per-input token limit checked locally; default the known model's 8191, which it may only lower; required "
           + "otherwise. An input above it is PERMANENT: it is a compute error-table event and the writer's incremental "
           + "rounds do not select the row again for that column, so setting it too low strands those rows in the table "
@@ -156,7 +159,7 @@ public final class OpenAiClientConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.request.timeout.ms")
       .defaultValue(30000)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("HTTP timeout of one request in ms; default 30000. Replace <alias> with the declared model alias.");
   /** Wall-clock budget of one embed() call in ms, retries and bisection included; default 300000. */
   public static final String REQUEST_DEADLINE_MS_SUFFIX = ".request.deadline.ms";
@@ -166,7 +169,7 @@ public final class OpenAiClientConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.request.deadline.ms")
       .defaultValue(300000)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Wall-clock budget of one embed() call in ms, retries and bisection included; default 300000. Replace "
           + "<alias> with the declared model alias.");
   /** Most extra requests one embed() call spends isolating rejected inputs; default 32. */
@@ -177,7 +180,7 @@ public final class OpenAiClientConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.request.bisect.max.requests")
       .defaultValue(32)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Most extra requests one embed() call spends isolating rejected inputs; default 32. Replace <alias> with "
           + "the declared model alias.");
   /** Attempts per request, the first included, before its inputs are RETRYABLE; default 5. */
@@ -188,7 +191,7 @@ public final class OpenAiClientConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.retry.max.attempts")
       .defaultValue(5)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Attempts per request, the first included, before its inputs are RETRYABLE; default 5. Replace <alias> with "
           + "the declared model alias.");
   /** Upper bound of the first full-jitter backoff in ms; default 500. */
@@ -199,7 +202,7 @@ public final class OpenAiClientConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.retry.initial.backoff.ms")
       .defaultValue(500)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Upper bound of the first full-jitter backoff in ms; default 500. Replace <alias> with the declared model "
           + "alias.");
   /** Cap of any backoff in ms; a provider hint above it ends the retries of the request; default 60000. */
@@ -210,7 +213,7 @@ public final class OpenAiClientConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.retry.max.backoff.ms")
       .defaultValue(60000)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Cap of any backoff in ms; a provider hint above it ends the retries of the request; default 60000. Replace "
           + "<alias> with the declared model alias.");
   /** Consecutive requests left RETRYABLE after their retries before the client stops calling; default 3. */
@@ -221,7 +224,7 @@ public final class OpenAiClientConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.outage.consecutive.failures")
       .defaultValue(3)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Consecutive requests left RETRYABLE after their retries before the client stops calling; default 3. "
           + "Replace <alias> with the declared model alias.");
 

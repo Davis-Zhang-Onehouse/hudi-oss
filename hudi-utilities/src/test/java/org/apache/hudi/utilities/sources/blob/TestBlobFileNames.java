@@ -33,10 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class TestBlobFileNames {
+class TestBlobFileNames {
 
   @Test
-  public void fidIsDeterministic32Hex() throws Exception {
+  void fidIsDeterministic32Hex() throws Exception {
     String path = "file:///tmp/data/a.pdf";
     String fid = BlobFileNames.sourcePathSha(path);
     assertEquals(fid, BlobFileNames.sourcePathSha(path));
@@ -51,13 +51,13 @@ public class TestBlobFileNames {
   }
 
   @Test
-  public void rawSelectorS3AliasesHaveTheSameKey() {
+  void rawSelectorS3AliasesHaveTheSameKey() {
     assertEquals(BlobFileNames.sourcePathSha("s3://bkt/k/a.pdf"), BlobFileNames.sourcePathSha("s3a://bkt/k/a.pdf"));
     assertEquals(BlobFileNames.sourcePathSha("s3://bkt/k/a.pdf"), BlobFileNames.sourcePathSha("s3n://bkt/k/a.pdf"));
   }
 
   @Test
-  public void objectKeyTextIsNotNormalized() {
+  void objectKeyTextIsNotNormalized() {
     for (String key : new String[] {"a//b.pdf", "a/../b.pdf", "a%2Fb.pdf", "a+b.pdf", "A/b.pdf", "a/b.pdf?x#part"}) {
       assertNotEquals(BlobFileNames.sourcePathSha("s3://bkt/a/b.pdf"), BlobFileNames.sourcePathSha("s3://bkt/" + key), key);
     }
@@ -66,7 +66,7 @@ public class TestBlobFileNames {
   }
 
   @Test
-  public void sharedKeyEncodingGoldenVectors() throws Exception {
+  void sharedKeyEncodingGoldenVectors() throws Exception {
     try (BufferedReader reader = new BufferedReader(new InputStreamReader(
         TestBlobFileNames.class.getResourceAsStream("/unstructured/source-path-key-v1.tsv"), StandardCharsets.UTF_8))) {
       String line;
@@ -86,18 +86,18 @@ public class TestBlobFileNames {
   }
 
   @Test
-  public void canonicalPathOfLocalFile() {
+  void canonicalPathOfLocalFile() {
     assertEquals("file:///tmp/a.pdf", BlobTestPaths.canonicalPath(new File("/tmp/x/../a.pdf").toURI()));
     assertEquals("file:///tmp/a.pdf", BlobTestPaths.canonicalPath(URI.create("file:/tmp/a.pdf")));
   }
 
   @Test
-  public void canonicalPathOfS3() {
+  void canonicalPathOfS3() {
     assertEquals("s3a://bkt/a/b.pdf", BlobTestPaths.canonicalPath(URI.create("s3a://bkt/a//b.pdf")));
   }
 
   @Test
-  public void canonicalPathIsDecoded() {
+  void canonicalPathIsDecoded() {
     // source_path is the decoded form Hadoop's Path prints and StoragePath(String) opens; file_name is its last segment
     String canonical = BlobTestPaths.canonicalPath(new File("/tmp/my scan%.pdf").toURI());
     assertEquals("file:///tmp/my scan%.pdf", canonical);
@@ -106,7 +106,7 @@ public class TestBlobFileNames {
   }
 
   @Test
-  public void s3SchemesShareOneCanonicalForm() {
+  void s3SchemesShareOneCanonicalForm() {
     assertEquals("s3a://bkt/k/a.pdf", BlobTestPaths.canonicalPath(URI.create("s3://bkt/k/a.pdf")));
     assertEquals("s3a://bkt/k/a.pdf", BlobTestPaths.canonicalPath(URI.create("s3n://bkt/k/a.pdf")));
     assertEquals(BlobFileNames.sourcePathSha(BlobTestPaths.canonicalPath(URI.create("s3://bkt/k/a.pdf"))),
@@ -114,13 +114,15 @@ public class TestBlobFileNames {
   }
 
   @Test
-  public void opaqueOrRelativeUriIsRejected() {
-    assertThrows(IllegalArgumentException.class, () -> BlobTestPaths.canonicalPath(URI.create("mailto:a@b.c")));
-    assertThrows(IllegalArgumentException.class, () -> BlobTestPaths.canonicalPath(URI.create("docs/a.pdf")));
+  void opaqueOrRelativeUriIsRejected() {
+    URI opaque = URI.create("mailto:a@b.c");
+    URI relative = URI.create("docs/a.pdf");
+    assertThrows(IllegalArgumentException.class, () -> BlobTestPaths.canonicalPath(opaque));
+    assertThrows(IllegalArgumentException.class, () -> BlobTestPaths.canonicalPath(relative));
   }
 
   @Test
-  public void extensionIsLowercased() {
+  void extensionIsLowercased() {
     assertEquals("pdf", BlobFileNames.extension("SCAN.PDF"));
     assertEquals("gz", BlobFileNames.extension("a.tar.gz"));
     assertEquals("", BlobFileNames.extension("README"));
@@ -128,12 +130,12 @@ public class TestBlobFileNames {
   }
 
   @Test
-  public void contentTypeOfPdf() {
+  void contentTypeOfPdf() {
     assertEquals("application/pdf", BlobFileNames.contentType("pdf"));
   }
 
   @Test
-  public void contentTypesOfImages() {
+  void contentTypesOfImages() {
     assertEquals("image/png", BlobFileNames.contentType("png"));
     assertEquals("image/jpeg", BlobFileNames.contentType("jpg"));
     assertEquals("image/jpeg", BlobFileNames.contentType("jpeg"));

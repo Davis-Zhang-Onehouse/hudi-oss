@@ -100,6 +100,7 @@ public class StubAudioSegmentSource implements AudioSegmentSource {
 
       @Override
       public void close() {
+        // the stub holds nothing to release
       }
     };
   }

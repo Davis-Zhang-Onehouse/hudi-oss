@@ -55,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * predictor; token sequences PDFBox splits differently from the guard's pre-scan) cannot carry an operand list or an
  * array past the budget. Pages within the budgets, however they are encoded, are still accepted.
  */
-public class TestContentParseBudgets {
+class TestContentParseBudgets {
 
   /** The guard's decoded-size budget in these tests. */
   private static final long BUDGET = 1L << 20;
@@ -67,37 +67,38 @@ public class TestContentParseBudgets {
   Path staging;
 
   @BeforeAll
-  public static void fontCache(@TempDir Path cache) {
+  static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
   }
 
   // ------------------------------------------------------------------ single Flate /Contents with a predictor
 
   @Test
-  public void largeArrayInAPredictedFlateStreamIsRefused() throws IOException {
+  void largeArrayInAPredictedFlateStreamIsRefused() throws IOException {
     // the guard's decoder applies /Predictor 12 and sees one long number; PDPage parses the stream unpredicted and builds
     // the array
-    PageFailure failure = assertThrows(PageFailure.class,
-        () -> check(content(array(LARGE_ARRAY) + " pop\n", true)));
+    byte[] page = content(array(LARGE_ARRAY) + " pop\n", true);
+    PageFailure failure = assertThrows(PageFailure.class, () -> check(page));
     assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
   }
 
   @Test
-  public void largeArrayInAPlainFlateStreamIsRefused() throws IOException {
-    PageFailure failure = assertThrows(PageFailure.class,
-        () -> check(content(array(LARGE_ARRAY) + " pop\n", false)));
+  void largeArrayInAPlainFlateStreamIsRefused() throws IOException {
+    byte[] page = content(array(LARGE_ARRAY) + " pop\n", false);
+    PageFailure failure = assertThrows(PageFailure.class, () -> check(page));
     assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
   }
 
   @Test
-  public void predictedFlateStreamReadPastTheBudgetIsRefused() throws IOException {
+  void predictedFlateStreamReadPastTheBudgetIsRefused() throws IOException {
     // the guard's PNG decoder turns each two-byte row (tag byte + one byte) into one byte, so the stream decodes to half
     // of what PDFBox reads unpredicted: 1.5x the budget as PDFBox reads it, 0.75x as the guard decodes it
     StringBuilder ops = new StringBuilder();
     while (ops.length() < BUDGET * 3 / 2) {
       ops.append("0 0 m\n");
     }
-    PageFailure failure = assertThrows(PageFailure.class, () -> check(content(ops.toString(), true)));
+    byte[] page = content(ops.toString(), true);
+    PageFailure failure = assertThrows(PageFailure.class, () -> check(page));
     assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
   }
 
@@ -106,26 +107,27 @@ public class TestContentParseBudgets {
   /** Prefixes after which the pre-scan is inside a string or inline image body while PDFBox reads ordinary tokens. */
   @ParameterizedTest
   @ValueSource(strings = {"(x\\)\n/ ", "IDx ( EI Q ", "ID( EI Q "})
-  public void largeArrayAfterAPrefixThePreScanReadsDifferentlyIsRefused(String prefix) throws IOException {
-    PageFailure failure = assertThrows(PageFailure.class,
-        () -> check(content(prefix + array(LARGE_ARRAY) + " pop\n", false)));
+  void largeArrayAfterAPrefixThePreScanReadsDifferentlyIsRefused(String prefix) throws IOException {
+    byte[] page = content(prefix + array(LARGE_ARRAY) + " pop\n", false);
+    PageFailure failure = assertThrows(PageFailure.class, () -> check(page));
     assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
   }
 
   @Test
-  public void manyOperandsPendingAfterAPrefixAreRefused() throws IOException {
+  void manyOperandsPendingAfterAPrefixAreRefused() throws IOException {
     StringBuilder ops = new StringBuilder("(x\\)\n/ ");
     for (int i = 0; i < LARGE_ARRAY; i++) {
       ops.append("1 ");
     }
-    PageFailure failure = assertThrows(PageFailure.class, () -> check(content(ops + "n\n", false)));
+    byte[] page = content(ops + "n\n", false);
+    PageFailure failure = assertThrows(PageFailure.class, () -> check(page));
     assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
   }
 
   // ------------------------------------------------------------------ forms and Type3 glyph procedures
 
   @Test
-  public void formTheParseRefusesIsRefusedAgainOnTheNextPage() throws IOException {
+  void formTheParseRefusesIsRefusedAgainOnTheNextPage() throws IOException {
     byte[] pdf;
     try (PDDocument document = new PDDocument()) {
       COSStream form = flate(document, "(x\\)\n/ " + array(LARGE_ARRAY) + " pop\n", false);
@@ -143,9 +145,11 @@ public class TestContentParseBudgets {
     }
     try (PDDocument document = Loader.loadPDF(pdf)) {
       StreamDecodeGuard guard = new StreamDecodeGuard(BUDGET, staging.toFile());
+      PDPage first = document.getPage(0);
       assertEquals(PdfFailureCode.DECODE_LIMIT,
-          assertThrows(PageFailure.class, () -> guard.checkPage(document.getPage(0), 1)).code());
-      PageFailure again = assertThrows(PageFailure.class, () -> guard.checkPage(document.getPage(1), 2));
+          assertThrows(PageFailure.class, () -> guard.checkPage(first, 1)).code());
+      PDPage second = document.getPage(1);
+      PageFailure again = assertThrows(PageFailure.class, () -> guard.checkPage(second, 2));
       assertTrue(again.getMessage().contains("already failed"), again.getMessage());
     }
   }
@@ -156,21 +160,23 @@ public class TestContentParseBudgets {
    */
   @ParameterizedTest
   @ValueSource(booleans = {false, true})
-  public void type3GlyphProcedureWithALargeArrayIsRefused(boolean emptyFontBox) throws IOException {
+  void type3GlyphProcedureWithALargeArrayIsRefused(boolean emptyFontBox) throws IOException {
     String proc = "(x\\)\n/ " + array(LARGE_ARRAY) + " 500 0 d0\n";
-    PageFailure failure = assertThrows(PageFailure.class, () -> check(type3Page(proc, emptyFontBox)));
+    byte[] page = type3Page(proc, emptyFontBox);
+    PageFailure failure = assertThrows(PageFailure.class, () -> check(page));
     assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
   }
 
   @Test
-  public void validType3FontIsAccepted() throws IOException {
-    assertDoesNotThrow(() -> check(type3Page("500 0 d0 0 0 m 400 400 l S\n", true)));
+  void validType3FontIsAccepted() throws IOException {
+    byte[] page = type3Page("500 0 d0 0 0 m 400 400 l S\n", true);
+    assertDoesNotThrow(() -> check(page));
   }
 
   // ------------------------------------------------------------------ pages within the budgets
 
   @Test
-  public void arrayJustUnderTheBudgetIsAccepted() throws IOException {
+  void arrayJustUnderTheBudgetIsAccepted() throws IOException {
     for (boolean predictor : new boolean[] {false, true}) {
       byte[] page = content(array(StreamStructureScanner.MAX_OPERANDS - 16) + " pop\n" + TEXT, predictor);
       assertDoesNotThrow(() -> check(page), "predictor " + predictor);
@@ -178,7 +184,7 @@ public class TestContentParseBudgets {
   }
 
   @Test
-  public void manyOperatorsWithFewOperandsEachAreAccepted() throws IOException {
+  void manyOperatorsWithFewOperandsEachAreAccepted() throws IOException {
     StringBuilder ops = new StringBuilder();
     for (int i = 0; i < LARGE_ARRAY; i++) {
       ops.append("1 0 0 1 0 0 cm\n");
@@ -189,7 +195,7 @@ public class TestContentParseBudgets {
   }
 
   @Test
-  public void predictedFlateTextPageWithinTheBudgetIsAccepted() throws IOException {
+  void predictedFlateTextPageWithinTheBudgetIsAccepted() throws IOException {
     for (boolean predictor : new boolean[] {false, true}) {
       byte[] page = content(TEXT + "q 1 0 0 1 10 10 cm [(a) 120 (b)] TJ Q\n", predictor);
       assertDoesNotThrow(() -> check(page), "predictor " + predictor);
@@ -197,11 +203,12 @@ public class TestContentParseBudgets {
   }
 
   @Test
-  public void escapedParenthesesAndInlineImagesInOrdinaryTextAreAccepted() throws IOException {
+  void escapedParenthesesAndInlineImagesInOrdinaryTextAreAccepted() throws IOException {
     String ops = "BT /F1 10 Tf 50 700 Td (f\\(x\\) = \\(y\\)) Tj ET\n"
         + "q 10 0 0 10 100 100 cm BI /W 2 /H 1 /BPC 8 /CS /G ID \u0000ÿ EI Q\n"
         + TEXT;
-    assertDoesNotThrow(() -> check(content(ops, false)));
+    byte[] page = content(ops, false);
+    assertDoesNotThrow(() -> check(page));
   }
 
   /** Each string fits the budget, but PDFBox keeps the entire operand batch until its operator. */

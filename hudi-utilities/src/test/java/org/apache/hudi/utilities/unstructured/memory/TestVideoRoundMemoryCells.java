@@ -124,7 +124,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *   long one, in two children; the live heap must not grow with the video's length ({@link #heapDoesNotGrowWithVideoLength}).</li>
  * </ul>
  */
-public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
+class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
 
   static final String REFERENCE_HEAP = TestEmbeddingRoundMemoryCells.REFERENCE_HEAP;
   private static final long CELL_TIMEOUT_MINUTES = 15;
@@ -151,7 +151,7 @@ public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
 
   @ParameterizedTest(name = "cell {0}")
   @ValueSource(strings = {"video-light", "video-ffmpeg", "video-jcodec", "video-store", FIXED_TERM_CELL})
-  public void cellPassesAtItsHeap(String cell) throws Exception {
+  void cellPassesAtItsHeap(String cell) throws Exception {
     assumeTrue(selectedCells().contains(cell), "memory cell " + cell + " not selected (-Dvideo.memory.cells)");
     Path work = localPath(basePath()).resolve("cell-" + cell);
     Files.createDirectories(work);
@@ -295,7 +295,7 @@ public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
    */
   @ParameterizedTest(name = "cell {0}")
   @ValueSource(strings = {"video-length-light", "video-length"})
-  public void heapDoesNotGrowWithVideoLength(String cell) throws Exception {
+  void heapDoesNotGrowWithVideoLength(String cell) throws Exception {
     assumeTrue(selectedCells().contains(cell), "memory cell " + cell + " not selected (-Dvideo.memory.cells)");
     boolean light = "video-length-light".equals(cell);
     int shortSeconds = light ? 20 : 2 * 60;
@@ -468,7 +468,8 @@ public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
   static long smallestAdmittedHeapMib(TypedProperties props) {
     EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
     long ceiling = 64 * 1024;
-    assertDoesNotThrow(() -> VideoFrameHeapCheck.check(config, executor(ceiling)), "the job fits some heap");
+    SparkConf ceilingExecutor = executor(ceiling);
+    assertDoesNotThrow(() -> VideoFrameHeapCheck.check(config, ceilingExecutor), "the job fits some heap");
     long low = 1;
     long high = ceiling;
     while (low < high) {
@@ -480,7 +481,8 @@ public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
       }
     }
     long smallest = low;
-    assertThrows(HoodieValidationException.class, () -> VideoFrameHeapCheck.check(config, executor(smallest - 1)));
+    SparkConf belowSmallest = executor(smallest - 1);
+    assertThrows(HoodieValidationException.class, () -> VideoFrameHeapCheck.check(config, belowSmallest));
     return smallest;
   }
 

@@ -143,28 +143,40 @@ class EmbeddingColumnInfoAtomicSwap {
     Object current = stream;
     Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     while (current != null && seen.add(current)) {
+      AbortHandle handle = abortHandleOf(current);
+      if (handle != null) {
+        return handle;
+      }
+      current = wrappedOf(current);
+    }
+    return null;
+  }
+
+  /** The abort handle of {@code stream} itself when it declares the abortable capability, else null. */
+  private static AbortHandle abortHandleOf(Object stream) throws IOException {
+    try {
+      Method capability = stream.getClass().getMethod("hasCapability", String.class);
+      if (Boolean.TRUE.equals(capability.invoke(stream, ABORTABLE))) {
+        return new AbortHandle(stream, stream.getClass().getMethod("abort"));
+      }
+    } catch (NoSuchMethodException ignored) {
+      // A wrapper may predate the capability while its wrapped stream implements it.
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new IOException("Cannot inspect object output abort capability", e);
+    }
+    return null;
+  }
+
+  /** The stream {@code stream} wraps, through either standard Hadoop output wrapper accessor; null when it wraps none. */
+  private static Object wrappedOf(Object stream) throws IOException {
+    for (String method : new String[] {"getWrappedStream", "getWrappedOutputStream"}) {
       try {
-        Method capability = current.getClass().getMethod("hasCapability", String.class);
-        if (Boolean.TRUE.equals(capability.invoke(current, ABORTABLE))) {
-          return new AbortHandle(current, current.getClass().getMethod("abort"));
-        }
+        return stream.getClass().getMethod(method).invoke(stream);
       } catch (NoSuchMethodException ignored) {
-        // A wrapper may predate the capability while its wrapped stream implements it.
+        // Try the other standard Hadoop output wrapper accessor.
       } catch (IllegalAccessException | InvocationTargetException e) {
-        throw new IOException("Cannot inspect object output abort capability", e);
+        throw new IOException("Cannot inspect wrapped object output", e);
       }
-      Object wrapped = null;
-      for (String method : new String[] {"getWrappedStream", "getWrappedOutputStream"}) {
-        try {
-          wrapped = current.getClass().getMethod(method).invoke(current);
-          break;
-        } catch (NoSuchMethodException ignored) {
-          // Try the other standard Hadoop output wrapper accessor.
-        } catch (IllegalAccessException | InvocationTargetException e) {
-          throw new IOException("Cannot inspect wrapped object output", e);
-        }
-      }
-      current = wrapped;
     }
     return null;
   }

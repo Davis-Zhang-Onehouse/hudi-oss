@@ -61,6 +61,8 @@ import java.util.stream.Collectors;
 public class EmbeddingTableConfig implements Serializable {
 
   private static final long serialVersionUID = 1L;
+  private static final String SINCE_1_3_0 = "1.3.0";
+  private static final String REQUIRED = "<required>";
 
   /** Root of every unstructured-data key (embedding and chunking); never passed through to the Hudi writer. */
   public static final String UNSTRUCTURED_PREFIX = "hoodie.unstructured.";
@@ -75,7 +77,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> MODELS = ConfigProperty
       .key(PREFIX + "models")
       .defaultValue("")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Comma-separated aliases of the declared embedding models, each owning a nullable VECTOR column. Only for "
           + "prep_and_compute: a prep_only table declares no model. Each model's rate.limit.requests.per.second is per compute "
           + "task, so the job's aggregate request rate scales with its active compute tasks.");
@@ -83,7 +85,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> ACTIVE_MODELS = ConfigProperty
       .key(PREFIX + "active.models")
       .defaultValue("")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Comma-separated declared models the compute flow fills; empty means every declared model. Only for "
           + "prep_and_compute. A name not declared in " + PREFIX + "models is refused.");
   /** Prefix of the per-model keys {@code hoodie.unstructured.embedding.model.<alias>.*}. */
@@ -95,7 +97,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> MODEL_COLUMN_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.column")
       .noDefaultValue("emb_<alias>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Name of the model's VECTOR column. Replace <alias> with the declared model alias.");
   /** Per-model vector dimensions (VECTOR(n)), must be positive; required per model. */
   public static final String MODEL_DIMENSIONS_SUFFIX = ".dimensions";
@@ -103,8 +105,8 @@ public class EmbeddingTableConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.dimensions family. */
   public static final ConfigProperty<String> MODEL_DIMENSIONS_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.dimensions")
-      .noDefaultValue("<required>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(REQUIRED)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Dimensions n of the model's VECTOR(n) column, a positive integer; required for every declared model. "
           + "Replace <alias> with the declared model alias.");
   /** Per-model EmbeddingClient implementation; when unset the client of the model's provider (EmbeddingClientNames). */
@@ -115,7 +117,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.client.class")
       .noDefaultValue("<unset>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Embedding client implementation of the model; when unset, the built-in client of the model's provider. "
           + "Replace <alias> with the declared model alias.");
   /** Per-model embedding provider, one of {@link EmbeddingClientNames#PROVIDERS}; required per model, no default. */
@@ -124,8 +126,8 @@ public class EmbeddingTableConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.provider family. */
   public static final ConfigProperty<String> MODEL_PROVIDER_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.provider")
-      .noDefaultValue("<required>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(REQUIRED)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Embedding provider of the model; required for every declared model. The built-in provider is dummy, "
           + "which writes deterministic random unit vectors and is meant for tests and pipeline checks only. Replace <alias> "
           + "with the declared model alias.");
@@ -136,7 +138,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> MODEL_NAME_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.name")
       .noDefaultValue("<alias>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Provider-side name of the model. Replace <alias> with the declared model alias.");
   /**
    * Per-model declared modalities: a non-empty subset of {@code text} and {@code image}, comma-separated, in any letter case and
@@ -149,8 +151,8 @@ public class EmbeddingTableConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.modalities family. */
   public static final ConfigProperty<String> MODEL_MODALITIES_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.modalities")
-      .noDefaultValue("<required>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(REQUIRED)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The modalities the model embeds: text, image, or text,image (comma-separated, any letter case and "
           + "order); required for the active model under prep_and_compute. Only rows of a declared modality are sent to the "
           + "model; a row of another modality gets a NULL vector and an EMBED-COMPUTE-<MODALITY>-NOT-SUPPORTED error record "
@@ -164,7 +166,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(CHUNK_PREFIX + "max.tokens")
       .defaultValue(256)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Per-chunk token limit, a positive integer.");
   /** Default per-chunk token limit. */
   public static final int DEFAULT_CHUNK_MAX_TOKENS = CHUNK_MAX_TOKENS.defaultValue();
@@ -172,7 +174,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> CHUNK_OVERLAP_TOKENS = ConfigProperty
       .key(CHUNK_PREFIX + "overlap.tokens")
       .noDefaultValue("min(128, chunkMaxTokens/2)")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Tokens two adjacent chunks may share, from 0 up to hoodie.unstructured.chunk.max.tokens / 2.");
   /** Default overlap cap: at most 128 tokens of overlap between 2 adjacent chunks. */
   public static final int DEFAULT_CHUNK_OVERLAP_TOKENS = 128;
@@ -181,14 +183,14 @@ public class EmbeddingTableConfig implements Serializable {
       .key(CHUNK_PREFIX + "tokenizer.class")
       .noDefaultValue("<unset>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Tokenizer implementation (public no-arg constructor); when set it wins over "
           + "hoodie.unstructured.chunk.tokenizer.type.");
   /** Built-in tokenizer type ({@code word-count} or {@code openai-bpe}); default {@code openai-bpe} ({@code text.TokenizerFactory}). */
   public static final ConfigProperty<String> TOKENIZER_TYPE = ConfigProperty
       .key(CHUNK_PREFIX + "tokenizer.type")
       .defaultValue("openai-bpe")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Built-in tokenizer type: word-count or openai-bpe.");
   /**
    * jtokkit encoding of the {@code openai-bpe} tokenizer type (e.g. {@code o200k_base}); default {@code cl100k_base}, the
@@ -198,7 +200,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> TOKENIZER_ENCODING = ConfigProperty
       .key(CHUNK_PREFIX + "tokenizer.encoding")
       .defaultValue("cl100k_base")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("jtokkit encoding of the openai-bpe tokenizer type (e.g. o200k_base). The default, cl100k_base, is the "
           + "encoding of OpenAI's text-embedding-3-small/-large and ada-002 models. Part of the tokenizer id "
           + "(openai-bpe:<encoding>).");
@@ -208,7 +210,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(CHUNK_PREFIX + "max.words")
       .defaultValue(256)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Words per chunk, the hard word cap, 16..8191.");
   public static final int DEFAULT_CHUNK_MAX_WORDS = CHUNK_MAX_WORDS.defaultValue();
   /**
@@ -219,7 +221,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(CHUNK_PREFIX + "window.max.chars")
       .defaultValue(8192)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The most text ever handed to the tokenizer and the per-chunk char cap (UTF-16 units), 256..65536 and at "
           + "least hoodie.unstructured.chunk.max.words.");
   public static final int DEFAULT_CHUNK_WINDOW_MAX_CHARS = CHUNK_WINDOW_MAX_CHARS.defaultValue();
@@ -227,14 +229,14 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> CHUNK_SENTENCE_LOCALE = ConfigProperty
       .key(CHUNK_PREFIX + "sentence.locale")
       .defaultValue("en")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Language tag of the sentence-boundary rules (java.text.BreakIterator).");
   public static final String DEFAULT_CHUNK_SENTENCE_LOCALE = CHUNK_SENTENCE_LOCALE.defaultValue();
   /** De-hyphenation of {@code -\n} line breaks; only {@code false} is supported. */
   public static final ConfigProperty<Boolean> CHUNK_NORMALIZE_DEHYPHENATE = ConfigProperty
       .key(CHUNK_PREFIX + "normalize.dehyphenate")
       .defaultValue(false)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("De-hyphenation of -\\n line breaks; only false is supported.");
 
   /** Prefix of the PDF extraction keys; every set one is part of the style. */
@@ -250,7 +252,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PDF_PREFIX + "max.input.bytes")
       .defaultValue(Long.toString(DEFAULT_PDF_MAX_INPUT_BYTES))
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Largest PDF chunked (bytes); a larger one is a FAILED INPUT_LIMIT row, refused before any read when its "
           + "size is declared. Default 21474836480 (20 GiB). A set value must be a positive byte count (0 or a negative value is "
           + "refused at job start). The file is staged whole to local disk, so the cap bounds disk use, not heap.");
@@ -262,7 +264,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PDF_PREFIX + "max.pages")
       .defaultValue(10000)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Pages read per PDF; the rest is dropped with a PAGE_LIMIT warning, and a file without text in the pages "
           + "read fails with PAGE_LIMIT; default 10 000.");
   public static final int DEFAULT_PDF_MAX_PAGES = 10_000;
@@ -271,7 +273,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PDF_PREFIX + "max.page.chars")
       .defaultValue(262144)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Chars kept per page, raw and after NFKC; at least the window; default 262 144.");
   public static final int DEFAULT_PDF_MAX_PAGE_CHARS = 262_144;
   /**
@@ -288,7 +290,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PDF_PREFIX + "max.page.glyphs")
       .defaultValue(262144)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Glyphs per PDF page before the page fails PAGE_GLYPH_LIMIT; at least max.page.chars; default 262 144. Size "
           + "extraction live heap as floor + k * (256 * glyphs + max.page.font.bytes + max.decoded.stream.bytes), in "
           + "bytes, then add collector/allocation headroom. Here k is concurrent PDF tasks in one executor, and floor "
@@ -307,7 +309,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PDF_PREFIX + "max.decoded.stream.bytes")
       .defaultValue(33554432L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Decoded bytes per pre-checked stream, and of a page's filtered /Contents streams together "
           + "(a repeated stream counted per listing), before the page fails DECODE_LIMIT; default 32 MiB.");
   public static final long DEFAULT_PDF_MAX_DECODED_STREAM_BYTES = 32L * 1024 * 1024;
@@ -321,7 +323,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PDF_PREFIX + "max.page.font.bytes")
       .defaultValue(50331648L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Static per-page decoded font bytes, charged per dictionary before DECODE_LIMIT; default 48 MiB admits one "
           + "31 MiB font. Size this term per concurrent PDF task together with the glyph graph and one decoded stream "
           + "(see hoodie.unstructured.pdf.max.page.glyphs); at the defaults the font allowance is 48 MiB + 32 MiB = 80 "
@@ -336,7 +338,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PDF_PREFIX + "max.graphics.depth")
       .defaultValue(1024)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Graphics-state and marked-content depth of a page, the states of the forms it draws included, before the "
           + "page fails GRAPHICS_DEPTH_LIMIT; at least 16; default 1 024.");
   public static final int DEFAULT_PDF_MAX_GRAPHICS_DEPTH = 1024;
@@ -351,7 +353,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key("hoodie.unstructured.embedding.prep.preprocessor.<ext>.class")
       .noDefaultValue("<registry-dependent>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The FilePreprocessor class for files with extension <ext>; when unset, the built-in preprocessor of "
           + "that extension (pdf has one; png, jpg, jpeg, gif, bmp, tif and tiff map to ImageInputPreprocessor; mp4, mov, mkv, "
           + "webm and avi to the class of hoodie.unstructured.embedding.prep.video.preprocessor.class, VideoFramePreprocessor "
@@ -366,7 +368,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "image.max.pixels")
       .defaultValue(100000000L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Image data prep: images whose header declares more pixels fail data prep (a quarantine entry) before any "
           + "compute; default 100000000. Must be positive. Part of the preprocessing style when set.");
   public static final long DEFAULT_PREP_IMAGE_MAX_PIXELS = 100_000_000L;
@@ -380,7 +382,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "image.header.max.bytes")
       .defaultValue(1048576L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Image data prep: the most bytes read to find an image's header; an image whose header needs more fails data "
           + "prep (a quarantine entry). Over a source row (random access) it counts the distinct bytes read wherever they lie in "
           + "the file (a byte the reader reads again counts once); over a plain stream it is the offset the memory-cached read may reach. Default 1048576 (1 MiB). Must be "
@@ -397,7 +399,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "image.max.bytes")
       .defaultValue(9223372036854775807L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Image data prep: the largest image, in source bytes (file_size), that prep stores as a model input; a "
           + "larger one fails data prep (a quarantine entry) before any byte of it is read. An operator's limit, not a "
           + "memory bound: the row's prepared_image is the source row's own blob value (its inline bytes, or its reference "
@@ -418,7 +420,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "video.preprocessor.class")
       .defaultValue("org.apache.hudi.utilities.unstructured.embedding.prep.VideoFramePreprocessor")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The preprocessor of every video extension (mp4, mov, mkv, webm and avi), so a job prepares all its video "
           + "with one implementation, read once at start. Default "
           + "org.apache.hudi.utilities.unstructured.embedding.prep.VideoFramePreprocessor, the FFmpeg frame preprocessor. Hudi "
@@ -443,7 +445,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "video.max.bytes")
       .defaultValue(Long.toString(DEFAULT_PREP_VIDEO_MAX_BYTES))
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Video data prep: a video whose source row declares more bytes (source_file_size) fails data prep (a quarantine "
           + "entry) before any byte is read. Default 21474836480 (20 GiB). A set value must be a positive byte count (0 or a negative "
           + "value is refused at job start). Part of the preprocessing style when set.");
@@ -456,11 +458,12 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<Long> PREP_VIDEO_KEYFRAME_INTERVAL_MS = ConfigProperty
       .key(PREP_PREFIX + "video.keyframe.interval.ms")
       .defaultValue(1000L)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("X of the video frame source's \"closest keyframe every X\" (the FFmpeg keyframe source), in milliseconds; "
           + "default 1000. A frame-extraction parameter, so part of the preprocessing style when set. The table pins its effective value "
           + "(hoodie.table.embedding.prep.video.keyframe.interval.ms); a change requires a new table.");
   public static final long DEFAULT_PREP_VIDEO_KEYFRAME_INTERVAL_MS = 1000L;
+  public static final String DEFAULT_PREP_VIDEO_DEDUP_METHOD = "dhash";
   /**
    * How the video frame source drops a frame that repeats the last kept one: {@code dhash} (64-bit difference hash within
    * {@link #PREP_VIDEO_DEDUP_MAX_DISTANCE}), {@code sha256} (identical encoded frame) or {@code none}; default
@@ -468,18 +471,17 @@ public class EmbeddingTableConfig implements Serializable {
    */
   public static final ConfigProperty<String> PREP_VIDEO_DEDUP_METHOD = ConfigProperty
       .key(PREP_PREFIX + "video.dedup.method")
-      .defaultValue("dhash")
-      .sinceVersion("1.3.0")
+      .defaultValue(DEFAULT_PREP_VIDEO_DEDUP_METHOD)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("How the video frame source drops a frame that repeats the last kept one: dhash (64-bit difference hash "
           + "within hoodie.unstructured.embedding.prep.video.dedup.max.distance), sha256 (identical encoded frame) or "
           + "none; default dhash. Preprocessing style when set.");
-  public static final String DEFAULT_PREP_VIDEO_DEDUP_METHOD = "dhash";
   /** The largest dHash Hamming distance (0..64) that counts as a repeat; default 4. Preprocessing style when set. */
   public static final ConfigProperty<Long> PREP_VIDEO_DEDUP_MAX_DISTANCE = ConfigProperty
       .key(PREP_PREFIX + "video.dedup.max.distance")
       .defaultValue(4L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The largest dHash Hamming distance (0..64) that counts as a repeat; default 4. Preprocessing style when "
           + "set.");
   public static final long DEFAULT_PREP_VIDEO_DEDUP_MAX_DISTANCE = 4L;
@@ -492,7 +494,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "video.max.pixels")
       .defaultValue(8294400L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The most pixels per frame a video may declare; a larger one is its file's quarantine entry before any frame "
           + "is decoded, which bounds the decoded frame and its raster per task. Default 8294400 (3840x2160). "
           + "Preprocessing style when set.");
@@ -506,7 +508,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "video.heap.fixed.bytes")
       .defaultValue(67108864L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The per-executor heap a job that preps video leaves outside its task slots (Spark's own structures, "
           + "per-JVM caches) in the frame-heap start check (the video frame heap check); default 67108864 (64 MiB, an estimate). "
           + "Not part of the preprocessing style.");
@@ -523,7 +525,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "prefetch.max.bytes")
       .defaultValue(8388608L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Data prep reads the next file of a task ahead, while the current one is prepared: up to this many of its "
           + "leading bytes, held in memory until that file is prepared (a file no larger is read whole, and then prepared with no "
           + "further storage request). A task holds at most two such buffers, the current file's and the next one's: "
@@ -543,7 +545,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREFIX + "video.ffmpeg.threads")
       .defaultValue(1L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("FFmpeg decoder threads per video (thread_count); default 1, at most 16. Set explicitly because FFmpeg's own "
           + "default (0) starts one thread per core the executor may use; parallelism comes from Spark tasks, one video "
           + "per task at a time. Changes no output: not style.");
@@ -560,7 +562,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(BALANCE_PREFIX + "strategy.class")
       .defaultValue("org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("RowBalancingStrategy implementation. The default, SizeTypeAwareBalancingStrategy, gives each "
           + "preprocessor group (pdf, image, video, a custom preprocessor) its own tasks, sized by the group's byte budget per "
           + "task. HashBalancingStrategy spreads the files over exactly hoodie.unstructured.embedding.prep.num.partitions "
@@ -571,7 +573,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "num.partitions")
       .noDefaultValue("<derived>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Exact task count of HashBalancingStrategy, a positive integer (default spark.default.parallelism). "
           + "Ignored by SizeTypeAwareBalancingStrategy; its per-group floor uses hoodie.unstructured.embedding.prep.balance.min.partitions.");
   /**
@@ -583,7 +585,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(BALANCE_PREFIX + "min.partitions")
       .noDefaultValue("<derived>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Parallelism P of SizeTypeAwareBalancingStrategy's per-group floor: at least min(files, P) tasks per "
           + "group, with more when its source-byte budget requires them. Positive; default derived from the job's executor "
           + "capacity. Independent of hoodie.unstructured.embedding.prep.num.partitions, which only the hash strategy reads. "
@@ -600,7 +602,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key("hoodie.unstructured.embedding.prep.balance.<group>.max.bytes.per.task")
       .noDefaultValue("<group-dependent>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The per-group byte budget of one prep task, "
           + "hoodie.unstructured.embedding.prep.balance.<group>.max.bytes.per.task "
           + "(org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy); <group> is pdf, "
@@ -621,7 +623,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(BALANCE_PREFIX + "default" + BALANCE_MAX_BYTES_PER_TASK_SUFFIX)
       .defaultValue(SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_DEFAULT_MAX_BYTES_PER_TASK)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The byte budget per task of a custom preprocessor group with no budget key of its own; default the pdf "
           + "budget, " + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_DEFAULT_MAX_BYTES_PER_TASK
           + " bytes (org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy). "
@@ -636,7 +638,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "source.retry.max.attempts")
       .defaultValue(3)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Tries in all of opening one blob's stored bytes when the open fails transiently (a throttled, reset or "
           + "timed-out request), within the same prep round; the last failure fails the round, which the next run retries "
           + "from the same checkpoint. A file's own fault (gone, short) and an access denial are never retried. A positive "
@@ -651,7 +653,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "source.retry.backoff.ms")
       .defaultValue(1000L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The wait in ms before the second try of a source open "
           + "(hoodie.unstructured.embedding.prep.source.retry.max.attempts); each later wait doubles, capped at 30 s. "
           + "Must not be negative. Not part of the preprocessing style.");
@@ -668,7 +670,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> PREP_FILE_EXTENSIONS = ConfigProperty
       .key(PREP_PREFIX + "file.extensions")
       .defaultValue("")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The file extensions data prep consumes: comma-separated, without the dot, in any letter case. A blob row "
           + "whose source_file_extension is not listed, including a row with an empty extension or a FAILED ingest, is not "
           + "prepped: it gets no embedding row and no error-table event. Unset or blank, the default, every blob row is "
@@ -680,7 +682,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<Integer> COMPUTE_BATCH_SIZE = ConfigProperty
       .key(PREFIX + "compute.batch.size")
       .defaultValue(64)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Rows per embedding client call (micro batch), a positive integer. Only for prep_and_compute.");
   /** Default micro-batch size. */
   public static final int DEFAULT_COMPUTE_BATCH_SIZE = COMPUTE_BATCH_SIZE.defaultValue();
@@ -694,7 +696,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREFIX + "compute.max.attempts")
       .defaultValue(3)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Tries of one row within one compute step: a row whose call fails transiently (the call throws, the answer "
           + "is malformed, the client answers RETRYABLE) is tried again, with backoff "
           + "(hoodie.unstructured.embedding.compute.retry.backoff.ms), until it has been tried this many times; a row "
@@ -710,7 +712,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREFIX + "compute.retry.backoff.ms")
       .defaultValue(1000L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The wait in ms before the second try of a row (hoodie.unstructured.embedding.compute.max.attempts); each "
           + "later wait doubles, capped at 60000 ms. Must not be negative. Only for prep_and_compute.");
   /** Default {@link #COMPUTE_RETRY_BACKOFF_MS}: one second. */
@@ -728,7 +730,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<Integer> COMPUTE_IMAGE_LONG_SIDE = ConfigProperty
       .key(COMPUTE_IMAGE_PREFIX + "long.side")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_LONG_SIDE)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The long side in pixels compute resizes an image to before the model call (never upscaled); must be "
           + "positive; default 512 (Vertex multimodalembedding resizes to 512x512 itself). Refused under prep_only.");
   /**
@@ -739,7 +741,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(COMPUTE_IMAGE_PREFIX + "raster.budget.bytes")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The most bytes the decoded raster of one image may take in compute: the decode subsampling grows until "
           + "the raster fits, and an image no subsampling fits is refused before decode. Must be positive; default 16777216 "
           + "(16 MiB). Refused under prep_only.");
@@ -748,7 +750,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(COMPUTE_IMAGE_PREFIX + "max.pixels")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_MAX_PIXELS)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Images whose header declares more pixels are refused by compute before decode (PERMANENT for the row). "
           + "Must be positive; default 100000000. Refused under prep_only.");
   /**
@@ -760,7 +762,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(COMPUTE_IMAGE_PREFIX + "intermediate.budget.bytes")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_INTERMEDIATE_BUDGET_BYTES)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The most bytes an image reader may need before subsampling applies (a full-resolution TIFF strip or tile, "
           + "a BMP RLE bitmap read whole, full-width PNG or uncompressed BMP rows, the coefficient buffers of a progressive JPEG), "
           + "estimated from the image header; above it compute refuses the "
@@ -770,7 +772,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(COMPUTE_IMAGE_PREFIX + "decoder.class")
       .defaultValue(InProcessImageDecoder.class.getName())
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The ImageDecoder implementation compute decodes and resizes images with, in this JVM or elsewhere; it "
           + "must have a public no-arg constructor and run this code's decoding logic (image-resize-v1), else the job is "
           + "refused at start. Default the in-process decoder. Refused under prep_only.");
@@ -782,14 +784,14 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> COMPUTE_IMAGE_ENCODING = ConfigProperty
       .key(COMPUTE_IMAGE_PREFIX + "encoding")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_ENCODING)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The encoding of the resized image compute sends to the model: jpeg (default) or png, in any letter case. "
           + "Refused under prep_only.");
   /** JPEG quality in [1, 100] of the resized model input; default {@value ImagePreprocessingSpec#DEFAULT_JPEG_QUALITY}. */
   public static final ConfigProperty<Integer> COMPUTE_IMAGE_JPEG_QUALITY = ConfigProperty
       .key(COMPUTE_IMAGE_PREFIX + "jpeg.quality")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_JPEG_QUALITY)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("JPEG quality in [1, 100] of the resized image compute sends to the model under the jpeg encoding; "
           + "default 90. Refused under prep_only.");
 
@@ -805,8 +807,8 @@ public class EmbeddingTableConfig implements Serializable {
    */
   public static final ConfigProperty<String> MODE = ConfigProperty
       .key(PREFIX + "mode")
-      .noDefaultValue("<required>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(REQUIRED)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("What one round of the embedding job does: prep_only writes the prepared rows and sets no model or compute "
           + "key, so the table has no model column; prep_and_compute also computes every row's embedding with the active model "
           + "(hoodie.unstructured.embedding.active.models), into its VECTOR column, before the same commit. A table is "
@@ -819,7 +821,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> COMPUTE_PARALLELISM = ConfigProperty
       .key(PREFIX + "compute.parallelism")
       .noDefaultValue("the Spark context's default parallelism")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The number of Spark tasks the embedding computation runs in, under prep_and_compute: the prepared rows "
           + "are spread over them by a hash of their key columns, so task row counts are balanced in expectation. A positive "
           + "integer.");
@@ -890,7 +892,7 @@ public class EmbeddingTableConfig implements Serializable {
    *
    * @throws IllegalArgumentException when it is unset or not one of the two values
    */
-  public String mode() {
+  public String embeddingMode() {
     String value = ConfigUtils.getStringWithAltKeys(props, MODE, "").trim().toLowerCase(Locale.ROOT);
     if (!MODE_PREP_ONLY.equals(value) && !MODE_PREP_AND_COMPUTE.equals(value)) {
       throw new IllegalArgumentException("Config " + MODE.key() + " must be " + MODE_PREP_ONLY + " or " + MODE_PREP_AND_COMPUTE
@@ -901,7 +903,7 @@ public class EmbeddingTableConfig implements Serializable {
 
   /** Whether the round computes embeddings ({@link #MODE_PREP_AND_COMPUTE}). */
   public boolean computes() {
-    return MODE_PREP_AND_COMPUTE.equals(mode());
+    return MODE_PREP_AND_COMPUTE.equals(embeddingMode());
   }
 
   /** The compute task count, {@link #COMPUTE_PARALLELISM}, else {@code defaultParallelism}. */
@@ -1069,7 +1071,7 @@ public class EmbeddingTableConfig implements Serializable {
    * @throws HoodieException if an alias is listed twice, or a model's {@link #MODEL_DIMENSIONS_SUFFIX dimensions} or
    *     {@link #MODEL_PROVIDER_SUFFIX provider} is not set
    */
-  public List<EmbeddingModelSpec> models() {
+  public List<EmbeddingModelSpec> modelSpecs() {
     List<EmbeddingModelSpec> specs = new ArrayList<>();
     List<String> names = splitList(ConfigUtils.getStringWithAltKeys(props, MODELS, ""));
     for (int i = 0; i < names.size(); i++) {
@@ -1099,7 +1101,7 @@ public class EmbeddingTableConfig implements Serializable {
           ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(keyPrefix + MODEL_NAME_SUFFIX).noDefaultValue(), name).trim(),
           modalities(keyPrefix + MODEL_MODALITIES_SUFFIX,
               ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(keyPrefix + MODEL_MODALITIES_SUFFIX).noDefaultValue(), null)));
-      if (!spec.getColumn().matches("[A-Za-z_][A-Za-z0-9_]*")) {
+      if (!spec.getColumn().matches("[A-Za-z_]\\w*")) {
         throw new IllegalArgumentException("Config " + keyPrefix + MODEL_COLUMN_SUFFIX + " resolves to '" + spec.getColumn()
             + "', which is not a valid Avro field name; set a column starting with a letter or underscore, followed by letters, digits or underscores");
       }
@@ -1158,7 +1160,7 @@ public class EmbeddingTableConfig implements Serializable {
   public List<EmbeddingModelSpec> activeModels() {
     String value = ConfigUtils.getStringWithAltKeys(props, ACTIVE_MODELS, "");
     List<String> active = splitList(value);
-    List<EmbeddingModelSpec> declared = models();
+    List<EmbeddingModelSpec> declared = modelSpecs();
     if (active.isEmpty()) {
       return declared;
     }
@@ -1172,7 +1174,7 @@ public class EmbeddingTableConfig implements Serializable {
   }
 
   public EmbeddingModelSpec model(String name) {
-    return models().stream().filter(m -> m.getName().equals(name)).findFirst()
+    return modelSpecs().stream().filter(m -> m.getName().equals(name)).findFirst()
         .orElseThrow(() -> new HoodieException("Model '" + name + "' is not declared in " + MODELS.key()));
   }
 
@@ -1270,13 +1272,6 @@ public class EmbeddingTableConfig implements Serializable {
   }
 
   private static int positive(String key, int value) {
-    if (value <= 0) {
-      throw new IllegalArgumentException("Config " + key + " must be positive but is " + value);
-    }
-    return value;
-  }
-
-  private static long positive(String key, long value) {
     if (value <= 0) {
       throw new IllegalArgumentException("Config " + key + " must be positive but is " + value);
     }

@@ -147,8 +147,8 @@ final class NativeWhisperEngine implements WhisperEngine {
   public List<RawUtterance> transcribe(WhisperConfig config, float[] pcm, int samples) {
     WhisperJNI jni = library();
     WhisperFullParams params = new WhisperFullParams(WhisperSamplingStrategy.GREEDY);
-    params.nThreads = config.threads();
-    params.language = config.language();
+    params.nThreads = config.threadCount();
+    params.language = config.languageCode();
     params.translate = config.translate();
     params.printProgress = false;
     params.printRealtime = false;

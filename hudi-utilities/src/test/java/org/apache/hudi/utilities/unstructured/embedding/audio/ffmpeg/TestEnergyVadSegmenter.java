@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The energy gate over windows of known levels: one window = 4 samples of one constant amplitude. */
-public class TestEnergyVadSegmenter {
+class TestEnergyVadSegmenter {
 
   private static final int SAMPLES = 4;
   /** -35 dBFS, the default threshold. */
@@ -78,29 +78,29 @@ public class TestEnergyVadSegmenter {
   }
 
   @Test
-  public void silenceOnlyHasNoSegment() {
+  void silenceOnlyHasNoSegment() {
     assertEquals(new ArrayList<>(), run(new short[100], 5, 50, 0));
   }
 
   @Test
-  public void speechSpansEndAtTheirLastSpeechWindow() {
+  void speechSpansEndAtTheirLastSpeechWindow() {
     // speech 10-20 and 40-45, separated by 20 silent windows (>= 5): two segments, trailing silence trimmed
     assertEquals(Arrays.asList(span(10, 10), span(40, 5)), run(layout(60, 10, 20, 40, 45), 5, 50, 0));
   }
 
   @Test
-  public void shortSilencesAreMerged() {
+  void shortSilencesAreMerged() {
     // gaps of 4 windows (< 5) are part of the segment; a gap of exactly 5 ends it
     assertEquals(Arrays.asList(span(0, 18), span(23, 2)), run(layout(40, 0, 5, 9, 12, 16, 18, 23, 25), 5, 50, 0));
   }
 
   @Test
-  public void speechAtTheEndOfTheStreamIsASegment() {
+  void speechAtTheEndOfTheStreamIsASegment() {
     assertEquals(Arrays.asList(span(7, 3)), run(layout(10, 7, 10), 5, 50, 0));
   }
 
   @Test
-  public void overLongSpeechIsCutAtTheQuietestWindowOfItsLastFifth() {
+  void overLongSpeechIsCutAtTheQuietestWindowOfItsLastFifth() {
     // 25 windows of speech, bound 10: the last fifth of a full segment is windows 8-9; window 8 is quieter -> cut at 8
     short[] amplitudes = layout(30, 0, 25);
     amplitudes[8] = QUIET;
@@ -114,12 +114,12 @@ public class TestEnergyVadSegmenter {
   }
 
   @Test
-  public void oneWindowBoundCutsEveryWindow() {
+  void oneWindowBoundCutsEveryWindow() {
     assertEquals(Arrays.asList(span(2, 1), span(3, 1), span(4, 1)), run(layout(8, 2, 5), 3, 1, 0));
   }
 
   @Test
-  public void segmentStartingInsideTheReadAheadIsFound() {
+  void segmentStartingInsideTheReadAheadIsFound() {
     // the cut leaves windows 8.. buffered; a silence among them then speech: the replay must find the speech after the silence
     short[] amplitudes = layout(40, 0, 10, 12, 15);
     amplitudes[8] = 1;
@@ -129,7 +129,7 @@ public class TestEnergyVadSegmenter {
   }
 
   @Test
-  public void payloadIsTheSegmentsSamplesInLittleEndian() {
+  void payloadIsTheSegmentsSamplesInLittleEndian() {
     short[] amplitudes = layout(10, 2, 4);
     amplitudes[3] = (short) 0x1234;
     EnergyVadSegmenter segmenter = new EnergyVadSegmenter(reader(amplitudes, 0), SAMPLES, THRESHOLD, 3, 50, 0);
@@ -150,7 +150,7 @@ public class TestEnergyVadSegmenter {
    * level sequences, silence lengths and bounds.
    */
   @Test
-  public void segmentsAfterAnyEndEqualAFreshRunFromThatEnd() {
+  void segmentsAfterAnyEndEqualAFreshRunFromThatEnd() {
     Random random = new Random(42);
     short[] levels = {0, 0, 0, 1, 100, QUIET, LOUD, LOUD, 3000};
     for (int trial = 0; trial < 300; trial++) {

@@ -38,6 +38,8 @@ final class PcmPayload {
   static final String PCM_S16LE = "pcm_s16le";
 
   private static final int BUFFER_BYTES = 8192;
+  private static final String BYTES = " bytes";
+  private static final String PAYLOAD_OF = "payload of ";
 
   /** 16 kHz mono 16-bit: 32 bytes per millisecond. */
   private static final long BYTES_PER_MS = 32L;
@@ -69,11 +71,11 @@ final class PcmPayload {
         + segment.endMs() + ") ms is not a non-empty span on the timeline");
     check(PCM_S16LE.equals(segment.encoding()), segment, "encoding " + segment.encoding() + ", expected " + PCM_S16LE);
     long declared = segment.payloadBytes();
-    check(declared >= 0 && declared % 2 == 0, segment, "payload of " + declared + " bytes is not whole 16-bit samples");
-    check(declared <= maxBytes, segment, "payload of " + declared + " bytes is above the bound of " + maxBytes + " bytes");
+    check(declared >= 0 && declared % 2 == 0, segment, PAYLOAD_OF + declared + " bytes is not whole 16-bit samples");
+    check(declared <= maxBytes, segment, PAYLOAD_OF + declared + " bytes is above the bound of " + maxBytes + BYTES);
     long payloadMs = declared / BYTES_PER_MS;
     long spanMs = segment.endMs() - segment.startMs();
-    check(payloadMs <= spanMs + SPAN_TOLERANCE_MS, segment, "payload of " + payloadMs + " ms is longer than its span of " + spanMs
+    check(payloadMs <= spanMs + SPAN_TOLERANCE_MS, segment, PAYLOAD_OF + payloadMs + " ms is longer than its span of " + spanMs
         + " ms; utterances past the span would be dropped");
     int count = (int) (declared / 2);
     if (count == 0) {
@@ -85,17 +87,14 @@ final class PcmPayload {
     int sample = 0;
     int pendingLow = -1;
     try (InputStream in = segment.openPayload()) {
-      while (true) {
-        int want = (int) Math.min(buffer.length, declared + 1 - read);
-        if (want <= 0) {
-          break;
-        }
+      for (int want = (int) Math.min(buffer.length, declared + 1 - read); want > 0;
+           want = (int) Math.min(buffer.length, declared + 1 - read)) {
         int n = in.read(buffer, 0, want);
         if (n < 0) {
           break;
         }
         read += n;
-        check(read <= declared, segment, "payload stream is longer than its declared " + declared + " bytes");
+        check(read <= declared, segment, "payload stream is longer than its declared " + declared + BYTES);
         for (int i = 0; i < n; i++) {
           int b = buffer[i] & 0xFF;
           if (pendingLow < 0) {
@@ -107,7 +106,7 @@ final class PcmPayload {
         }
       }
     }
-    check(read == declared, segment, "payload stream ended after " + read + " of its declared " + declared + " bytes");
+    check(read == declared, segment, "payload stream ended after " + read + " of its declared " + declared + BYTES);
     return new Samples(pcm, count);
   }
 

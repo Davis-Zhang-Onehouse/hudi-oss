@@ -66,15 +66,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Decode damage remains visible in emitted records and in the framework's file failure path. */
-public class TestPdfDecodeLoss {
+class TestPdfDecodeLoss {
 
   @BeforeAll
-  public static void fontCache(@TempDir Path cache) {
+  static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
   }
 
   @Test
-  public void partialContentKeepsTextAndRecordsLoss() throws IOException {
+  void partialContentKeepsTextAndRecordsLoss() throws IOException {
     List<Chunk> chunks = prep(contents(true, 1));
     assertEquals(1, chunks.size());
     assertEquals("Kept text.", chunks.get(0).getText());
@@ -83,7 +83,7 @@ public class TestPdfDecodeLoss {
   }
 
   @Test
-  public void cachedUndecodableContentCountsOnEveryPage() throws IOException {
+  void cachedUndecodableContentCountsOnEveryPage() throws IOException {
     List<Chunk> chunks = prep(contents(true, 3));
     assertEquals(1, chunks.size());
     assertEquals("Kept text. Kept text. Kept text.", chunks.get(0).getText());
@@ -92,14 +92,14 @@ public class TestPdfDecodeLoss {
   }
 
   @Test
-  public void whollyUndecodableContentIsAClassifiedFileFailure() throws IOException {
+  void whollyUndecodableContentIsAClassifiedFileFailure() throws IOException {
     byte[] pdf = contents(false, 1);
     PreprocessingException failure = assertThrows(PreprocessingException.class, () -> prep(pdf));
     assertTrue(failure.getMessage().startsWith("DECODE_ERROR:"), failure.getMessage());
   }
 
   @Test
-  public void wholeContentFailureGoesToPrepErrorSideOutput() throws IOException {
+  void wholeContentFailureGoesToPrepErrorSideOutput() throws IOException {
     byte[] pdf = contents(false, 1);
     StructType blobType = (StructType) BlobType.dataType();
     StructType sourceType = DataTypes.createStructType(new StructField[] {
@@ -115,9 +115,12 @@ public class TestPdfDecodeLoss {
         "s3a://bucket/input.pdf", "input.pdf"}, sourceType);
     TypedProperties props = new TypedProperties();
     PrepCounters counters = PrepCounters.local();
-    try (PreprocessingIterator iterator = new PreprocessingIterator(List.of(row).iterator(), EmbeddingTableConfig.from(props),
-        "001", new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())), new PreprocessorRegistry(props),
-        new WordCountTokenizer(), counters, null)) {
+    try (PreprocessingIterator iterator = PreprocessingIterator.builder(List.of(row).iterator(), EmbeddingTableConfig.from(props), "001")
+        .bytesSource(new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())))
+        .registry(new PreprocessorRegistry(props))
+        .tokenizer(new WordCountTokenizer())
+        .counters(counters)
+        .build()) {
       assertFalse(iterator.hasNext());
       assertEquals(1, iterator.getSideOutputs().size());
       PrepSideOutput failure = iterator.getSideOutputs().get(0);
@@ -130,7 +133,7 @@ public class TestPdfDecodeLoss {
   }
 
   @Test
-  public void whollyUndecodablePageAlongsideReadablePageRecordsLoss() throws IOException {
+  void whollyUndecodablePageAlongsideReadablePageRecordsLoss() throws IOException {
     byte[] pdf;
     try (PDDocument document = new PDDocument()) {
       PDPage failed = new PDPage();
@@ -154,7 +157,7 @@ public class TestPdfDecodeLoss {
   }
 
   @Test
-  public void cleanTextHasNoDecodeLoss() throws IOException {
+  void cleanTextHasNoDecodeLoss() throws IOException {
     List<Chunk> chunks = prep(PdfFixtures.text("Kept text."));
     assertEquals(1, chunks.size());
     assertEquals("Kept text.", chunks.get(0).getText());
@@ -162,22 +165,22 @@ public class TestPdfDecodeLoss {
   }
 
   @Test
-  public void imageOnlyContentRemainsEmpty() throws IOException {
+  void imageOnlyContentRemainsEmpty() throws IOException {
     assertTrue(prep(PdfFixtures.imageOnly(1, 30)).isEmpty());
   }
 
   @Test
-  public void undecodableContentBesideEmptyStreamIsStillAFailure() throws IOException {
+  void undecodableContentBesideEmptyStreamIsStillAFailure() throws IOException {
     assertNoTextDecodeFailure(withBrokenContent(PdfFixtures.text("")));
   }
 
   @Test
-  public void undecodableContentBesideImageOnlyStreamIsStillAFailure() throws IOException {
+  void undecodableContentBesideImageOnlyStreamIsStillAFailure() throws IOException {
     assertNoTextDecodeFailure(withBrokenContent(PdfFixtures.imageOnly(1, 30)));
   }
 
   @Test
-  public void drawnUndecodableFormRecordsLossOnEveryPage() throws IOException {
+  void drawnUndecodableFormRecordsLossOnEveryPage() throws IOException {
     List<Chunk> chunks = prep(forms(true, true, 3, false));
     assertEquals(1, chunks.size());
     assertEquals("Kept text. Kept text. Kept text.", chunks.get(0).getText());
@@ -186,7 +189,7 @@ public class TestPdfDecodeLoss {
   }
 
   @Test
-  public void drawnUndecodableTransparencyGroupRecordsLoss() throws IOException {
+  void drawnUndecodableTransparencyGroupRecordsLoss() throws IOException {
     List<Chunk> chunks = prep(forms(true, true, 1, true));
     assertEquals(1, chunks.size());
     assertEquals("Kept text.", chunks.get(0).getText());
@@ -195,7 +198,7 @@ public class TestPdfDecodeLoss {
   }
 
   @Test
-  public void undrawnUndecodableFormDoesNotReportLoss() throws IOException {
+  void undrawnUndecodableFormDoesNotReportLoss() throws IOException {
     List<Chunk> chunks = prep(forms(false, true, 1, false));
     assertEquals(1, chunks.size());
     assertEquals("Kept text.", chunks.get(0).getText());
@@ -203,7 +206,7 @@ public class TestPdfDecodeLoss {
   }
 
   @Test
-  public void undecodableFormWithNoSurvivingTextIsAClassifiedFailure() throws IOException {
+  void undecodableFormWithNoSurvivingTextIsAClassifiedFailure() throws IOException {
     assertNoTextDecodeFailure(forms(true, false, 1, false));
   }
 
@@ -248,7 +251,7 @@ public class TestPdfDecodeLoss {
     }
   }
 
-  private static List<Chunk> prep(byte[] pdf) throws IOException {
+  private static List<Chunk> prep(byte[] pdf) {
     List<Chunk> chunks = new ArrayList<>();
     try (ClosableIterator<Chunk> iterator = new PdfFilePreprocessor().open(() -> new ByteArrayInputStream(pdf),
         new FileMeta("decode-loss", "pdf", pdf.length), new WordCountTokenizer(), new TypedProperties())) {

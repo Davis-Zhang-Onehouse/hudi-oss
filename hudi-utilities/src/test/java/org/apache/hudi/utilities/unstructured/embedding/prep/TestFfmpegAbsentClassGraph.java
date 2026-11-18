@@ -48,10 +48,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The probe is called through {@link Callable}, the one type both loaders share: a separate loader is the only way to take
  * classes away from a JVM that has them.
  */
-public class TestFfmpegAbsentClassGraph {
+class TestFfmpegAbsentClassGraph {
 
   @Test
-  public void defaultVideoPreprocessorNeedsFfmpegOnlyToOpenAVideo() throws Exception {
+  void defaultVideoPreprocessorNeedsFfmpegOnlyToOpenAVideo() throws Exception {
     String report;
     Thread thread = Thread.currentThread();
     ClassLoader previous = thread.getContextClassLoader();

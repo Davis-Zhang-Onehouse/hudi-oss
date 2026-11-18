@@ -57,7 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * counting {@link StubEmbeddingServer} that records each request's arrival on the test's fake clock. A sleep only advances that
  * clock, so pacing is exact and nothing sleeps; no assertion reads the wall clock. One client = one compute task.
  */
-public class TestOpenAiClientRateLimits {
+class TestOpenAiClientRateLimits {
 
   private static final String ALIAS = "oai";
   private static final String MODEL = "text-embedding-3-small";
@@ -75,12 +75,12 @@ public class TestOpenAiClientRateLimits {
   private EmbeddingCallStats lastStats;
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     server = new StubEmbeddingServer();
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     server.close();
   }
 
@@ -90,7 +90,7 @@ public class TestOpenAiClientRateLimits {
    */
   @ParameterizedTest
   @CsvSource({"5, 1, 20", "2, 3, 12", "0.5, 1, 4", "20, 1, 50"})
-  public void testConfiguredRateIsRespected(String rate, int burst, int requests) {
+  void testConfiguredRateIsRespected(String rate, int burst, int requests) {
     server.otherwise(PATH, counting(embeddings(DIM)));
     TypedProperties props = oneInputPerRequest();
     limit(props, rate, burst);
@@ -114,7 +114,7 @@ public class TestOpenAiClientRateLimits {
    * one before. Without a token per retry, a retry would go out in the same millisecond as the 429.
    */
   @Test
-  public void testRetriesAndBisectionConsumeTokens() {
+  void testRetriesAndBisectionConsumeTokens() {
     AtomicInteger seen = new AtomicInteger();
     server.otherwise(PATH, counting(request -> {
       int n = seen.incrementAndGet();
@@ -159,7 +159,7 @@ public class TestOpenAiClientRateLimits {
    * no wait, and every request goes out at the same fake instant.
    */
   @Test
-  public void testNoSettingDoesNotPace() {
+  void testNoSettingDoesNotPace() {
     server.otherwise(PATH, counting(embeddings(DIM)));
     OpenAiCompatibleEmbeddingClient client = client(oneInputPerRequest());
     List<String> texts = texts(25);
@@ -181,7 +181,7 @@ public class TestOpenAiClientRateLimits {
    * because its bucket still holds tokens.
    */
   @Test
-  public void testProviderThrottlingHandledUnderALimit() {
+  void testProviderThrottlingHandledUnderALimit() {
     List<Long> unlimitedSleeps = throttledRun(new TypedProperties());
     EmbeddingCallStats unlimited = lastStats;
     sleeps.clear();
@@ -211,7 +211,7 @@ public class TestOpenAiClientRateLimits {
   @ParameterizedTest
   @CsvSource(value = {"0, NULL, rate", "-3, NULL, rate", "fast, NULL, rate", "5, 0, burst", "NULL, 2, burst"},
       nullValues = "NULL")
-  public void testBadConfigFailsInitBeforeAnyCall(String rate, String burst, String badKey) {
+  void testBadConfigFailsInitBeforeAnyCall(String rate, String burst, String badKey) {
     server.otherwise("/info", request -> recorded(200, "tei-info.json"));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.ENDPOINT_SUFFIX), server.url() + "/v1");
@@ -222,8 +222,8 @@ public class TestOpenAiClientRateLimits {
       props.setProperty(key(RequestRateLimiter.RATE_LIMIT_BURST_SUFFIX), burst);
     }
     OpenAiCompatibleEmbeddingClient client = newClient();
-    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class,
-        () -> client.init(new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, DIM, null, "hf-tei", "bge"), props));
+    EmbeddingModelSpec spec = new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, DIM, null, "hf-tei", "bge");
+    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class, () -> client.init(spec, props));
     String badSuffix = "burst".equals(badKey)
         ? RequestRateLimiter.RATE_LIMIT_BURST_SUFFIX : RequestRateLimiter.RATE_LIMIT_REQUESTS_PER_SECOND_SUFFIX;
     assertTrue(thrown.getMessage().contains(key(badSuffix)), thrown.getMessage());
@@ -232,7 +232,7 @@ public class TestOpenAiClientRateLimits {
 
   @ParameterizedTest
   @ValueSource(strings = {"0.1", "1"})
-  public void rateWaitStopsAtDeadlineWithoutSending(String rate) {
+  void rateWaitStopsAtDeadlineWithoutSending(String rate) {
     server.otherwise(PATH, counting(embeddings(DIM)));
     TypedProperties props = oneInputPerRequest();
     props.setProperty(key(OpenAiClientConfig.REQUEST_DEADLINE_MS_SUFFIX), "1000");
@@ -257,7 +257,7 @@ public class TestOpenAiClientRateLimits {
   }
 
   @Test
-  public void retryRateWaitDoesNotSendAfterDeadline() {
+  void retryRateWaitDoesNotSendAfterDeadline() {
     server.otherwise(PATH, counting(request -> recorded(429, "error-429-rate.json").withHeader("retry-after-ms", "0")));
     TypedProperties props = oneInputPerRequest();
     props.setProperty(key(OpenAiClientConfig.REQUEST_DEADLINE_MS_SUFFIX), "1000");
@@ -292,7 +292,7 @@ public class TestOpenAiClientRateLimits {
   /** The most requests of {@code times} in any half-open window [t, t + 1 s). */
   static int maxInAnyWindow(List<Long> times) {
     List<Long> sorted = new ArrayList<>(times);
-    Collections.sort(sorted);
+    sorted.sort(null);
     int max = 0;
     int start = 0;
     for (int end = 0; end < sorted.size(); end++) {

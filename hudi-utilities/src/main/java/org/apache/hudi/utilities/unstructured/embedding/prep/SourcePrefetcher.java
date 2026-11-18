@@ -19,8 +19,10 @@
 package org.apache.hudi.utilities.unstructured.embedding.prep;
 
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.common.util.Option;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
+import org.apache.hudi.utilities.unstructured.embedding.source.SourceFailures;
 
 import org.apache.spark.sql.Row;
 import org.slf4j.Logger;
@@ -98,36 +100,38 @@ final class SourcePrefetcher implements AutoCloseable {
   }
 
   /**
-   * The bytes read ahead for {@code blobRow}, waiting for the read to end; null when it was not read ahead or the read failed,
+   * The bytes read ahead for {@code blobRow}, waiting for the read to end; empty when it was not read ahead or the read failed,
    * and the task then opens it itself.
    */
-  byte[] take(Row blobRow) {
+  Option<byte[]> take(Row blobRow) {
     Future<byte[]> read;
     synchronized (this) {
       if (pending == null || pendingRow != blobRow) {
         cancelPending();
-        return null;
+        return Option.empty();
       }
       // Keep the awaited future reachable by close(); its worker may not immediately observe interruption.
       read = pending;
     }
     try {
-      return read.get();
+      return Option.ofNullable(read.get());
     } catch (InterruptedException e) {
       // the task is being stopped: it sees the interruption at its own next storage access
       Thread.currentThread().interrupt();
       read.cancel(true);
-      return null;
+      return Option.empty();
     } catch (ExecutionException e) {
+      SourceFailures.rethrowJvmFailure(e);
       if (e.getCause() instanceof Error) {
         // an exhausted heap or a broken link on the read-ahead thread is the task's: never hidden behind a fallback
         throw (Error) e.getCause();
       }
       LOG.debug("Reading ahead failed; the task opens the file itself", e);
-      return null;
+      return Option.empty();
     } catch (CancellationException e) {
+      SourceFailures.rethrowJvmFailure(e);
       LOG.debug("Reading ahead was cancelled; the task opens the file itself", e);
-      return null;
+      return Option.empty();
     } finally {
       synchronized (this) {
         if (pending == read) {

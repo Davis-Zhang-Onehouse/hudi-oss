@@ -64,7 +64,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * still failing after {@code compute.max.attempts} tries, fails the task. Without Spark: the iterator over hand-built rows in
  * the table schema.
  */
-public class TestStoredImageOutcomes {
+class TestStoredImageOutcomes {
 
   private static final String MODEL = "m1";
   private static final int DIM = 4;
@@ -78,7 +78,7 @@ public class TestStoredImageOutcomes {
   Path base;
 
   @Test
-  public void storedImageRowIsEmbeddedFromItsPreparedImageAndANullStoredInputFailsTheStep() throws Exception {
+  void storedImageRowIsEmbeddedFromItsPreparedImageAndANullStoredInputFailsTheStep() throws Exception {
     TypedProperties props = props();
     EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
     StructType schema = schema(config);
@@ -101,8 +101,11 @@ public class TestStoredImageOutcomes {
 
     // NULL prepared_image: the step fails before any call, no row is written as an error
     ComputeCounters nullCounters = counters();
+    BlobBytesSource storedInputs = storedInputs();
+    Row a0 = row(schema, "a0", inline(png));
+    Row b0 = row(schema, "b0", null);
     EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class,
-        () -> drain(config, props, schema, nullCounters, storedInputs(), row(schema, "a0", inline(png)), row(schema, "b0", null)));
+        () -> drain(config, props, schema, nullCounters, storedInputs, a0, b0));
     assertTrue(e.getMessage().startsWith("EMBED-COMPUTE-NO-STORED-IMAGE"), e.getMessage());
     assertTrue(e.getMessage().contains("source_path_sha=b0 source_modification_time=1000 source_file_size=1 modality=image chunk_id=0"),
         e.getMessage());
@@ -116,7 +119,7 @@ public class TestStoredImageOutcomes {
    * a larger file) and embeds the image it holds, giving the vector of the same image stored inline.
    */
   @Test
-  public void managedRelativeStoredInputIsReadUnderTheTableBaseAndEmbedded() throws Exception {
+  void managedRelativeStoredInputIsReadUnderTheTableBaseAndEmbedded() throws Exception {
     TypedProperties props = props();
     EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
     StructType schema = schema(config);
@@ -148,7 +151,7 @@ public class TestStoredImageOutcomes {
    * PERMANENT, its error naming the row, while the readable batch-mate and a refused image's batch-mate embed in the same call.
    */
   @Test
-  public void goneStoredFileAndUndecodableImageArePermanentForTheirRowOnly() throws Exception {
+  void goneStoredFileAndUndecodableImageArePermanentForTheirRowOnly() {
     TypedProperties props = props();
     EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
     StructType schema = schema(config);
@@ -172,7 +175,7 @@ public class TestStoredImageOutcomes {
    * skipped for good.
    */
   @Test
-  public void storedInputWhoseStorageFailsIsRetriedAndThenFailsTheTask() throws Exception {
+  void storedInputWhoseStorageFailsIsRetriedAndThenFailsTheTask() throws Exception {
     TypedProperties props = props();
     EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
     StructType schema = schema(config);
@@ -180,9 +183,11 @@ public class TestStoredImageOutcomes {
     Files.write(file, ImageFixtures.image("png", 40, 30));
     ComputeCounters counters = counters();
     List<Row> yielded = new ArrayList<>();
+    FlakyStoredInputs flaky = new FlakyStoredInputs();
+    Row a0 = row(schema, "a0", inline(ImageFixtures.image("png", 40, 30)));
+    Row d0 = row(schema, "d0", reference(file));
     EmbeddingComputeTransientException thrown = assertThrows(EmbeddingComputeTransientException.class,
-        () -> yielded.addAll(drain(config, props, schema, counters, new FlakyStoredInputs(),
-            row(schema, "a0", inline(ImageFixtures.image("png", 40, 30))), row(schema, "d0", reference(file)))));
+        () -> drainInto(yielded, config, props, schema, counters, flaky, a0, d0));
     assertTrue(thrown.getMessage().contains("EMBED-COMPUTE-RETRIES-EXHAUSTED") && thrown.getMessage().contains("first source_path_sha=d0")
         && thrown.getMessage().contains("after " + EmbeddingTableConfig.DEFAULT_COMPUTE_MAX_ATTEMPTS + " tries")
         && thrown.getMessage().contains(FlakyStoredInputs.FAILURE), thrown.getMessage());
@@ -199,7 +204,7 @@ public class TestStoredImageOutcomes {
    * transient: the iterator rethrows it at once, as it does a configuration rejection, so the compute commit fails.
    */
   @Test
-  public void platformFailureOfTheClientIsNotRetried() throws Exception {
+  void platformFailureOfTheClientIsNotRetried() {
     TypedProperties props = props();
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_CLIENT_CLASS_SUFFIX,
         PlatformFailingClient.class.getName());
@@ -207,8 +212,11 @@ public class TestStoredImageOutcomes {
     StructType schema = schema(config);
     byte[] png = ImageFixtures.image("png", 40, 30);
     ComputeCounters counters = counters();
+    BlobBytesSource storedInputs = storedInputs();
+    Row a0 = row(schema, "a0", inline(png));
+    Row b0 = row(schema, "b0", inline(png));
     EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class,
-        () -> drain(config, props, schema, counters, storedInputs(), row(schema, "a0", inline(png)), row(schema, "b0", inline(png))));
+        () -> drain(config, props, schema, counters, storedInputs, a0, b0));
     assertEquals(PlatformFailingClient.MESSAGE, e.getMessage());
     assertEquals(0L, counters.getRowsRetried().value(), "a platform failure is never retried");
     assertEquals(0L, counters.getRowsPermanent().value());
@@ -219,7 +227,7 @@ public class TestStoredImageOutcomes {
    * alone) is rethrown at once too: the run fails with it after that one retry, never as a transient.
    */
   @Test
-  public void platformFailureOnTheSingleInputRetryIsNotRetriedFurther() throws Exception {
+  void platformFailureOnTheSingleInputRetryIsNotRetriedFurther() {
     TypedProperties props = props();
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_CLIENT_CLASS_SUFFIX,
         PlatformFailingAloneClient.class.getName());
@@ -227,8 +235,11 @@ public class TestStoredImageOutcomes {
     StructType schema = schema(config);
     byte[] png = ImageFixtures.image("png", 40, 30);
     ComputeCounters counters = counters();
+    BlobBytesSource storedInputs = storedInputs();
+    Row a0 = row(schema, "a0", inline(png));
+    Row b0 = row(schema, "b0", inline(png));
     EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class,
-        () -> drain(config, props, schema, counters, storedInputs(), row(schema, "a0", inline(png)), row(schema, "b0", inline(png))));
+        () -> drain(config, props, schema, counters, storedInputs, a0, b0));
     assertEquals(PlatformFailingClient.MESSAGE, e.getMessage());
     assertEquals(1L, counters.getRowsRetried().value(), "only the first input's single retry ran");
   }
@@ -316,6 +327,11 @@ public class TestStoredImageOutcomes {
     return out;
   }
 
+  private static void drainInto(List<Row> yielded, EmbeddingTableConfig config, TypedProperties props, StructType schema,
+                                ComputeCounters counters, BlobBytesSource storedInputs, Row... rows) {
+    yielded.addAll(drain(config, props, schema, counters, storedInputs, rows));
+  }
+
   private static ComputeCounters counters() {
     return new ComputeCounters(new LongAccumulator(), new LongAccumulator(), new LongAccumulator(), new LongAccumulator(),
         new LongAccumulator());
@@ -350,7 +366,7 @@ public class TestStoredImageOutcomes {
   private static String outcome(Row out, StructType schema, EmbeddingTableConfig config) {
     int vector = schema.fieldIndex(config.model(MODEL).getColumn());
     int error = schema.fieldIndex(ComputeRound.ERROR_WORKING_COLUMN);
-    return !out.isNullAt(vector) ? EMBEDDED : !out.isNullAt(error) ? SKIPPED + out.getString(error) : PENDING;
+    return out.isNullAt(vector) ? (out.isNullAt(error) ? PENDING : SKIPPED + out.getString(error)) : EMBEDDED;
   }
 
   /** An image row of the table schema, as compute reads it from the embedding table. */

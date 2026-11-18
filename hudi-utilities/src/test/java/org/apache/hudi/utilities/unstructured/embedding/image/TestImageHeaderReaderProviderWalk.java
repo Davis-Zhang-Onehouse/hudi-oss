@@ -53,10 +53,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * JDK's provider or behind it: one whose create method throws IOException (ImageIO then yields a null candidate) and one that
  * throws unchecked (out of the iterator's next). The JDK reader or writer is still found.
  */
-public class TestImageHeaderReaderProviderWalk {
+class TestImageHeaderReaderProviderWalk {
 
   @Test
-  public void cycleInImageHeaderFailureDetailsTerminates() {
+  void cycleInImageHeaderFailureDetailsTerminates() {
     IOException first = new IOException("first");
     IOException second = new IOException("second", first);
     first.initCause(second);
@@ -69,7 +69,7 @@ public class TestImageHeaderReaderProviderWalk {
 
   @ParameterizedTest(name = "checked={0}, foreignFirst={1}")
   @CsvSource({"true,true", "true,false", "false,true", "false,false"})
-  public void failingForeignReaderIsSkipped(boolean checked, boolean foreignFirst) throws IOException {
+  void failingForeignReaderIsSkipped(boolean checked, boolean foreignFirst) throws IOException {
     byte[] png = png(7, 5);
     FailingReaderSpi foreign = new FailingReaderSpi(checked);
     register(ImageReaderSpi.class, foreign, "png", foreignFirst);
@@ -86,7 +86,7 @@ public class TestImageHeaderReaderProviderWalk {
 
   @ParameterizedTest(name = "checked={0}, foreignFirst={1}")
   @CsvSource({"true,true", "true,false", "false,true", "false,false"})
-  public void failingForeignWriterIsSkipped(boolean checked, boolean foreignFirst) {
+  void failingForeignWriterIsSkipped(boolean checked, boolean foreignFirst) {
     FailingWriterSpi foreign = new FailingWriterSpi(checked);
     register(ImageWriterSpi.class, foreign, "jpeg", foreignFirst);
     try {

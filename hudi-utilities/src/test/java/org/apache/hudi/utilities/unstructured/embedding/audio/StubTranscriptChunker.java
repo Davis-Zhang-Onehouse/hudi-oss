@@ -161,8 +161,8 @@ public class StubTranscriptChunker implements TranscriptChunker {
         return null;
       }
       String chunkText = text.toString();
-      return new TranscriptChunkValue(ordinal++, chunkText, tokenizer.countTokens(chunkText), startMs, endMs,
-          new ArrayList<>(speakers), firstSegment, lastSegment);
+      return new TranscriptChunkValue(ordinal++, chunkText, tokenizer.countTokens(chunkText),
+          new TranscriptChunkValue.Range(startMs, endMs), new ArrayList<>(speakers), new TranscriptChunkValue.Range(firstSegment, lastSegment));
     }
 
     /** The most leading words of {@code words} whose {@code [speaker] ...} line fits the limit (binary search). */

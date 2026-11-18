@@ -108,9 +108,26 @@ public class EmbeddingColumnInfoStore {
   private static final Logger LOG = LoggerFactory.getLogger(EmbeddingColumnInfoStore.class);
   private static final ObjectMapper JSON = new ObjectMapper()
       .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION).enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-  private static final Set<String> SNAPSHOT_FIELDS = fields("layout_version", "revision", "events");
-  private static final Set<String> EVENT_FIELDS = fields("sequence", "column_name", "event", "instant", "added_at_instant", "identity");
-  private static final Set<String> IDENTITY_FIELDS = fields("provider", "model_name", "dimension", "model_version");
+  private static final String FIELD_REVISION = "revision";
+  private static final String FIELD_INSTANT = "instant";
+  private static final String FIELD_LAYOUT_VERSION = "layout_version";
+  private static final String EVENT_ADD = "add";
+  private static final String EVENT_RETIRE = "retire";
+  private static final String EVENT_RECOVER = "recover";
+  private static final String FIELD_DIMENSION = "dimension";
+  private static final String FIELD_EVENTS = "events";
+  private static final String FIELD_COLUMN_NAME = "column_name";
+  private static final String FIELD_EVENT = "event";
+  private static final String FIELD_IDENTITY = "identity";
+  private static final String FIELD_SEQUENCE = "sequence";
+  private static final String FIELD_PROVIDER = "provider";
+  private static final String FIELD_MODEL_NAME = "model_name";
+  private static final String FIELD_MODEL_VERSION = "model_version";
+  private static final String FIELD_ADDED_AT_INSTANT = "added_at_instant";
+  private static final String VECTOR_COLUMN = "VECTOR column ";
+  private static final Set<String> SNAPSHOT_FIELDS = fields(FIELD_LAYOUT_VERSION, FIELD_REVISION, FIELD_EVENTS);
+  private static final Set<String> EVENT_FIELDS = fields(FIELD_SEQUENCE, FIELD_COLUMN_NAME, FIELD_EVENT, FIELD_INSTANT, FIELD_ADDED_AT_INSTANT, FIELD_IDENTITY);
+  private static final Set<String> IDENTITY_FIELDS = fields(FIELD_PROVIDER, FIELD_MODEL_NAME, FIELD_DIMENSION, FIELD_MODEL_VERSION);
 
   private final String basePath;
   // The table writer passes its configured path verbatim; lock providers may key on that exact string.
@@ -177,7 +194,7 @@ public class EmbeddingColumnInfoStore {
    * is durable; visibility remains old or new.
    */
   public void publishAfterCommit(String instant, Update update) {
-    requireInstant(instant, "instant");
+    requireInstant(instant, FIELD_INSTANT);
     if (!basePath.equals(update.basePath)) {
       throw invalid("Update belongs to another table");
     }
@@ -206,8 +223,8 @@ public class EmbeddingColumnInfoStore {
     long sequence = snapshot.events.isEmpty() ? 0 : snapshot.events.get(snapshot.events.size() - 1).sequence;
     for (String column : update.retired) {
       Event previous = snapshot.latest.get(column);
-      if (!"retire".equals(previous.event)) {
-        appended.add(new Event(next(sequence), column, "retire", instant, previous.addedAt, previous.identity));
+      if (!EVENT_RETIRE.equals(previous.action)) {
+        appended.add(new Event(next(sequence), column, EVENT_RETIRE, instant, previous.addedAt, previous.identity));
         sequence++;
       }
     }
@@ -219,7 +236,7 @@ public class EmbeddingColumnInfoStore {
         String knownBirth = snapshot.revision == 0 ? null : update.knownBirths.get(entry.getKey());
         boolean recovery = existing && knownBirth == null;
         String eventInstant = knownBirth == null ? instant : knownBirth;
-        appended.add(new Event(next(sequence), entry.getKey(), recovery ? "recover" : "add", eventInstant,
+        appended.add(new Event(next(sequence), entry.getKey(), recovery ? EVENT_RECOVER : EVENT_ADD, eventInstant,
             recovery ? null : eventInstant, entry.getValue()));
         sequence++;
       }
@@ -325,7 +342,7 @@ public class EmbeddingColumnInfoStore {
     missing.removeAll(authority.latest.keySet());
     for (Event event : published.events) {
       if (missing.contains(event.column)) {
-        merged.add(new Event(next(sequence), event.column, event.event, event.instant, event.addedAt, event.identity));
+        merged.add(new Event(next(sequence), event.column, event.action, event.instant, event.addedAt, event.identity));
         sequence++;
       }
     }
@@ -338,8 +355,8 @@ public class EmbeddingColumnInfoStore {
       if (!previous.identity.equals(event.identity)) {
         throw invalid("VECTOR column " + event.column + " has conflicting committed model identities");
       }
-      if ("retire".equals(event.event) && !"retire".equals(previous.event)) {
-        merged.add(new Event(next(sequence), event.column, "retire", event.instant, previous.addedAt, previous.identity));
+      if (EVENT_RETIRE.equals(event.action) && !EVENT_RETIRE.equals(previous.action)) {
+        merged.add(new Event(next(sequence), event.column, EVENT_RETIRE, event.instant, previous.addedAt, previous.identity));
         sequence++;
       }
     }
@@ -361,15 +378,10 @@ public class EmbeddingColumnInfoStore {
    * Archived/unprovable history and whole-file loss therefore keep the recover/unknown-birth policy.
    */
   private Map<String, String> committedColumnBirths(HoodieTableMetaClient meta, Snapshot snapshot, Update update) throws IOException {
-    Map<String, Integer> missing = new TreeMap<>();
     if (snapshot.revision == 0) {
       return Collections.emptyMap();
     }
-    update.configured.forEach((column, identity) -> {
-      if (update.existing.containsKey(column) && !snapshot.latest.containsKey(column)) {
-        missing.put(column, identity.dimension);
-      }
-    });
+    Map<String, Integer> missing = missingIdentityColumns(snapshot, update);
     if (missing.isEmpty()) {
       return Collections.emptyMap();
     }
@@ -386,33 +398,53 @@ public class EmbeddingColumnInfoStore {
         if (WriteOperationType.canUpdateSchema(commit.getOperationType())) {
           knownAbsent.clear();
         }
-        continue;
-      }
-      HoodieSchema schema = HoodieSchema.parse(schemaJson);
-      for (Map.Entry<String, Integer> entry : missing.entrySet()) {
-        String column = entry.getKey();
-        if (seen.contains(column)) {
-          continue;
+      } else {
+        recordSchemaTransitions(meta, instant, HoodieSchema.parse(schemaJson), missing, knownAbsent, seen, births);
+        if (seen.size() == missing.size()) {
+          break;
         }
-        Option<HoodieSchemaField> field = schema.getField(column);
-        if (!field.isPresent()) {
-          knownAbsent.put(column, instant.requestedTime());
-        } else {
-          seen.add(column);
-          HoodieSchema type = field.get().schema().getNonNullType();
-          String absentAt = knownAbsent.remove(column);
-          if (absentAt != null && type.getType() == HoodieSchemaType.VECTOR
-              && ((HoodieSchema.Vector) type).getDimension() == entry.getValue()
-              && !hasArchivedWriteBetween(meta, absentAt, instant.requestedTime())) {
-            births.put(column, instant.requestedTime());
-          }
-        }
-      }
-      if (seen.size() == missing.size()) {
-        break;
       }
     }
     return births;
+  }
+
+  /** Returns the configured, physically present columns with no history entry, mapped to their configured dimension. */
+  private static Map<String, Integer> missingIdentityColumns(Snapshot snapshot, Update update) {
+    Map<String, Integer> missing = new TreeMap<>();
+    update.configured.forEach((column, identity) -> {
+      if (update.existing.containsKey(column) && !snapshot.latest.containsKey(column)) {
+        missing.put(column, identity.dimension);
+      }
+    });
+    return missing;
+  }
+
+  /**
+   * Records, for each not-yet-seen missing column, its absence from or first appearance in one committed schema; a first
+   * appearance right after a proven absence, with the configured VECTOR dimension and no archived write between, is a birth.
+   */
+  private void recordSchemaTransitions(HoodieTableMetaClient meta, HoodieInstant instant, HoodieSchema schema,
+                                              Map<String, Integer> missing, Map<String, String> knownAbsent,
+                                              Set<String> seen, Map<String, String> births) {
+    for (Map.Entry<String, Integer> entry : missing.entrySet()) {
+      String column = entry.getKey();
+      if (seen.contains(column)) {
+        continue;
+      }
+      Option<HoodieSchemaField> field = schema.getField(column);
+      if (!field.isPresent()) {
+        knownAbsent.put(column, instant.requestedTime());
+      } else {
+        seen.add(column);
+        HoodieSchema type = field.get().schema().getNonNullType();
+        String absentAt = knownAbsent.remove(column);
+        if (absentAt != null && type.getType() == HoodieSchemaType.VECTOR
+            && ((HoodieSchema.Vector) type).getDimension() == entry.getValue()
+            && !hasArchivedWriteBetween(meta, absentAt, instant.requestedTime())) {
+          births.put(column, instant.requestedTime());
+        }
+      }
+    }
   }
 
   /** Checks only archive timestamps/actions, because retained savepoints can leave holes in the active write timeline. */
@@ -425,8 +457,8 @@ public class EmbeddingColumnInfoStore {
       }
     };
     AtomicBoolean found = new AtomicBoolean();
-    loader.loadInstants(meta, interval, HoodieArchivedTimeline.LoadMode.ACTION, record -> {
-      Object value = record.get("action");
+    loader.loadInstants(meta, interval, HoodieArchivedTimeline.LoadMode.ACTION, archived -> {
+      Object value = archived.get("action");
       if (value == null) {
         // A historical record without an action cannot establish that the interval has no archived writes.
         return true;
@@ -434,40 +466,48 @@ public class EmbeddingColumnInfoStore {
       String action = value.toString();
       return HoodieTimeline.COMMIT_ACTION.equals(action) || HoodieTimeline.DELTA_COMMIT_ACTION.equals(action)
           || HoodieTimeline.REPLACE_COMMIT_ACTION.equals(action);
-    }, (instant, record) -> found.set(true), Option.of(1));
+    }, (instant, archived) -> found.set(true), Option.of(1));
     return found.get();
   }
 
   private void validate(Snapshot snapshot, Update update, boolean atStart) {
     for (Map.Entry<String, Identity> entry : update.configured.entrySet()) {
-      String column = entry.getKey();
-      Integer physicalDimension = update.existing.get(column);
-      if (physicalDimension != null && physicalDimension != entry.getValue().dimension) {
-        throw invalid("VECTOR column " + column + " has dimension " + physicalDimension
-            + ", configured model requires " + entry.getValue().dimension);
-      }
-      Event current = snapshot.latest.get(column);
-      if (current != null) {
-        if ("retire".equals(current.event)) {
-          throw invalid("VECTOR column " + column + " is retired; use a new physical column name");
-        }
-        if (!current.identity.equals(entry.getValue())) {
-          throw invalid("VECTOR column " + column + " has a different model identity; use a new physical column name");
-        }
-      } else if (atStart && physicalDimension != null && warned.add(column)) {
-        LOG.warn("Embedding VECTOR column {} has no model identity information; skipping identity validation and recovering "
-            + "the configured identity after a successful commit (dimension validation still applies)", column);
-      }
+      validateConfigured(snapshot, entry.getKey(), entry.getValue(), update.existing.get(entry.getKey()), atStart);
     }
     for (String column : update.retired) {
-      Event current = snapshot.latest.get(column);
-      if (current == null) {
-        throw invalid("Cannot retire VECTOR column " + column + " without known active identity history");
+      validateRetired(snapshot, column);
+    }
+  }
+
+  /** A configured column: its physical dimension and its identity history agree with the configuration. */
+  private void validateConfigured(Snapshot snapshot, String column, Identity configured, Integer physicalDimension, boolean atStart) {
+    if (physicalDimension != null && physicalDimension != configured.dimension) {
+      throw invalid(VECTOR_COLUMN + column + " has dimension " + physicalDimension
+          + ", configured model requires " + configured.dimension);
+    }
+    Event current = snapshot.latest.get(column);
+    if (current != null) {
+      if (EVENT_RETIRE.equals(current.action)) {
+        throw invalid(VECTOR_COLUMN + column + " is retired; use a new physical column name");
       }
-      if (current.addedAt == null) {
-        throw invalid("Cannot retire recovered VECTOR column " + column
-            + " with unknown creation instant: layout 1 permits null added_at_instant only on recover events");
+      if (!current.identity.equals(configured)) {
+        throw invalid(VECTOR_COLUMN + column + " has a different model identity; use a new physical column name");
       }
+    } else if (atStart && physicalDimension != null && warned.add(column)) {
+      LOG.warn("Embedding VECTOR column {} has no model identity information; skipping identity validation and recovering "
+          + "the configured identity after a successful commit (dimension validation still applies)", column);
+    }
+  }
+
+  /** A column to retire has a known, non-recovered identity history. */
+  private static void validateRetired(Snapshot snapshot, String column) {
+    Event current = snapshot.latest.get(column);
+    if (current == null) {
+      throw invalid("Cannot retire " + VECTOR_COLUMN + column + " without known active identity history");
+    }
+    if (current.addedAt == null) {
+      throw invalid("Cannot retire recovered " + VECTOR_COLUMN + column
+          + " with unknown creation instant: layout 1 permits null added_at_instant only on recover events");
     }
   }
 
@@ -495,11 +535,11 @@ public class EmbeddingColumnInfoStore {
 
   private static Snapshot parseSnapshot(JsonNode root) {
     exactFields(root, SNAPSHOT_FIELDS, SNAPSHOT_FIELDS, "snapshot");
-    if (positiveLong(root.get("layout_version"), "layout_version") != 1) {
+    if (positiveLong(root.get(FIELD_LAYOUT_VERSION), FIELD_LAYOUT_VERSION) != 1) {
       throw invalid("Embedding column info layout_version disagrees with table property 1");
     }
-    long revision = positiveLong(root.get("revision"), "revision");
-    JsonNode events = root.get("events");
+    long revision = positiveLong(root.get(FIELD_REVISION), FIELD_REVISION);
+    JsonNode events = root.get(FIELD_EVENTS);
     if (!events.isArray()) {
       throw invalid("events must be an array");
     }
@@ -511,15 +551,7 @@ public class EmbeddingColumnInfoStore {
       if (event.sequence <= sequence) {
         throw invalid("Event sequences must be unique and strictly increasing");
       }
-      Event previous = latest.get(event.column);
-      if ("retire".equals(event.event)) {
-        if (previous == null || "retire".equals(previous.event) || !previous.identity.equals(event.identity)
-            || !Objects.equals(previous.addedAt, event.addedAt)) {
-          throw invalid("Invalid retirement history for VECTOR column " + event.column);
-        }
-      } else if (previous != null) {
-        throw invalid("VECTOR column " + event.column + " has repeated creation or reuses a retired name");
-      }
+      checkFollows(latest.get(event.column), event);
       latest.put(event.column, event);
       parsed.add(event);
       sequence = event.sequence;
@@ -527,35 +559,47 @@ public class EmbeddingColumnInfoStore {
     return new Snapshot(revision, parsed);
   }
 
+  /** A retire event follows a live event of the same identity and creation instant; any other event is the column's first. */
+  private static void checkFollows(Event previous, Event event) {
+    if (EVENT_RETIRE.equals(event.action)) {
+      if (previous == null || EVENT_RETIRE.equals(previous.action) || !previous.identity.equals(event.identity)
+          || !Objects.equals(previous.addedAt, event.addedAt)) {
+        throw invalid("Invalid retirement history for VECTOR column " + event.column);
+      }
+    } else if (previous != null) {
+      throw invalid(VECTOR_COLUMN + event.column + " has repeated creation or reuses a retired name");
+    }
+  }
+
   private static Event parseEvent(JsonNode node) {
-    exactFields(node, EVENT_FIELDS, EVENT_FIELDS, "event");
-    long sequence = positiveLong(node.get("sequence"), "sequence");
-    String column = text(node.get("column_name"), "column_name");
-    String action = text(node.get("event"), "event");
-    if (!Arrays.asList("add", "retire", "recover").contains(action)) {
+    exactFields(node, EVENT_FIELDS, EVENT_FIELDS, FIELD_EVENT);
+    long sequence = positiveLong(node.get(FIELD_SEQUENCE), FIELD_SEQUENCE);
+    String column = text(node.get(FIELD_COLUMN_NAME), FIELD_COLUMN_NAME);
+    String action = text(node.get(FIELD_EVENT), FIELD_EVENT);
+    if (!Arrays.asList(EVENT_ADD, EVENT_RETIRE, EVENT_RECOVER).contains(action)) {
       throw invalid("Unknown column event " + action);
     }
-    String instant = text(node.get("instant"), "instant");
-    requireInstant(instant, "instant");
-    JsonNode birth = node.get("added_at_instant");
-    String addedAt = birth.isNull() ? null : text(birth, "added_at_instant");
-    if (addedAt == null && !"recover".equals(action)) {
+    String instant = text(node.get(FIELD_INSTANT), FIELD_INSTANT);
+    requireInstant(instant, FIELD_INSTANT);
+    JsonNode birth = node.get(FIELD_ADDED_AT_INSTANT);
+    String addedAt = birth.isNull() ? null : text(birth, FIELD_ADDED_AT_INSTANT);
+    if (addedAt == null && !EVENT_RECOVER.equals(action)) {
       throw invalid("Null added_at_instant is permitted only for recover events");
     }
     if (addedAt != null) {
-      requireInstant(addedAt, "added_at_instant");
+      requireInstant(addedAt, FIELD_ADDED_AT_INSTANT);
     }
-    if ("add".equals(action) && !instant.equals(addedAt)) {
+    if (EVENT_ADD.equals(action) && !instant.equals(addedAt)) {
       throw invalid("An add event must retain its actual creation instant");
     }
-    JsonNode identity = node.get("identity");
-    exactFields(identity, IDENTITY_FIELDS, fields("provider", "model_name", "dimension"), "identity");
-    long dimension = positiveLong(identity.get("dimension"), "dimension");
+    JsonNode identity = node.get(FIELD_IDENTITY);
+    exactFields(identity, IDENTITY_FIELDS, fields(FIELD_PROVIDER, FIELD_MODEL_NAME, FIELD_DIMENSION), FIELD_IDENTITY);
+    long dimension = positiveLong(identity.get(FIELD_DIMENSION), FIELD_DIMENSION);
     if (dimension > Integer.MAX_VALUE) {
       throw invalid("dimension exceeds integer range");
     }
-    Identity model = new Identity(text(identity.get("provider"), "provider"), text(identity.get("model_name"), "model_name"),
-        (int) dimension, identity.has("model_version") ? text(identity.get("model_version"), "model_version") : null);
+    Identity model = new Identity(text(identity.get(FIELD_PROVIDER), FIELD_PROVIDER), text(identity.get(FIELD_MODEL_NAME), FIELD_MODEL_NAME),
+        (int) dimension, identity.has(FIELD_MODEL_VERSION) ? text(identity.get(FIELD_MODEL_VERSION), FIELD_MODEL_VERSION) : null);
     return new Event(sequence, column, action, instant, addedAt, model);
   }
 
@@ -598,26 +642,26 @@ public class EmbeddingColumnInfoStore {
 
   private static byte[] serialize(Snapshot snapshot) throws IOException {
     ObjectNode root = JSON.createObjectNode();
-    root.put("layout_version", 1);
-    root.put("revision", snapshot.revision);
-    ArrayNode events = root.putArray("events");
+    root.put(FIELD_LAYOUT_VERSION, 1);
+    root.put(FIELD_REVISION, snapshot.revision);
+    ArrayNode events = root.putArray(FIELD_EVENTS);
     for (Event event : snapshot.events) {
       ObjectNode node = events.addObject();
-      node.put("sequence", event.sequence);
-      node.put("column_name", event.column);
-      node.put("event", event.event);
-      node.put("instant", event.instant);
+      node.put(FIELD_SEQUENCE, event.sequence);
+      node.put(FIELD_COLUMN_NAME, event.column);
+      node.put(FIELD_EVENT, event.action);
+      node.put(FIELD_INSTANT, event.instant);
       if (event.addedAt == null) {
-        node.putNull("added_at_instant");
+        node.putNull(FIELD_ADDED_AT_INSTANT);
       } else {
-        node.put("added_at_instant", event.addedAt);
+        node.put(FIELD_ADDED_AT_INSTANT, event.addedAt);
       }
-      ObjectNode identity = node.putObject("identity");
-      identity.put("provider", event.identity.provider);
-      identity.put("model_name", event.identity.modelName);
-      identity.put("dimension", event.identity.dimension);
+      ObjectNode identity = node.putObject(FIELD_IDENTITY);
+      identity.put(FIELD_PROVIDER, event.identity.provider);
+      identity.put(FIELD_MODEL_NAME, event.identity.modelName);
+      identity.put(FIELD_DIMENSION, event.identity.dimension);
       if (event.identity.modelVersion != null) {
-        identity.put("model_version", event.identity.modelVersion);
+        identity.put(FIELD_MODEL_VERSION, event.identity.modelVersion);
       }
     }
     return JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(root);
@@ -695,7 +739,7 @@ public class EmbeddingColumnInfoStore {
 
   private static void requireInstant(String instant, String label) {
     nonempty(instant, label);
-    if (!instant.matches("[0-9]+")) {
+    if (!instant.matches("\\d+")) {
       throw invalid(label + " must be a Hudi requested-instant string");
     }
   }
@@ -732,15 +776,15 @@ public class EmbeddingColumnInfoStore {
       this.existing = Collections.unmodifiableMap(new TreeMap<>(existing));
       this.retired = Collections.unmodifiableSet(new TreeSet<>(retired));
       for (Map.Entry<String, Identity> entry : this.configured.entrySet()) {
-        nonempty(entry.getKey(), "column_name");
+        nonempty(entry.getKey(), FIELD_COLUMN_NAME);
         Objects.requireNonNull(entry.getValue(), "model identity");
         if (this.retired.contains(entry.getKey())) {
-          throw invalid("VECTOR column " + entry.getKey() + " cannot be configured and retired in the same round");
+          throw invalid(VECTOR_COLUMN + entry.getKey() + " cannot be configured and retired in the same round");
         }
       }
-      this.retired.forEach(column -> nonempty(column, "column_name"));
+      this.retired.forEach(column -> nonempty(column, FIELD_COLUMN_NAME));
       this.existing.forEach((column, dimension) -> {
-        nonempty(column, "column_name");
+        nonempty(column, FIELD_COLUMN_NAME);
         if (dimension == null || dimension < 1) {
           throw invalid("VECTOR dimension must be positive for column " + column);
         }
@@ -761,13 +805,13 @@ public class EmbeddingColumnInfoStore {
     private final String modelVersion;
 
     public Identity(String provider, String modelName, int dimension, String modelVersion) {
-      this.provider = nonempty(provider, "provider");
-      this.modelName = nonempty(modelName, "model_name");
+      this.provider = nonempty(provider, FIELD_PROVIDER);
+      this.modelName = nonempty(modelName, FIELD_MODEL_NAME);
       if (dimension < 1) {
         throw invalid("dimension must be positive");
       }
       this.dimension = dimension;
-      this.modelVersion = modelVersion == null ? null : nonempty(modelVersion, "model_version");
+      this.modelVersion = modelVersion == null ? null : nonempty(modelVersion, FIELD_MODEL_VERSION);
     }
 
     public String getProvider() {
@@ -808,7 +852,7 @@ public class EmbeddingColumnInfoStore {
   private static final class Event {
     private final long sequence;
     private final String column;
-    private final String event;
+    private final String action;
     private final String instant;
     private final String addedAt;
     private final Identity identity;
@@ -816,7 +860,7 @@ public class EmbeddingColumnInfoStore {
     private Event(long sequence, String column, String event, String instant, String addedAt, Identity identity) {
       this.sequence = sequence;
       this.column = column;
-      this.event = event;
+      this.action = event;
       this.instant = instant;
       this.addedAt = addedAt;
       this.identity = identity;

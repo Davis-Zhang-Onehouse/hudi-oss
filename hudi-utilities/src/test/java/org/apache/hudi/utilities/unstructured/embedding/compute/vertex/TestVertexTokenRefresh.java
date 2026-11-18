@@ -72,7 +72,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * file an external refresher rewrites, or from a Google service-account credential whose token endpoint is
  * {@link GoogleTokenStubServer}. No live call.
  */
-public class TestVertexTokenRefresh {
+class TestVertexTokenRefresh {
 
   private static final String ALIAS = "mm";
   private static final int INPUTS = 7;
@@ -98,7 +98,7 @@ public class TestVertexTokenRefresh {
   private final Map<String, String> environment = new HashMap<>();
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     stub = new VertexStubServer();
     tokens = new GoogleTokenStubServer();
     tokenFile = tempDir.resolve("token");
@@ -108,14 +108,14 @@ public class TestVertexTokenRefresh {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     stub.close();
     tokens.close();
   }
 
   /** A token file rewritten by a refresher (a sidecar, a cron) is read again on a 401: every input embeds once. */
   @Test
-  public void tokenFileRewrittenByARefresherIsReadAgainOn401() throws Exception {
+  void tokenFileRewrittenByARefresherIsReadAgainOn401() throws Exception {
     props.setProperty(key(VertexClientConfig.CREDENTIAL_FILE_SUFFIX), tokenFile.toString());
     AtomicInteger generation = new AtomicInteger(1);
     stub.expireTokensAfter(2, expired -> write(tokenFile, "file-token-" + generation.incrementAndGet() + "\n"));
@@ -129,7 +129,7 @@ public class TestVertexTokenRefresh {
 
   /** A service-account credential refreshes from its token endpoint on a 401: every input embeds once. */
   @Test
-  public void serviceAccountCredentialRefreshesOn401() throws Exception {
+  void serviceAccountCredentialRefreshesOn401() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     stub.expireTokensAfter(2, expired -> { });
 
@@ -145,7 +145,7 @@ public class TestVertexTokenRefresh {
 
   /** A token close to its expiry is refreshed before the request: no 401 is ever answered. */
   @Test
-  public void serviceAccountCredentialRefreshesAheadOfExpiry() throws Exception {
+  void serviceAccountCredentialRefreshesAheadOfExpiry() throws Exception {
     // inside the refresh margin (3 min 45 s): every token is due for refresh before its next use
     tokens.expiresIn(60);
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
@@ -160,7 +160,7 @@ public class TestVertexTokenRefresh {
 
   /** On the client's clock: a token is reused until its refresh margin, then replaced before any 401. */
   @Test
-  public void tokenIsReplacedWhenItsExpiryNears() throws Exception {
+  void tokenIsReplacedWhenItsExpiryNears() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     VertexMultimodalEmbeddingClient client = client();
 
@@ -177,7 +177,7 @@ public class TestVertexTokenRefresh {
 
   /** A token that lives longer than the client's work is fetched once and reused. */
   @Test
-  public void serviceAccountTokenIsReusedWhileFresh() throws Exception {
+  void serviceAccountTokenIsReusedWhileFresh() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
 
     assertEveryInputEmbeddedOnce(client().embed(texts(3)));
@@ -187,13 +187,14 @@ public class TestVertexTokenRefresh {
 
   /** The token endpoint rejects the grant at a refresh mid-call: a configuration failure, the token never echoed. */
   @Test
-  public void rejectedRefreshIsAConfigFailure() throws Exception {
+  void rejectedRefreshIsAConfigFailure() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     stub.expireTokensAfter(2, expired -> tokens.enqueue(400,
         "{\"error\":\"invalid_grant\",\"error_description\":\"Invalid JWT Signature.\"}"));
     VertexMultimodalEmbeddingClient client = client();
 
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(texts(INPUTS)));
+    List<EmbeddingInput> inputs = texts(INPUTS);
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
 
     assertTrue(e.getMessage().contains("refresh"), e.getMessage());
     assertTrue(e.getMessage().contains("google"), e.getMessage());
@@ -204,11 +205,13 @@ public class TestVertexTokenRefresh {
 
   /** The token endpoint rejects the first grant: a configuration failure before any Vertex request. */
   @Test
-  public void rejectedFirstGrantIsAConfigFailure() throws Exception {
+  void rejectedFirstGrantIsAConfigFailure() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     tokens.enqueue(401, "{\"error\":\"invalid_client\",\"error_description\":\"The OAuth client was not found.\"}");
 
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client().embed(texts(1)));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = texts(1);
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
 
     assertTrue(e.getMessage().contains("google file "), e.getMessage());
     assertEquals(0, stub.requests().size());
@@ -216,14 +219,15 @@ public class TestVertexTokenRefresh {
 
   /** The token endpoint keeps failing with 5xx: the provider is unavailable (an outage), not the rows' fault. */
   @Test
-  public void unavailableTokenEndpointIsAnOutage() throws Exception {
+  void unavailableTokenEndpointIsAnOutage() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     for (int i = 0; i < 10; i++) {
       tokens.enqueue(503, "{\"error\":\"backend_error\"}");
     }
 
-    EmbeddingProviderUnavailableException e = assertThrows(EmbeddingProviderUnavailableException.class,
-        () -> client().embed(texts(1)));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = texts(1);
+    EmbeddingProviderUnavailableException e = assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(inputs));
 
     assertTrue(e.getMessage().contains("google file "), e.getMessage());
     assertTrue(e.getMessage().contains("HTTP 503"), e.getMessage());
@@ -234,7 +238,7 @@ public class TestVertexTokenRefresh {
 
   /** One failed attempt at the token endpoint is retried after a backoff: the call goes on. */
   @Test
-  public void transientTokenEndpointFailureIsRetried() throws Exception {
+  void transientTokenEndpointFailureIsRetried() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     tokens.enqueue(503, "{\"error\":\"backend_error\"}");
 
@@ -248,7 +252,7 @@ public class TestVertexTokenRefresh {
    * names, asked with {@code Metadata-Flavor: Google}; it is asked again on a 401.
    */
   @Test
-  public void metadataServerIsTheDefaultCredential() throws Exception {
+  void metadataServerIsTheDefaultCredential() throws Exception {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     environment.put("GCE_METADATA_HOST", tokens.metadataHost());
     stub.expireTokensAfter(2, expired -> { });
@@ -262,7 +266,7 @@ public class TestVertexTokenRefresh {
 
   /** GOOGLE_APPLICATION_CREDENTIALS names the service-account key when no file is configured. */
   @Test
-  public void applicationCredentialsVariableNamesTheKey() throws Exception {
+  void applicationCredentialsVariableNamesTheKey() throws Exception {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     environment.put("GOOGLE_APPLICATION_CREDENTIALS", tokens.writeServiceAccountKey(tempDir.resolve("adc.json")).toString());
     environment.put("GCE_METADATA_HOST", "127.0.0.1:9");
@@ -274,7 +278,7 @@ public class TestVertexTokenRefresh {
 
   /** A credential file of another type (e.g. workload identity federation) is refused at init, naming the type. */
   @Test
-  public void otherCredentialTypesAreRefused() throws IOException {
+  void otherCredentialTypesAreRefused() {
     Path federation = tempDir.resolve("wif.json");
     write(federation, "{\"type\":\"external_account\",\"audience\":\"//iam.googleapis.com/x\"}");
     google(federation);
@@ -287,7 +291,7 @@ public class TestVertexTokenRefresh {
    * in production, so there a 401 on an env token stays a configuration failure; only a token file can be refreshed from outside.
    */
   @Test
-  public void tokenEnvironmentVariableIsReadAgainOn401() throws Exception {
+  void tokenEnvironmentVariableIsReadAgainOn401() throws Exception {
     props.setProperty(key(VertexClientConfig.CREDENTIAL_ENV_SUFFIX), "VERTEX_TOKEN");
     environment.put("VERTEX_TOKEN", "env-token-1");
     AtomicInteger generation = new AtomicInteger(1);
@@ -299,12 +303,14 @@ public class TestVertexTokenRefresh {
 
   /** A 401 for a token that was just refreshed is the credential's configuration (e.g. a wrong project): no loop. */
   @Test
-  public void http401AfterARefreshIsAConfigFailure() throws Exception {
+  void http401AfterARefreshIsAConfigFailure() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     stub.enqueue(401, "error-401.json");
     stub.enqueue(401, "error-401.json");
 
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client().embed(texts(1)));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = texts(1);
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
 
     assertTrue(e.getMessage().contains("HTTP 401"), e.getMessage());
     assertEquals(2, tokens.issued(), "one refresh, no more: " + tokens.grants());
@@ -313,17 +319,19 @@ public class TestVertexTokenRefresh {
 
   /** 403 is a permission the credential lacks, not an expiry: no refresh. */
   @Test
-  public void http403IsNotRefreshed() throws Exception {
+  void http403IsNotRefreshed() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     stub.enqueueStatus(403, "{\"error\":{\"code\":403,\"status\":\"PERMISSION_DENIED\"}}");
 
-    assertThrows(EmbeddingClientConfigException.class, () -> client().embed(texts(1)));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = texts(1);
+    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertEquals(1, tokens.issued());
     assertEquals(1, stub.requests().size());
   }
 
   @Test
-  public void malformedCredentialFileFailsInit() throws IOException {
+  void malformedCredentialFileFailsInit() {
     google(tempDir.resolve("not-a-key.json"));
     write(tempDir.resolve("not-a-key.json"), "{\"type\":\"service_account\"}");
     EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, this::client);
@@ -331,22 +339,23 @@ public class TestVertexTokenRefresh {
   }
 
   @Test
-  public void sourceIsValidatedOnTheDriver() {
+  void sourceIsValidatedOnTheDriver() {
     props.setProperty(key(SOURCE_SUFFIX), "vault");
+    EmbeddingModelSpec spec = spec();
     IllegalArgumentException unknown = assertThrows(IllegalArgumentException.class,
-        () -> EmbeddingClientFactory.checkConfig(spec(), props));
+        () -> EmbeddingClientFactory.checkConfig(spec, props));
     assertTrue(unknown.getMessage().contains(key(SOURCE_SUFFIX)), unknown.getMessage());
 
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     props.setProperty(key(VertexClientConfig.CREDENTIAL_ENV_SUFFIX), "SOME_TOKEN_ENV");
     IllegalArgumentException env = assertThrows(IllegalArgumentException.class,
-        () -> EmbeddingClientFactory.checkConfig(spec(), props));
+        () -> EmbeddingClientFactory.checkConfig(spec, props));
     assertTrue(env.getMessage().contains(key(VertexClientConfig.CREDENTIAL_ENV_SUFFIX)), env.getMessage());
   }
 
   /** A token endpoint that is not an http(s) URL is the configuration, refused at init, never a per-row failure. */
   @Test
-  public void invalidTokenEndpointIsRefusedAtInit() throws IOException {
+  void invalidTokenEndpointIsRefusedAtInit() throws IOException {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     environment.put("GCE_METADATA_HOST", "host_with_underscore:8080");
     EmbeddingClientConfigException metadata = assertThrows(EmbeddingClientConfigException.class, this::client);
@@ -363,7 +372,7 @@ public class TestVertexTokenRefresh {
 
   /** No key and no metadata server (a host off Google Cloud): no credential at all, the configuration, never an outage. */
   @Test
-  public void missingMetadataServerIsAConfigFailure() {
+  void missingMetadataServerIsAConfigFailure() {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     // the default metadata host off Google Cloud, as the HTTP client reports it, without a DNS lookup
     GoogleAccessTokens google = new GoogleAccessTokens(VertexClientConfig.from(spec(), props), now::get, sleeper,
@@ -380,18 +389,19 @@ public class TestVertexTokenRefresh {
 
   /** A minted token that is not one printable token is never sent (the HTTP client would echo it) and never quoted. */
   @Test
-  public void nonPrintableMintedTokenIsAnOutageWithoutTheValue() throws Exception {
+  void nonPrintableMintedTokenIsAnOutageWithoutTheValue() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     tokens.enqueue(200, "{\"access_token\":\"ya29.leaked\\nvalue\",\"expires_in\":3600}");
-    EmbeddingProviderUnavailableException e = assertThrows(EmbeddingProviderUnavailableException.class,
-        () -> client().embed(texts(1)));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = texts(1);
+    EmbeddingProviderUnavailableException e = assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(inputs));
     assertFalse(e.getMessage().contains("leaked"), e.getMessage());
     assertEquals(0, stub.requests().size());
   }
 
   /** The token is chosen after the rate-limit wait: a wait that runs into the refresh margin sends a new token. */
   @Test
-  public void tokenIsChosenAfterTheRateLimitWait() throws Exception {
+  void tokenIsChosenAfterTheRateLimitWait() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     // 400 s of life, so 175 s before the 225 s margin; one request every 100 s
     tokens.expiresIn(400);
@@ -407,11 +417,13 @@ public class TestVertexTokenRefresh {
 
   /** A rejected credential names the source actually used, e.g. the key GOOGLE_APPLICATION_CREDENTIALS names. */
   @Test
-  public void rejectionNamesTheCredentialActuallyUsed() throws Exception {
+  void rejectionNamesTheCredentialActuallyUsed() throws Exception {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     environment.put("GOOGLE_APPLICATION_CREDENTIALS", tokens.writeServiceAccountKey(tempDir.resolve("adc.json")).toString());
     stub.enqueueStatus(403, "{\"error\":{\"code\":403,\"status\":\"PERMISSION_DENIED\"}}");
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client().embed(texts(1)));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = texts(1);
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(e.getMessage().contains("adc.json (from GOOGLE_APPLICATION_CREDENTIALS)"), e.getMessage());
   }
 
@@ -420,7 +432,7 @@ public class TestVertexTokenRefresh {
    * for a token only inside its refresh margin, and then gets a new one: the margin is inside the server's cache window.
    */
   @Test
-  public void metadataServerCachedTokenIsReplacedInsideTheMargin() throws Exception {
+  void metadataServerCachedTokenIsReplacedInsideTheMargin() throws Exception {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     environment.put("GCE_METADATA_HOST", tokens.metadataHost());
     tokens.cacheMetadataTokens(now::get);
@@ -444,17 +456,19 @@ public class TestVertexTokenRefresh {
 
   /** A metadata server without a service account for the workload (404) is the configuration. */
   @Test
-  public void metadataServer404IsAConfigFailure() {
+  void metadataServer404IsAConfigFailure() {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     environment.put("GCE_METADATA_HOST", tokens.metadataHost());
     tokens.enqueue(404, "service account not found");
-    assertThrows(EmbeddingClientConfigException.class, () -> client().embed(texts(1)));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = texts(1);
+    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertEquals(1, tokens.grants().size());
   }
 
   /** A private_key that is not a key never reaches a message. */
   @Test
-  public void unusablePrivateKeyIsNeverQuoted() throws IOException {
+  void unusablePrivateKeyIsNeverQuoted() throws IOException {
     Path key = tokens.writeServiceAccountKey(tempDir.resolve("sa.json"));
     ObjectNode json = (ObjectNode) VertexStubServer.MAPPER.readTree(key.toFile());
     json.put("private_key", "-----BEGIN PRIVATE KEY-----\nSECRETMATERIAL\n-----END PRIVATE KEY-----\n");
@@ -466,14 +480,15 @@ public class TestVertexTokenRefresh {
 
   /** An interrupt while waiting to retry the token endpoint ends the call as an interrupt, never as an outage. */
   @Test
-  public void interruptDuringTokenBackoffPropagates() throws Exception {
+  void interruptDuringTokenBackoffPropagates() throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     tokens.enqueue(503, "{}");
     VertexMultimodalEmbeddingClient client = new VertexMultimodalEmbeddingClient(now::get, millis -> {
       throw new InterruptedException("test");
     }, environment::get);
     client.init(spec(), props);
-    assertThrows(InterruptedException.class, () -> client.embed(texts(1)));
+    List<EmbeddingInput> inputs = texts(1);
+    assertThrows(InterruptedException.class, () -> client.embed(inputs));
   }
 
   /**
@@ -481,7 +496,7 @@ public class TestVertexTokenRefresh {
    * then an outage, never "no credential".
    */
   @Test
-  public void unknownHostAfterATokenIsAnOutage() throws Exception {
+  void unknownHostAfterATokenIsAnOutage() throws Exception {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     environment.put("GCE_METADATA_HOST", tokens.metadataHost());
     HttpClient http = HttpClient.newHttpClient();
@@ -504,7 +519,7 @@ public class TestVertexTokenRefresh {
 
   /** A metadata server that refuses the connection (e.g. while it restarts) is an outage, retried, never configuration. */
   @Test
-  public void refusedMetadataConnectionIsAnOutage() throws Exception {
+  void refusedMetadataConnectionIsAnOutage() throws Exception {
     int port;
     try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
       port = socket.getLocalPort();
@@ -512,8 +527,9 @@ public class TestVertexTokenRefresh {
     props.setProperty(key(SOURCE_SUFFIX), GOOGLE);
     environment.put("GCE_METADATA_HOST", "127.0.0.1:" + port);
 
-    EmbeddingProviderUnavailableException e = assertThrows(EmbeddingProviderUnavailableException.class,
-        () -> client().embed(texts(1)));
+    VertexMultimodalEmbeddingClient client = client();
+    List<EmbeddingInput> inputs = texts(1);
+    EmbeddingProviderUnavailableException e = assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(inputs));
 
     assertTrue(e.getMessage().contains("ConnectException"), e.getMessage());
     assertEquals(Arrays.asList(1_000L, 2_000L), sleeps);
@@ -521,7 +537,7 @@ public class TestVertexTokenRefresh {
   }
 
   @Test
-  public void refreshResendRateWaitStopsAtCallDeadline() throws Exception {
+  void refreshResendRateWaitStopsAtCallDeadline() throws Exception {
     props.setProperty(key(VertexClientConfig.CREDENTIAL_FILE_SUFFIX), tokenFile.toString());
     props.setProperty(key(RequestRateLimiter.RATE_LIMIT_REQUESTS_PER_SECOND_SUFFIX), "0.1");
     props.setProperty(key(".request.deadline.ms"), "1000");
@@ -542,7 +558,7 @@ public class TestVertexTokenRefresh {
 
   @ParameterizedTest
   @CsvSource({"1000, false", "1500, false", "1000, true", "1500, true", "2000, false", "2000, true"})
-  public void bearerPreparationCannotSendAtOrAfterCallDeadline(long deadline, boolean resend) throws Exception {
+  void bearerPreparationCannotSendAtOrAfterCallDeadline(long deadline, boolean resend) throws Exception {
     google(tokens.writeServiceAccountKey(tempDir.resolve("sa.json")));
     props.setProperty(key(RequestRateLimiter.RATE_LIMIT_REQUESTS_PER_SECOND_SUFFIX), "2");
     props.setProperty(key(".request.deadline.ms"), String.valueOf(deadline));

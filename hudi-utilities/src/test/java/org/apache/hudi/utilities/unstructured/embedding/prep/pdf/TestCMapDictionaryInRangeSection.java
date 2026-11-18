@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * scanner's containers do: an open dictionary does not hide a later bfrange section, and a dictionary delimiter inside a
  * section is refused.
  */
-public class TestCMapDictionaryInRangeSection {
+class TestCMapDictionaryInRangeSection {
 
   /** One code more than the cap: 0x000000 to 0x040000. */
   private static final String OVER_CAP_RANGE = "<000000> <040000> <0041> endbfrange";
@@ -55,7 +55,7 @@ public class TestCMapDictionaryInRangeSection {
       "2 beginbfrange <00> <05> [ endbfrange ] ",            // an end operator inside an array is an array element
       "2 beginbfrange <00> <05> [ [ endbfrange ] ] "
   })
-  public void dictionaryDelimitersDoNotHideTheRangeCodes(String prefix) throws Exception {
+  void dictionaryDelimitersDoNotHideTheRangeCodes(String prefix) throws Exception {
     String cmap = prefix + OVER_CAP_RANGE;
     assertNotNull(parseWithFontbox(cmap).toUnicode(LAST_CODE, 3), "fontbox expands the range of: " + cmap);
     StreamStructureScanner.Refusal failure =
@@ -64,7 +64,7 @@ public class TestCMapDictionaryInRangeSection {
   }
 
   @Test
-  public void wellFormedCMapWithADictionaryOutsideTheSectionPasses() throws Exception {
+  void wellFormedCMapWithADictionaryOutsideTheSectionPasses() throws Exception {
     String cmap = WELL_FORMED_HEADER + "1 beginbfrange\n<000001> <040000> <0041>\nendbfrange\n"
         + "/Extra << /Key 1 >> def\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
     assertNotNull(parseWithFontbox(cmap).toUnicode(LAST_CODE, 3));
@@ -72,7 +72,7 @@ public class TestCMapDictionaryInRangeSection {
   }
 
   @Test
-  public void wellFormedRangeWithAnArrayDestinationPassesAtTheCap() throws Exception {
+  void wellFormedRangeWithAnArrayDestinationPassesAtTheCap() throws Exception {
     String cmap = WELL_FORMED_HEADER + "2 beginbfrange\n<000001> <000002> [<0041> <0042>]\n<000003> <040000> <0041>\n"
         + "endbfrange\nendcmap\n";
     CMap parsed = parseWithFontbox(cmap);
@@ -82,7 +82,7 @@ public class TestCMapDictionaryInRangeSection {
   }
 
   @Test
-  public void wellFormedCMapWithADictionaryOutsideTheSectionStillCounts() throws Exception {
+  void wellFormedCMapWithADictionaryOutsideTheSectionStillCounts() {
     String cmap = WELL_FORMED_HEADER + "1 beginbfrange\n" + OVER_CAP_RANGE + "\nendcmap\n";
     assertThrows(StreamStructureScanner.Refusal.class, () -> scan(cmap));
   }

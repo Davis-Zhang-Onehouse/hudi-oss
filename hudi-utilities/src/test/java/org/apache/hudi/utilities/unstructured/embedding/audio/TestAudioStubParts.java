@@ -55,13 +55,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The audio stubs, the resolved audio configuration and the audio logic line (no Spark). */
-public class TestAudioStubParts {
+class TestAudioStubParts {
 
   @TempDir
   Path tempDir;
 
   @Test
-  public void stubSourceCutsTheClipDurationIntoFixedSegmentsAndResumes() throws IOException {
+  void stubSourceCutsTheClipDurationIntoFixedSegmentsAndResumes() throws IOException {
     Path clip = VideoClips.generate(tempDir.resolve("five.mp4"), 5, 10, 2, 160, 120, -1, -1);
     long duration = ClipDuration.millis(VideoClips.supplier(clip), "five");
     assertTrue(duration >= 4900 && duration <= 5200, "declared duration " + duration);
@@ -82,11 +82,12 @@ public class TestAudioStubParts {
     // resume at segment 2 (startMs = end of segment 1): the same segment, with its true index and span
     assertEquals(Collections.singletonList(names(all).get(2)), names(drain(source.segments(input(clip), 2, 4000, props))));
     assertTrue(drain(source.segments(input(clip), 3, duration, props)).isEmpty(), "every segment done");
-    assertThrows(IllegalArgumentException.class, () -> source.segments(input(clip), -1, 0, props));
+    AudioInput input = input(clip);
+    assertThrows(IllegalArgumentException.class, () -> source.segments(input, -1, 0, props));
   }
 
   @Test
-  public void segmentLongerThanTheClipIsTheWholeClip() throws IOException {
+  void segmentLongerThanTheClipIsTheWholeClip() throws IOException {
     Path clip = VideoClips.generate(tempDir.resolve("whole.mp4"), 3, 10, 2, 160, 120, -1, -1);
     long duration = ClipDuration.millis(VideoClips.supplier(clip), "whole");
     TypedProperties props = props();
@@ -96,28 +97,33 @@ public class TestAudioStubParts {
   }
 
   @Test
-  public void stubSourceFailuresAreClassifiedByCause() throws IOException {
+  void stubSourceFailuresAreClassifiedByCause() throws IOException {
     Path clip = VideoClips.generate(tempDir.resolve("guard.mp4"), 3, 10, 2, 160, 120, -1, -1);
     TypedProperties props = props();
     props.setProperty(AudioConfigKeys.MAX_DURATION_MS.key(), "1000");
-    IllegalStateException tooLong = assertThrows(IllegalStateException.class,
-        () -> new StubAudioSegmentSource().segments(input(clip), 0, 0, props));
+    StubAudioSegmentSource source = new StubAudioSegmentSource();
+    AudioInput tooLongInput = input(clip);
+    IllegalStateException tooLong = assertThrows(IllegalStateException.class, () -> source.segments(tooLongInput, 0, 0, props));
     assertTrue(tooLong.getMessage().contains(AudioConfigKeys.MAX_DURATION_MS.key()), tooLong.getMessage());
 
     // a storage failure under the probe: transient
-    IOException storage = assertThrows(IOException.class, () -> new StubAudioSegmentSource().segments(
-        input(VideoClips.failingSupplier(clip, 0)), 0, 0, props()));
+    StubAudioSegmentSource storageSource = new StubAudioSegmentSource();
+    AudioInput failingInput = input(VideoClips.failingSupplier(clip, 0));
+    TypedProperties storageProps = props();
+    IOException storage = assertThrows(IOException.class, () -> storageSource.segments(failingInput, 0, 0, storageProps));
     assertTrue(BlobReadException.isStorageFailure(storage), storage.toString());
 
     // bytes that are no container: the clip's data
     Path garbage = Files.write(tempDir.resolve("garbage.mp4"), "not a video at all".getBytes(StandardCharsets.UTF_8));
-    VideoDecodeException data = assertThrows(VideoDecodeException.class,
-        () -> new StubAudioSegmentSource().segments(input(garbage), 0, 0, props()));
+    StubAudioSegmentSource dataSource = new StubAudioSegmentSource();
+    AudioInput garbageInput = input(garbage);
+    TypedProperties dataProps = props();
+    VideoDecodeException data = assertThrows(VideoDecodeException.class, () -> dataSource.segments(garbageInput, 0, 0, dataProps));
     assertFalse(BlobReadException.isStorageFailure(data), data.toString());
   }
 
   @Test
-  public void storageFailureUnderTheProbeIsNeverADuration() throws IOException {
+  void storageFailureUnderTheProbeIsNeverADuration() throws IOException {
     // storage that fails from offset k on, for k across the clip: whenever a read failed, the probe must not return a
     // duration (a decoder may swallow the failure and still report one), it must report the storage failure
     Path clip = VideoClips.generate(tempDir.resolve("sweep.mp4"), 4, 10, 2, 160, 120, -1, -1);
@@ -183,7 +189,7 @@ public class TestAudioStubParts {
   }
 
   @Test
-  public void stubTranscriberSaysOneUtterancePerSegmentByTheFileSpeaker() throws IOException {
+  void stubTranscriberSaysOneUtterancePerSegmentByTheFileSpeaker() throws IOException {
     StubSegmentTranscriber transcriber = new StubSegmentTranscriber();
     assertEquals("stub/fixed-utterance-v0", transcriber.id());
     assertTrue(transcriber.fileScopedSpeakers());
@@ -198,14 +204,14 @@ public class TestAudioStubParts {
   }
 
   @Test
-  public void stubChunkerPacksSpeakerLinesUnderTheTokenLimit() {
+  void stubChunkerPacksSpeakerLinesUnderTheTokenLimit() {
     WordCountTokenizer words = new WordCountTokenizer();
     List<TranscriptChunker.SegmentUtterance> three = Arrays.asList(utterance(4, "Hello   there.", 4000, 5000),
         utterance(5, "Second  thought.", 5000, 6000), utterance(6, "", 6000, 7000), utterance(6, "Third.", 6000, 7000));
     // everything fits one chunk; the empty utterance adds no line
     List<TranscriptChunk> one = chunks(three, 9, words, 256);
-    assertEquals(Collections.singletonList(new TranscriptChunkValue(9, "[speaker-1] Hello there.\n[speaker-1] Second thought.\n"
-        + "[speaker-1] Third.", 8, 4000, 7000, Collections.singletonList("speaker-1"), 4, 6)), one);
+    assertEquals(Collections.singletonList(new TranscriptChunkValue(9, "[speaker-1] Hello there.\n[speaker-1] Second thought.\n" + "[speaker-1] Third.", 8,
+        new TranscriptChunkValue.Range(4000, 7000), Collections.singletonList("speaker-1"), new TranscriptChunkValue.Range(4, 6))), one);
     // four words per chunk: one line per chunk
     List<TranscriptChunk> perLine = chunks(three, 0, words, 4);
     assertEquals(Arrays.asList("[speaker-1] Hello there.", "[speaker-1] Second thought.", "[speaker-1] Third."), texts(perLine));
@@ -219,14 +225,14 @@ public class TestAudioStubParts {
       assertEquals(0L, chunk.firstSegment());
     }
     // a single word that never fits fails the video
-    IllegalStateException e = assertThrows(IllegalStateException.class,
-        () -> chunks(Collections.singletonList(utterance(0, "word", 0, 900)), 0, words, 1));
+    List<TranscriptChunker.SegmentUtterance> oneWord = Collections.singletonList(utterance(0, "word", 0, 900));
+    IllegalStateException e = assertThrows(IllegalStateException.class, () -> chunks(oneWord, 0, words, 1));
     assertTrue(e.getMessage().contains(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key()), e.getMessage());
     assertEquals("transcript-stub-pack-v0", new StubTranscriptChunker().logicVersion());
   }
 
   @Test
-  public void logicLineIsPinnedAndNamesTheConfiguredImplementations() {
+  void logicLineIsPinnedAndNamesTheConfiguredImplementations() {
     TypedProperties off = AudioStubs.named(props());
     assertFalse(AudioConfig.from(off).enabled());
     assertEquals("audio=audio-stub-v0;asr=stub/fixed-utterance-v0;pack=transcript-stub-pack-v0;tokenizer=openai-bpe:cl100k_base;speech=prep-v1",
@@ -249,7 +255,7 @@ public class TestAudioStubParts {
 
   /** Enabling audio alone never embeds stub text: the defaults are FFmpeg, whisper and the packer; the stubs are named. */
   @Test
-  public void classKeysDefaultToTheRealImplementationsAndAreCheckedOnTheDriver() {
+  void classKeysDefaultToTheRealImplementationsAndAreCheckedOnTheDriver() {
     AudioConfig defaults = AudioConfig.from(props());
     assertTrue(defaults.newSegmentSource() instanceof FfmpegAudioSegmentSource);
     assertTrue(defaults.newTranscriber() instanceof WhisperSegmentTranscriber);
@@ -279,7 +285,7 @@ public class TestAudioStubParts {
   }
 
   @Test
-  public void everyInstanceOfAnAutoCloseableImplementationIsClosedOnce() {
+  void everyInstanceOfAnAutoCloseableImplementationIsClosedOnce() {
     TypedProperties props = AudioStubs.named(props());
     props.setProperty(AudioConfigKeys.ENABLED.key(), "true");
     props.setProperty(AudioConfigKeys.TRANSCRIBER_CLASS.key(), ClosingTranscriber.class.getName());
@@ -295,7 +301,7 @@ public class TestAudioStubParts {
   }
 
   @Test
-  public void anIdBuiltFromTheImplementationsOwnKeysIsReadAfterValidate() {
+  void anIdBuiltFromTheImplementationsOwnKeysIsReadAfterValidate() {
     TypedProperties props = AudioStubs.named(props());
     props.setProperty(AudioConfigKeys.ENABLED.key(), "true");
     props.setProperty(AudioConfigKeys.TRANSCRIBER_CLASS.key(), ConfiguredTranscriber.class.getName());
@@ -349,12 +355,15 @@ public class TestAudioStubParts {
   private static void assertRefused(String key, String value) {
     TypedProperties props = props();
     props.setProperty(key, value);
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
-      AudioConfig config = AudioConfig.from(props);
-      config.enabled();
-      config.validate();
-    }, key + "=" + value);
+    AudioConfig config = AudioConfig.from(props);
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> enabledThenValidate(config), key + "=" + value);
     assertTrue(e.getMessage().contains(key), e.getMessage());
+  }
+
+  /** Reads {@link AudioConfig#enabled()} then validates: a refused value fails one or the other. */
+  private static void enabledThenValidate(AudioConfig config) {
+    config.enabled();
+    config.validate();
   }
 
   /** A transcriber registered by its class key alone, as a real implementation registers. */

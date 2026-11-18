@@ -105,7 +105,7 @@ public final class VideoFrameHeapCheck {
   /** The JVM option that sets G1's region size. */
   static final String REGION_SIZE_OPTION = "-XX:G1HeapRegionSize=";
   /** A size as the JVM reads it: bytes, or a number with a k, m or g suffix (either case). */
-  private static final Pattern SIZE = Pattern.compile("([0-9]+)([kKmMgG]?)");
+  private static final Pattern SIZE = Pattern.compile("(\\d+)([kKmMgG]?)");
 
   private VideoFrameHeapCheck() {
   }

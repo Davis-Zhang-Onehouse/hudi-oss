@@ -21,7 +21,7 @@ package org.apache.hudi.utilities.unstructured.embedding.compute.openai;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.utilities.unstructured.embedding.compute.SingleTokenReader;
 
-import java.util.function.Function;
+import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 
 /**
@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
  */
 public final class CredentialSource {
 
-  private static final Pattern ENV_VAR_NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+  private static final Pattern ENV_VAR_NAME = Pattern.compile("[A-Za-z_]\\w*");
 
   private final String file;
   private final String env;
@@ -74,7 +74,7 @@ public final class CredentialSource {
    * @throws IllegalStateException when the configured source is missing, unreadable, empty or holds anything but one
    *     printable ASCII token (a multi-line file, an inner space); the message names the source only
    */
-  Option<String> read(Function<String, String> environment) {
+  Option<String> read(UnaryOperator<String> environment) {
     if (file == null && env == null) {
       return Option.empty();
     }

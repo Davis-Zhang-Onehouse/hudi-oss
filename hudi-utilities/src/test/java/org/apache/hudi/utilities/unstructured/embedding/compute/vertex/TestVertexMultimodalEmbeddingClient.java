@@ -75,7 +75,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The Vertex multimodalembedding@001 client against recorded image and text responses (no live call). */
-public class TestVertexMultimodalEmbeddingClient {
+class TestVertexMultimodalEmbeddingClient {
 
   private static final String ALIAS = "mm";
   private static final String TOKEN = "recorded-test-token-0001";
@@ -89,7 +89,7 @@ public class TestVertexMultimodalEmbeddingClient {
   private TypedProperties props;
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     stub = new VertexStubServer();
     Path tokenFile = tempDir.resolve("token");
     Files.write(tokenFile, (TOKEN + "\n").getBytes(StandardCharsets.UTF_8));
@@ -99,12 +99,12 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     stub.close();
   }
 
   @Test
-  public void imageRequestShapeAndRecordedVector() throws Exception {
+  void imageRequestShapeAndRecordedVector() throws Exception {
     byte[] jpeg = ImageFixtures.image("jpeg", 1200, 900);
     List<EmbeddingResult> results = client(128).embed(Collections.singletonList(imageInput("f1", jpeg)));
     assertEquals(1, results.size());
@@ -125,7 +125,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void textRequestShape() throws Exception {
+  void textRequestShape() throws Exception {
     EmbeddingInput text = new EmbeddingInput("f2", 3, EmbeddingTableSchema.MODALITY_TEXT, "a cat on a mat");
     List<EmbeddingResult> results = client(128).embed(Collections.singletonList(text));
     assertEquals(EmbeddingResult.Status.OK, results.get(0).getStatus());
@@ -137,7 +137,7 @@ public class TestVertexMultimodalEmbeddingClient {
 
   @ParameterizedTest
   @ValueSource(strings = {"null", "true", "\"invalid\"", "\"0.5\"", "{}", "[]", "1e100", "NaN", "1e300", "1e400"})
-  public void malformedVectorElementsAreRetryable(String element) throws Exception {
+  void malformedVectorElementsAreRetryable(String element) throws Exception {
     props.setProperty(key(".retry.max.attempts"), "1");
     String values = element + ",0.25".repeat(127);
     stub.enqueueBody("{\"predictions\":[{\"textEmbedding\":[" + values + "]}]}");
@@ -154,7 +154,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void oneRequestPerInputAndMixedOutcomesStayPerInput() throws Exception {
+  void oneRequestPerInputAndMixedOutcomesStayPerInput() throws Exception {
     // one attempt per request, so the 429 ends its input RETRYABLE (retries: TestVertexRetryLoop)
     props.setProperty(key(".retry.max.attempts"), "1");
     stub.enqueue(200, "predict-text-response.json");
@@ -173,10 +173,11 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void http401IsAConfigFailureAndNeverEchoesTheToken() {
+  void http401IsAConfigFailureAndNeverEchoesTheToken() {
     stub.enqueue(401, "error-401.json");
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(128).embed(Collections.singletonList(new EmbeddingInput("a", 0, EmbeddingTableSchema.MODALITY_TEXT, "a cat"))));
+    VertexMultimodalEmbeddingClient client = client(128);
+    List<EmbeddingInput> inputs = Collections.singletonList(new EmbeddingInput("a", 0, EmbeddingTableSchema.MODALITY_TEXT, "a cat"));
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(e.getMessage().contains("HTTP 401"), e.getMessage());
     assertTrue(e.getMessage().contains("file "), e.getMessage());
     assertFalse(e.getMessage().contains(TOKEN));
@@ -189,16 +190,17 @@ public class TestVertexMultimodalEmbeddingClient {
    * the input: the run fails instead of writing the row as an error.
    */
   @Test
-  public void failedPreconditionIsAConfigFailure() {
+  void failedPreconditionIsAConfigFailure() {
     stub.enqueue(400, "error-400-failed-precondition.json");
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(128).embed(Collections.singletonList(new EmbeddingInput("f", 0, EmbeddingTableSchema.MODALITY_TEXT, "a cat"))));
+    VertexMultimodalEmbeddingClient client = client(128);
+    List<EmbeddingInput> inputs = Collections.singletonList(new EmbeddingInput("f", 0, EmbeddingTableSchema.MODALITY_TEXT, "a cat"));
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(e.getMessage().contains("FAILED_PRECONDITION"), e.getMessage());
     assertEquals(1, stub.requests().size());
   }
 
   @Test
-  public void refusedImageIsPermanentWithoutARequest() throws Exception {
+  void refusedImageIsPermanentWithoutARequest() throws Exception {
     ImagePreprocessingSpec guarded = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, 100,
         InProcessImageDecoder.class.getName());
     ImagePreparer preparer = new ImagePreparer(guarded);
@@ -213,7 +215,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void imageReadFailureIsRetryable() throws Exception {
+  void imageReadFailureIsRetryable() throws Exception {
     EmbeddingInput input = image("io",
         () -> {
           throw new IOException("storage hiccup");
@@ -224,7 +226,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void imagesOfAMicroBatchArePreparedOneAtATimeBetweenRequests() throws Exception {
+  void imagesOfAMicroBatchArePreparedOneAtATimeBetweenRequests() throws Exception {
     // no container accumulates the batch: each image is prepared only after the previous input's
     // request went out, so at most one prepared image is held at any time; nothing is prepared before embed() runs
     List<String> preparedAfterRequests = new ArrayList<>();
@@ -248,7 +250,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void storageFailureMidDecodeIsRetryable() throws Exception {
+  void storageFailureMidDecodeIsRetryable() throws Exception {
     // the PNG reader wraps the stream's IOException in an IIOException; a blob read failure is still transient
     byte[] png = ImageFixtures.image("png", 300, 200);
     ImagePreparer preparer = new ImagePreparer(IMAGE_SPEC);
@@ -261,7 +263,7 @@ public class TestVertexMultimodalEmbeddingClient {
 
   @ParameterizedTest
   @ValueSource(strings = {"png", "jpeg", "bmp"})
-  public void outOfLineFileShorterThanItsRecordedLengthIsPermanentAtCompute(String format) throws Exception {
+  void outOfLineFileShorterThanItsRecordedLengthIsPermanentAtCompute(String format) throws Exception {
     // a stored file that ends before external_reference.length cannot be read to the end on any attempt, whichever
     // reader meets the end (PNG wraps it in an IIOException, the JPEG native callback and the BMP readFully let it out bare): the
     // row's fault, PERMANENT, its error naming the row and the file
@@ -283,9 +285,9 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void uncheckedWrapperOfATruncatedRangeIsPermanent() throws Exception {
-    // an EOF not under a BlobReadException (the reader ran out of intact bytes) under an unchecked wrapper is the data's;
-    // a storage failure under the same wrapper stays RETRYABLE (uncheckedStorageFailureIsRetryable)
+  void uncheckedWrapperOfATruncatedRangeIsPermanent() throws Exception {
+    // An EOF that is not under a BlobReadException means the reader ran out of intact bytes, so under an unchecked wrapper
+    // it is the data's failure. A storage failure under the same wrapper stays RETRYABLE, as the unchecked storage test shows.
     EmbeddingInput truncated = image("t", () -> {
       throw new UncheckedIOException(new EOFException("Blob file x ended early: expected 10 more bytes"));
     });
@@ -294,7 +296,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void uncheckedStorageFailureIsRetryable() throws Exception {
+  void uncheckedStorageFailureIsRetryable() throws Exception {
     // storage layers also fail with unchecked wrappers of an IOException (UncheckedIOException, HoodieIOException)
     EmbeddingInput unchecked = image("u", () -> {
       throw new UncheckedIOException(new IOException("Connection reset by peer (simulated)"));
@@ -309,7 +311,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void corruptPixelDataIsPermanent() throws Exception {
+  void corruptPixelDataIsPermanent() throws Exception {
     // the same IIOException without a blob read failure underneath is a property of the bytes
     byte[] png = ImageFixtures.image("png", 300, 200);
     byte[] truncated = Arrays.copyOf(png, png.length * 6 / 10);
@@ -321,7 +323,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void preparationRuntimeFailureIsPermanentAndDoesNotFailTheCall() throws Exception {
+  void preparationRuntimeFailureIsPermanentAndDoesNotFailTheCall() throws Exception {
     // a deterministic failure while preparing one image must not throw out of embed() (which would retry every
     // batch-mate alone, re-billing those already embedded)
     EmbeddingInput broken = image("broken", () -> {
@@ -373,6 +375,7 @@ public class TestVertexMultimodalEmbeddingClient {
 
     @Override
     public void close() {
+      // nothing to release: the bytes are an in-memory array
     }
   }
 
@@ -382,32 +385,34 @@ public class TestVertexMultimodalEmbeddingClient {
    * {@link EmbeddingClientConfigException}.
    */
   @Test
-  public void imageWithoutPreparedInputIsAPlatformFailure() {
+  void imageWithoutPreparedInputIsAPlatformFailure() {
     EmbeddingInput input = EmbeddingInput.storedImage("x", 0, EmbeddingTableSchema.MODALITY_IMAGE, null, null);
-    EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class,
-        () -> client(128).embed(Collections.singletonList(input)));
+    VertexMultimodalEmbeddingClient client = client(128);
+    List<EmbeddingInput> inputs = Collections.singletonList(input);
+    EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class, () -> client.embed(inputs));
     assertTrue(e.getMessage().startsWith(VertexMultimodalEmbeddingClient.IMAGE_WITHOUT_PREPARED_INPUT), e.getMessage());
     assertEquals(0, stub.requests().size());
   }
 
   /** A 404 (a model or endpoint that does not exist) or another 4xx is the configuration (class P): never retried. */
   @Test
-  public void http404IsAConfigFailure() {
+  void http404IsAConfigFailure() {
     stub.enqueueStatus(404, "{\"error\":{\"code\":404,\"message\":\"Publisher Model was not found\"}}");
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(128).embed(Collections.singletonList(new EmbeddingInput("a", 0, EmbeddingTableSchema.MODALITY_TEXT, "a cat"))));
+    VertexMultimodalEmbeddingClient client = client(128);
+    List<EmbeddingInput> inputs = Collections.singletonList(new EmbeddingInput("a", 0, EmbeddingTableSchema.MODALITY_TEXT, "a cat"));
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(e.getMessage().contains("HTTP 404"), e.getMessage());
     assertFalse(e.getMessage().contains(TOKEN));
   }
 
   @Test
-  public void configIsValidatedOnTheDriver() {
-    IllegalArgumentException dimension = assertThrows(IllegalArgumentException.class,
-        () -> EmbeddingClientFactory.checkConfig(spec(100), props));
+  void configIsValidatedOnTheDriver() {
+    EmbeddingModelSpec badDimension = spec(100);
+    IllegalArgumentException dimension = assertThrows(IllegalArgumentException.class, () -> EmbeddingClientFactory.checkConfig(badDimension, props));
     assertTrue(dimension.getMessage().contains("[128, 256, 512, 1408]"), dimension.getMessage());
     TypedProperties noEndpoint = new TypedProperties();
-    IllegalArgumentException endpoint = assertThrows(IllegalArgumentException.class,
-        () -> EmbeddingClientFactory.checkConfig(spec(128), noEndpoint));
+    EmbeddingModelSpec validSpec = spec(128);
+    IllegalArgumentException endpoint = assertThrows(IllegalArgumentException.class, () -> EmbeddingClientFactory.checkConfig(validSpec, noEndpoint));
     assertTrue(endpoint.getMessage().contains(key(VertexClientConfig.PROJECT_SUFFIX)), endpoint.getMessage());
     noEndpoint.setProperty(key(VertexClientConfig.PROJECT_SUFFIX), "proj");
     assertEquals("https://us-central1-aiplatform.googleapis.com/v1/projects/proj/locations/us-central1/publishers/google/models/"
@@ -417,7 +422,7 @@ public class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  public void missingTokenFailsInit() {
+  void missingTokenFailsInit() {
     props.setProperty(key(VertexClientConfig.CREDENTIAL_FILE_SUFFIX), tempDir.resolve("absent").toString());
     assertThrows(EmbeddingClientConfigException.class, () -> client(128));
   }

@@ -56,7 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * paths and when the payload or the file fails; a failed out-of-line write leaves no file under the embedding table's blob folder.
  */
 @ExtendWith(OutOfLineWriterTestExtension.class)
-public class TestPreparedInputsHandleRelease {
+class TestPreparedInputsHandleRelease {
 
   private static final long THRESHOLD = 64;
   private static final String INSTANT = "20261018120000000";
@@ -70,7 +70,7 @@ public class TestPreparedInputsHandleRelease {
   private Configuration conf;
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     HandleCountingFileSystem.reset();
     conf = HandleCountingFileSystem.install(new Configuration());
     table = tempDir.resolve("embedding");
@@ -80,12 +80,12 @@ public class TestPreparedInputsHandleRelease {
   }
 
   @AfterEach
-  public void resetRegistry() {
+  void resetRegistry() {
     HandleCountingFileSystem.reset();
   }
 
   @Test
-  public void mainPathClosesThePayloadAndTheStoredFile() throws IOException {
+  void mainPathClosesThePayloadAndTheStoredFile() throws IOException {
     byte[] small = bytes(32);
     PreparedInputs inputs = inputs();
     Row inline = inputs.prepare("row-0", "p1", JPEG, payload(small), small.length);
@@ -102,32 +102,40 @@ public class TestPreparedInputsHandleRelease {
   }
 
   @Test
-  public void payloadLongerThanDeclaredClosesBothStreamsAndLeavesNoFile() throws IOException {
+  void payloadLongerThanDeclaredClosesBothStreamsAndLeavesNoFile() throws IOException {
     byte[] small = bytes(40);
-    assertThrows(IllegalArgumentException.class, () -> inputs().prepare("row-0", "p1", JPEG, payload(small), 32));
+    PreparedInputs first = inputs();
+    BlobBytesSupplier smallPayload = payload(small);
+    assertThrows(IllegalArgumentException.class, () -> first.prepare("row-0", "p1", JPEG, smallPayload, 32));
     byte[] large = bytes(500);
-    assertThrows(IllegalArgumentException.class, () -> inputs().prepare("row-1", "p1", JPEG, payload(large), 400));
-    assertThrows(IllegalArgumentException.class, () -> inputs().prepare("row-2", "p1", JPEG, payload(large), 600));
+    PreparedInputs second = inputs();
+    BlobBytesSupplier shortPayload = payload(large);
+    assertThrows(IllegalArgumentException.class, () -> second.prepare("row-1", "p1", JPEG, shortPayload, 400));
+    PreparedInputs third = inputs();
+    BlobBytesSupplier longPayload = payload(large);
+    assertThrows(IllegalArgumentException.class, () -> third.prepare("row-2", "p1", JPEG, longPayload, 600));
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "streams left open by a payload of the wrong size");
     assertEquals(Collections.emptyList(), blobFiles(), "files left by a payload of the wrong size");
   }
 
   @Test
-  public void failedPayloadReadClosesBothStreamsAndLeavesNoFile() throws IOException {
+  void failedPayloadReadClosesBothStreamsAndLeavesNoFile() throws IOException {
     byte[] small = bytes(32);
     BlobBytesSupplier smallPayload = payload(small);
     HandleCountingFileSystem.inject(payloadFile, HandleCountingFileSystem.Fault.READ, 1);
-    assertThrows(HoodieIOException.class, () -> inputs().prepare("row-0", "p1", JPEG, smallPayload, small.length));
+    PreparedInputs first = inputs();
+    assertThrows(HoodieIOException.class, () -> first.prepare("row-0", "p1", JPEG, smallPayload, small.length));
     byte[] large = bytes(500);
     BlobBytesSupplier largePayload = payload(large);
     HandleCountingFileSystem.inject(payloadFile, HandleCountingFileSystem.Fault.READ, 1);
-    assertThrows(HoodieIOException.class, () -> inputs().prepare("row-1", "p1", JPEG, largePayload, large.length));
+    PreparedInputs second = inputs();
+    assertThrows(HoodieIOException.class, () -> second.prepare("row-1", "p1", JPEG, largePayload, large.length));
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "streams left open by a failed payload read");
     assertEquals(Collections.emptyList(), blobFiles(), "files left by a failed payload read");
   }
 
   @Test
-  public void failedStoredFileCloseClosesThePayloadAndLeavesNoFile() throws IOException {
+  void failedStoredFileCloseClosesThePayloadAndLeavesNoFile() throws IOException {
     byte[] large = bytes(500);
     BlobBytesSupplier largePayload = payload(large);
     HandleCountingFileSystem.inject(table, HandleCountingFileSystem.Fault.CLOSE_WRITE, 1);

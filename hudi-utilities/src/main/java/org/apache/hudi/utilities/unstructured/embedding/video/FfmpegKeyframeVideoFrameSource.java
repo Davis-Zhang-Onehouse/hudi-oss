@@ -522,8 +522,9 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
           return null;
         }
       }
-      return new ExtractedFrame(timestampMs, nextIndex++, true, image.getWidth(), image.getHeight(), ImageContentTypes.JPEG,
-          jpeg.length, key, () -> new ByteArrayInputStream(jpeg));
+      ExtractedFrame.EncodedImage encoded = new ExtractedFrame.EncodedImage(image.getWidth(), image.getHeight(), ImageContentTypes.JPEG,
+          jpeg.length, () -> new ByteArrayInputStream(jpeg));
+      return new ExtractedFrame(timestampMs, nextIndex++, true, key, encoded);
     }
 
     private BufferedImage decodeKeyframe(long keyframeMicros) {

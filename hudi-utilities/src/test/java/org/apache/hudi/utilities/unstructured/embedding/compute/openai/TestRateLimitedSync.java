@@ -34,15 +34,16 @@ import java.util.List;
 
 import static org.apache.hudi.utilities.unstructured.embedding.compute.openai.StubEmbeddingServer.embeddings;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Rate-limit sync cases through one prep_and_compute writer, with exact fake-clock waits. */
 @Tag("functional")
-public class TestRateLimitedSync extends OpenAiRoundTestBase {
+class TestRateLimitedSync extends OpenAiRoundTestBase {
 
   @Test
-  public void testLimitIsPerModelBindingAndCountersShowItsWait() throws Exception {
+  void testLimitIsPerModelBindingAndCountersShowItsWait() throws Exception {
     announce(pdf("one"), pdf("two"));
     List<Long> limitedArrivals = new ArrayList<>();
     List<Long> freeArrivals = new ArrayList<>();
@@ -71,7 +72,7 @@ public class TestRateLimitedSync extends OpenAiRoundTestBase {
   }
 
   @Test
-  public void testRateChangesApplyToNewRoundsWithoutReembeddingEarlierRows() throws Exception {
+  void testRateChangesApplyToNewRoundsWithoutReembeddingEarlierRows() throws Exception {
     server.otherwise(PATH, embeddings(DIM));
     announce(pdf("one"));
     assertEquals(0, ComputeRoundCounters.round(spark(), paced(table(), null)).counters.rateLimitWaitMillis());
@@ -84,11 +85,11 @@ public class TestRateLimitedSync extends OpenAiRoundTestBase {
     assertEquals(12, server.posts().size(), "only the three new chunks of each round are sent");
     assertEquals(12, rows(table()).size());
     assertEquals(4, EmbeddingStreamers.commits(table(), storage()).size());
-    rows(table()).values().forEach(row -> assertTrue(vector(row) != null));
+    rows(table()).values().forEach(row -> assertNotNull(vector(row)));
   }
 
   @Test
-  public void testBadRateFailsTheSyncAtStart() throws Exception {
+  void testBadRateFailsTheSyncAtStart() throws Exception {
     announce(pdf("bad-rate"));
     Exception failure = assertThrows(Exception.class, () -> round(paced(table(), "0")));
     assertTrue(EmbeddingStreamers.causeOf(failure, EmbeddingClientConfigException.class).isPresent(), EmbeddingStreamers.causes(failure));
