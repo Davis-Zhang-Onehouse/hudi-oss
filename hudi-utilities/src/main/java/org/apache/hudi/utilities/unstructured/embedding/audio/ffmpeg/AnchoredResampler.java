@@ -163,17 +163,15 @@ final class AnchoredResampler {
     long center = Math.floorDiv(scaled, outRate);
     double fraction = (double) (scaled - center * outRate) / outRate;
     double sum = 0;
-    for (long i = center - halfWidth + 1; i <= center + halfWidth; i++) {
-      if (i < firstInput || i > lastInput) {
-        continue;
-      }
+    // inputs before the first or past lastInput are silence: the window is clamped to the inputs there are
+    long last = Math.min(center + halfWidth, lastInput);
+    for (long i = Math.max(center - halfWidth + 1, firstInput); i <= last; i++) {
       double distance = Math.abs(center - i + fraction) * TABLE_STEPS;
       int j = (int) distance;
-      if (j >= table.length - 1) {
-        continue;
+      if (j < table.length - 1) {
+        double weight = table[j] + (distance - j) * (table[j + 1] - table[j]);
+        sum += weight * ring[(int) (i & ringMask)];
       }
-      double weight = table[j] + (distance - j) * (table[j + 1] - table[j]);
-      sum += weight * ring[(int) (i & ringMask)];
     }
     return sum;
   }

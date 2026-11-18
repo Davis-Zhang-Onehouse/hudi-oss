@@ -25,6 +25,7 @@ import org.apache.hudi.common.table.marker.MarkerType;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties;
 import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 
@@ -45,13 +46,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * refuses: the destination refuses on the driver, before any payload is prepared, naming the setting that turns the markers
  * off; no payload file is written.
  */
-public class TestPreparedInputsWriterSetup {
+class TestPreparedInputsWriterSetup {
 
   @TempDir
   Path temp;
 
   @Test
-  public void directMarkersAreRefusedOnTheDriver() throws IOException {
+  void directMarkersAreRefusedOnTheDriver() throws IOException {
     String base = temp.resolve("embedding").toUri().toString();
     HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
         .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
@@ -59,8 +60,8 @@ public class TestPreparedInputsWriterSetup {
     TypedProperties props = new TypedProperties();
     props.setProperty(HoodieWriteConfig.MARKERS_TYPE.key(), MarkerType.DIRECT.name());
 
-    HoodieValidationException failure = assertThrows(HoodieValidationException.class,
-        () -> new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), base, props));
+    StorageConfiguration<?> conf = HadoopFSUtils.getStorageConf(new Configuration());
+    HoodieValidationException failure = assertThrows(HoodieValidationException.class, () -> new PayloadDestination(conf, base, props));
     assertTrue(failure.getMessage().contains("TIMELINE_SERVER_BASED"), failure.getMessage());
     assertTrue(failure.getMessage().contains(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key() + "=false"), failure.getMessage());
     assertFalse(Files.exists(temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER)), "no payload file");

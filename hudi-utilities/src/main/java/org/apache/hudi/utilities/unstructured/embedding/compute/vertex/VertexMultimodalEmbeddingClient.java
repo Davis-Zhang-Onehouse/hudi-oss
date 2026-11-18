@@ -46,14 +46,15 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 /**
  * Vertex {@code multimodalembedding@001} {@code :predict} client: image and text inputs share one vector space, so a text query
@@ -78,13 +79,14 @@ public class VertexMultimodalEmbeddingClient implements EmbeddingClient {
   private static final ObjectMapper MAPPER = new ObjectMapper();
   private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
   private static final int MAX_ERROR_BODY_CHARS = 300;
+  private static final String VERTEX_ENDPOINT = "Vertex endpoint ";
   /** google.rpc status of a 400 that rejects the configuration (model allowlisting, organization policy), not the input. */
   static final String FAILED_PRECONDITION = "FAILED_PRECONDITION";
 
   private final LongSupplier clock;
   private final RequestRateLimiter.Sleeper sleeper;
-  private final Function<String, String> environment;
-  private final Random jitter = new Random();
+  private final UnaryOperator<String> environment;
+  private final Random jitter = new SecureRandom();
   private EmbeddingModelSpec spec;
   private VertexClientConfig config;
   private VertexAccessTokens tokens;
@@ -108,7 +110,7 @@ public class VertexMultimodalEmbeddingClient implements EmbeddingClient {
   }
 
   /** Test seam: also the environment the credential source reads. */
-  VertexMultimodalEmbeddingClient(LongSupplier clock, RequestRateLimiter.Sleeper sleeper, Function<String, String> environment) {
+  VertexMultimodalEmbeddingClient(LongSupplier clock, RequestRateLimiter.Sleeper sleeper, UnaryOperator<String> environment) {
     this.clock = clock;
     this.sleeper = sleeper;
     this.environment = environment;
@@ -262,13 +264,13 @@ public class VertexMultimodalEmbeddingClient implements EmbeddingClient {
     }
     int status = response.statusCode();
     if (status == 401 || status == 403) {
-      return Answer.failed(ProviderResponseKind.CONFIG, "Vertex endpoint " + config.endpoint() + " rejected the credential from "
+      return Answer.failed(ProviderResponseKind.CONFIG, VERTEX_ENDPOINT + config.endpoint() + " rejected the credential from "
           + tokens.describe() + " with HTTP " + status + ": " + errorBody(response.body()), -1);
     }
     if (status == 400 && FAILED_PRECONDITION.equals(errorStatus(response.body()))) {
       // a model that needs allowlisting or that the organization's policy disallows: "the client should not retry until the system
       // state has been explicitly fixed" (google.rpc.Code), so it is the configuration, never the input's
-      return Answer.failed(ProviderResponseKind.CONFIG, "Vertex endpoint " + config.endpoint() + " answered HTTP 400 "
+      return Answer.failed(ProviderResponseKind.CONFIG, VERTEX_ENDPOINT + config.endpoint() + " answered HTTP 400 "
           + FAILED_PRECONDITION + ": " + errorBody(response.body()), -1);
     }
     if (status == 400) {
@@ -276,7 +278,7 @@ public class VertexMultimodalEmbeddingClient implements EmbeddingClient {
     }
     if (status >= 400 && status < 500 && status != 408 && status != 429) {
       // 404 (a model or endpoint that does not exist), 405, 409, 410,...: the configuration, which no retry repairs (class P)
-      return Answer.failed(ProviderResponseKind.CONFIG, "Vertex endpoint " + config.endpoint() + " answered HTTP " + status + ": "
+      return Answer.failed(ProviderResponseKind.CONFIG, VERTEX_ENDPOINT + config.endpoint() + " answered HTTP " + status + ": "
           + errorBody(response.body()), -1);
     }
     if (status != 200) {

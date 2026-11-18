@@ -33,7 +33,7 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 public final class TokenizerFactory {
 
   /** Tokenizer type of {@link WordCountTokenizer}. */
-  public static final String WORD_COUNT = WordCountTokenizer.ID;
+  public static final String WORD_COUNT = WordCountTokenizer.TOKENIZER_ID;
   /** Tokenizer type of {@link OpenAiBpeTokenizer}, whose encoding is {@code hoodie.unstructured.chunk.tokenizer.encoding}. */
   public static final String OPENAI_BPE = OpenAiBpeTokenizer.TYPE;
   /**

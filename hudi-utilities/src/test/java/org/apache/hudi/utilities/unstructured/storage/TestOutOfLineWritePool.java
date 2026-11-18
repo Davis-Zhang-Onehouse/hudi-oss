@@ -121,6 +121,7 @@ class TestOutOfLineWritePool {
       long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(300);
       while (System.nanoTime() < until) {
         try {
+          // by design: simulates a write that ignores interrupts for 300 ms; not a wait
           Thread.sleep(10);
         } catch (InterruptedException ignored) {
           // as a store or marker call that swallows the interrupt and goes on
@@ -173,7 +174,7 @@ class TestOutOfLineWritePool {
     // close has dropped the queue once it waits for the running writes
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
     while (closer.getState() != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) {
-      Thread.sleep(5);
+      closer.join(5);
     }
     assertEquals(Thread.State.TIMED_WAITING, closer.getState(), "close waits for the running writes");
     hold.countDown();

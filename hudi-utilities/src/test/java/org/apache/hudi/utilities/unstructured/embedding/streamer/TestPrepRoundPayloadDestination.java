@@ -37,6 +37,7 @@ import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.BlobType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
@@ -60,7 +61,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * markers, and one that may store inputs is refused under them before any payload is prepared.
  */
 @Tag("functional")
-public class TestPrepRoundPayloadDestination extends SparkClientFunctionalTestHarness {
+class TestPrepRoundPayloadDestination extends SparkClientFunctionalTestHarness {
 
   private static final StructType SOURCE = DataTypes.createStructType(new StructField[] {
       DataTypes.createStructField(BlobColumns.SOURCE_PATH_SHA, DataTypes.StringType, false),
@@ -98,11 +99,11 @@ public class TestPrepRoundPayloadDestination extends SparkClientFunctionalTestHa
     Row text = RowFactory.create("sha-a", 1000L, 5L, "s3a://bucket/a.txt", "a.txt", "txt",
         RowFactory.create(HoodieSchema.Blob.INLINE, "alpha|beta".getBytes(StandardCharsets.UTF_8), null));
     return PrepRound.prepare(spark(), spark().createDataFrame(Collections.singletonList(text), SOURCE), config,
-        HadoopFSUtils.getStorageConf(jsc().hadoopConfiguration()), table, output, "001", StorageLevel.MEMORY_AND_DISK());
+        HadoopFSUtils.getStorageConf(jsc().hadoopConfiguration()), output, "001", StorageLevel.MEMORY_AND_DISK());
   }
 
   @Test
-  public void missingTimelineServerIsRefusedAtRoundStart() {
+  void missingTimelineServerIsRefusedAtRoundStart() {
     TypedProperties props = new TypedProperties();
     props.setProperty(HoodieWriteConfig.BASE_PATH.key(), basePath());
     props.setProperty(EmbeddingTableConfig.MODE.key(), EmbeddingTableConfig.MODE_PREP_ONLY);
@@ -110,8 +111,11 @@ public class TestPrepRoundPayloadDestination extends SparkClientFunctionalTestHa
     props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "jpg");
     props.setProperty(HoodieWriteConfig.MARKERS_TYPE.key(), MarkerType.TIMELINE_SERVER_BASED.name());
     props.setProperty(HoodieWriteConfig.EMBEDDED_TIMELINE_SERVER_ENABLE.key(), "false");
+    EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
+    SparkSession spark = spark();
+    Option<StructType> noTable = Option.empty();
     HoodieValidationException refused = assertThrows(HoodieValidationException.class,
-        () -> EmbeddingTableTransformer.checkRound(EmbeddingTableConfig.from(props), spark(), Option.empty()));
+        () -> EmbeddingTableTransformer.checkRound(config, spark, noTable));
     assertTrue(refused.getMessage().contains("timeline server"), refused.getMessage());
     // The same start check permits a PDF-only round under DIRECT markers, without reading any batch.
     props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "pdf");
@@ -121,7 +125,7 @@ public class TestPrepRoundPayloadDestination extends SparkClientFunctionalTestHa
 
   @ParameterizedTest
   @ValueSource(strings = {"txt", "pdf,txt"})
-  public void jobWhoseExtensionsStoreNoInputsRunsUnderDirectMarkers(String extensions) throws Exception {
+  void jobWhoseExtensionsStoreNoInputsRunsUnderDirectMarkers(String extensions) throws Exception {
     PrepRound.Prepared prepared = prepareUnderDirectMarkers(extensions);
     try {
       assertEquals(2L, prepared.output.count());
@@ -134,7 +138,7 @@ public class TestPrepRoundPayloadDestination extends SparkClientFunctionalTestHa
 
   @ParameterizedTest
   @ValueSource(strings = {"jpg,txt", ""})
-  public void jobThatMayStoreInputsIsRefusedUnderDirectMarkers(String extensions) {
+  void jobThatMayStoreInputsIsRefusedUnderDirectMarkers(String extensions) {
     Exception failure = assertThrows(Exception.class, () -> prepareUnderDirectMarkers(extensions));
     Throwable cause = failure;
     while (cause != null && !(cause instanceof HoodieValidationException)) {

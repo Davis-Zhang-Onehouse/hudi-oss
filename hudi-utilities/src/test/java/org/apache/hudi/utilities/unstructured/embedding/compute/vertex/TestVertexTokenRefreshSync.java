@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Token-refresh writer assertions on the single writer over the unstructured data source on S3 and the stock checkpoint. */
 @Tag("functional")
-public class TestVertexTokenRefreshSync extends RestProviderRoundTestBase {
+class TestVertexTokenRefreshSync extends RestProviderRoundTestBase {
 
   private static final int DIM = 128;
   private static final int TOKEN_REQUESTS = 2;
@@ -61,7 +61,7 @@ public class TestVertexTokenRefreshSync extends RestProviderRoundTestBase {
   private Path tokenFile;
 
   @BeforeEach
-  public void startEndpoints() throws Exception {
+  void startEndpoints() throws Exception {
     stub = new VertexStubServer();
     tokens = new GoogleTokenStubServer();
     tokenFile = secrets.resolve("token");
@@ -69,7 +69,7 @@ public class TestVertexTokenRefreshSync extends RestProviderRoundTestBase {
   }
 
   @AfterEach
-  public void stopEndpoints() {
+  void stopEndpoints() {
     stub.close();
     tokens.close();
   }
@@ -82,7 +82,7 @@ public class TestVertexTokenRefreshSync extends RestProviderRoundTestBase {
 
   @ParameterizedTest
   @ValueSource(strings = {"token", "google"})
-  public void syncLongerThanTheTokenLifetimeCompletes(String source) throws Exception {
+  void syncLongerThanTheTokenLifetimeCompletes(String source) throws Exception {
     TypedProperties props = providerProps();
     AtomicInteger generation = new AtomicInteger(1);
     if ("google".equals(source)) {
@@ -114,7 +114,7 @@ public class TestVertexTokenRefreshSync extends RestProviderRoundTestBase {
   }
 
   @Test
-  public void rejectedRefreshFailsTheRound() throws Exception {
+  void rejectedRefreshFailsTheRound() throws Exception {
     TypedProperties props = providerProps();
     props.setProperty(PREFIX + VertexClientConfig.CREDENTIAL_SOURCE_SUFFIX, "google");
     props.setProperty(PREFIX + VertexClientConfig.CREDENTIAL_FILE_SUFFIX,

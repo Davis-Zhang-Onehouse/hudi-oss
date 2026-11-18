@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Keys, defaults, validation and the engine identity of the whisper transcriber. */
-public class TestWhisperConfig {
+class TestWhisperConfig {
 
   private static TypedProperties props(String... keyValues) {
     TypedProperties props = new TypedProperties();
@@ -48,19 +48,19 @@ public class TestWhisperConfig {
   }
 
   @Test
-  public void defaultsResolveToBaseEn() {
+  void defaultsResolveToBaseEn() {
     WhisperConfig config = WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/models"));
     assertEquals("base.en", config.modelName());
     assertEquals(Paths.get("/models", "ggml-base.en.bin"), config.modelPath());
-    assertEquals("en", config.language());
-    assertEquals("transcribe", config.task());
+    assertEquals("en", config.languageCode());
+    assertEquals("transcribe", config.taskName());
     assertFalse(config.translate());
-    assertEquals(1, config.threads());
+    assertEquals(1, config.threadCount());
     assertEquals("whisper-cpp-1.7.1-base.en/en/transcribe", config.id());
   }
 
   @Test
-  public void keysLiveUnderTheTranscriberPrefix() {
+  void keysLiveUnderTheTranscriberPrefix() {
     assertEquals("hoodie.unstructured.embedding.audio.transcriber.whisper.", WhisperConfig.PREFIX);
     assertEquals(WhisperConfig.PREFIX + "model", WhisperConfig.MODEL.key());
     assertEquals(WhisperConfig.PREFIX + "model.dir", WhisperConfig.MODEL_DIR.key());
@@ -71,7 +71,7 @@ public class TestWhisperConfig {
   }
 
   @Test
-  public void absolutePathModelNamedByBasename() {
+  void absolutePathModelNamedByBasename() {
     WhisperConfig config = WhisperConfig.from(props(WhisperConfig.MODEL.key(), "/m/ggml-small.en.bin"));
     assertEquals("small.en", config.modelName());
     assertEquals(Paths.get("/m/ggml-small.en.bin"), config.modelPath());
@@ -80,13 +80,13 @@ public class TestWhisperConfig {
   }
 
   @Test
-  public void namedModelRequiresModelDir() {
+  void namedModelRequiresModelDir() {
     assertRefusedNaming(WhisperConfig.MODEL_DIR.key(), props());
     assertRefusedNaming(WhisperConfig.MODEL_DIR.key(), props(WhisperConfig.MODEL.key(), "small.en"));
   }
 
   @Test
-  public void badModelSyntaxRefused() {
+  void badModelSyntaxRefused() {
     assertRefusedNaming(WhisperConfig.MODEL.key(), props(WhisperConfig.MODEL.key(), "relative/ggml-base.en.bin"));
     assertRefusedNaming(WhisperConfig.MODEL.key(), props(WhisperConfig.MODEL.key(), "/abs/model.gguf"));
     assertRefusedNaming(WhisperConfig.MODEL.key(), props(WhisperConfig.MODEL.key(), "base en", WhisperConfig.MODEL_DIR.key(), "/m"));
@@ -94,14 +94,14 @@ public class TestWhisperConfig {
   }
 
   @Test
-  public void englishOnlyModelRequiresEnglishTranscribe() {
+  void englishOnlyModelRequiresEnglishTranscribe() {
     assertRefusedNaming(WhisperConfig.LANGUAGE.key(), props(WhisperConfig.MODEL_DIR.key(), "/m", WhisperConfig.LANGUAGE.key(), "de"));
     assertRefusedNaming(WhisperConfig.TASK.key(), props(WhisperConfig.MODEL_DIR.key(), "/m", WhisperConfig.TASK.key(), "translate"));
     assertRefusedNaming(WhisperConfig.LANGUAGE.key(), props(WhisperConfig.MODEL_DIR.key(), "/m", WhisperConfig.LANGUAGE.key(), "auto"));
   }
 
   @Test
-  public void multilingualModelTakesLanguageAndTask() {
+  void multilingualModelTakesLanguageAndTask() {
     WhisperConfig config = WhisperConfig.from(props(WhisperConfig.MODEL.key(), "small", WhisperConfig.MODEL_DIR.key(), "/m",
         WhisperConfig.LANGUAGE.key(), "auto", WhisperConfig.TASK.key(), "translate"));
     assertTrue(config.translate());
@@ -113,10 +113,10 @@ public class TestWhisperConfig {
   }
 
   @Test
-  public void languageMustBeOneWhisperKnows() {
+  void languageMustBeOneWhisperKnows() {
     for (String known : new String[] {"de", "haw", "yue", "he", "jw"}) {
       assertEquals(known, WhisperConfig.from(props(WhisperConfig.MODEL.key(), "small", WhisperConfig.MODEL_DIR.key(), "/m",
-          WhisperConfig.LANGUAGE.key(), known)).language());
+          WhisperConfig.LANGUAGE.key(), known)).languageCode());
     }
     for (String unknown : new String[] {"xx", "eng", "iw"}) {
       assertRefusedNaming(WhisperConfig.LANGUAGE.key(), props(WhisperConfig.MODEL.key(), "small", WhisperConfig.MODEL_DIR.key(), "/m",
@@ -125,7 +125,7 @@ public class TestWhisperConfig {
   }
 
   @Test
-  public void segmentMaxBytesHasAnUpperBound() {
+  void segmentMaxBytesHasAnUpperBound() {
     assertRefusedNaming(AudioConfigKeys.SEGMENT_MAX_BYTES.key(), props(WhisperConfig.MODEL_DIR.key(), "/m", AudioConfigKeys.SEGMENT_MAX_BYTES.key(),
         String.valueOf(5L * 1024 * 1024 * 1024)));
     assertEquals(WhisperConfig.MAX_SEGMENT_BYTES, WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m",
@@ -133,20 +133,20 @@ public class TestWhisperConfig {
   }
 
   @Test
-  public void threadsMustBePositive() {
-    assertEquals(4, WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m", WhisperConfig.THREADS.key(), "4")).threads());
+  void threadsMustBePositive() {
+    assertEquals(4, WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m", WhisperConfig.THREADS.key(), "4")).threadCount());
     assertRefusedNaming(WhisperConfig.THREADS.key(), props(WhisperConfig.MODEL_DIR.key(), "/m", WhisperConfig.THREADS.key(), "0"));
     assertRefusedNaming(WhisperConfig.THREADS.key(), props(WhisperConfig.MODEL_DIR.key(), "/m", WhisperConfig.THREADS.key(), "many"));
   }
 
   @Test
-  public void sampleRateMustBe16000() {
+  void sampleRateMustBe16000() {
     assertRefusedNaming(AudioConfigKeys.SAMPLE_RATE.key(), props(WhisperConfig.MODEL_DIR.key(), "/m", AudioConfigKeys.SAMPLE_RATE.key(), "8000"));
     assertEquals("base.en", WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m", AudioConfigKeys.SAMPLE_RATE.key(), "16000")).modelName());
   }
 
   @Test
-  public void segmentMaxBytesDefaultsTo1MiB() {
+  void segmentMaxBytesDefaultsTo1MiB() {
     assertEquals(1024L * 1024L, WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m")).segmentMaxBytes());
     assertEquals(4096L, WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m", AudioConfigKeys.SEGMENT_MAX_BYTES.key(), "4096"))
         .segmentMaxBytes());
@@ -154,7 +154,7 @@ public class TestWhisperConfig {
   }
 
   @Test
-  public void equalityFollowsTheResolvedSettings() {
+  void equalityFollowsTheResolvedSettings() {
     assertEquals(WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m")), WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m")));
     assertNotEquals(WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m")),
         WhisperConfig.from(props(WhisperConfig.MODEL_DIR.key(), "/m", WhisperConfig.THREADS.key(), "2")));

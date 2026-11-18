@@ -62,7 +62,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the step without a retry; a provider outage fails it at once; a PERMANENT result keeps the row with its prepared columns and
  * the error in the working column.
  */
-public class TestEmbeddingComputeFailureSurfaces {
+class TestEmbeddingComputeFailureSurfaces {
 
   private static final StructType SCHEMA = new StructType()
       .add(EmbeddingTableSchema.SOURCE_PATH_SHA, DataTypes.StringType, false)
@@ -96,7 +96,7 @@ public class TestEmbeddingComputeFailureSurfaces {
     }
 
     @Override
-    public List<EmbeddingResult> embed(List<EmbeddingInput> inputs) throws Exception {
+    public List<EmbeddingResult> embed(List<EmbeddingInput> inputs) throws InterruptedException {
       CALLS.incrementAndGet();
       if (delegate != null) {
         return delegate.embed(inputs);
@@ -160,7 +160,7 @@ public class TestEmbeddingComputeFailureSurfaces {
 
   /** The iterator reads one micro batch ahead of what it yields, no more, and closes its client once, at exhaustion. */
   @Test
-  public void readsOneBatchAheadAndClosesTheClientOnce() {
+  void readsOneBatchAheadAndClosesTheClientOnce() {
     FailingClient.CALLS.set(0);
     FailingClient.CLOSES.set(0);
     FailingClient.failure = null;
@@ -199,18 +199,22 @@ public class TestEmbeddingComputeFailureSurfaces {
   }
 
   @Test
-  public void clientThatCannotStartFailsTheStep() {
+  void clientThatCannotStartFailsTheStep() {
     FailingClient.CLOSES.set(0);
     FailingClient.failInit = true;
+    Iterator<Row> rows = rows();
+    EmbeddingModelSpec model = model();
+    TypedProperties props = props();
+    ComputeCounters counters = counters();
     EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class,
-        () -> new MicroBatchEmbeddingIterator(rows(), model(), props(), SCHEMA, 8, counters()));
+        () -> new MicroBatchEmbeddingIterator(rows, model, props, SCHEMA, 8, counters));
     FailingClient.failInit = false;
     assertEquals(1, FailingClient.CLOSES.get(), "a client whose init fails is closed");
     assertTrue(failure.getMessage().contains("EMBED-COMPUTE-CLIENT-INIT-FAILED"), failure.getMessage());
   }
 
   @Test
-  public void permanentRefusalEndsTheTaskAfterOneRequestWithoutAThrow() {
+  void permanentRefusalEndsTheTaskAfterOneRequestWithoutAThrow() {
     // batches of one: the second row would be a second request, but it is never read
     ComputeCounters counters = counters();
     List<Row> out = drain(new EmbeddingClientConfigException("HTTP 429 insufficient_quota: You exceeded your current quota"), 1,
@@ -229,7 +233,7 @@ public class TestEmbeddingComputeFailureSurfaces {
   }
 
   @Test
-  public void transientRateLimitAnswerIsStillRetried() {
+  void transientRateLimitAnswerIsStillRetried() {
     // a 429 rate_limit_exceeded the client could not absorb comes back RETRYABLE: retried alone, then embedded
     AtomicInteger calls = new AtomicInteger();
     FailingClient.delegate = new DummyEmbeddingClient() {
@@ -258,7 +262,7 @@ public class TestEmbeddingComputeFailureSurfaces {
   }
 
   @Test
-  public void transientFailureStillFailsTheTaskForASparkRetry() {
+  void transientFailureStillFailsTheTaskForASparkRetry() {
     // an outage ends the step with a transient failure, as before: Spark re-attempts the task
     EmbeddingProviderUnavailableException outage = new EmbeddingProviderUnavailableException("outage open");
     EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class, () -> drain(outage));
@@ -267,22 +271,56 @@ public class TestEmbeddingComputeFailureSurfaces {
   }
 
   @Test
-  public void brokenPlatformInvariantIsNotRetried() {
+  void brokenPlatformInvariantIsNotRetried() {
     EmbeddingComputePlatformException broken = new EmbeddingComputePlatformException("broken");
     assertSame(broken, assertThrows(EmbeddingComputePlatformException.class, () -> drain(broken)));
     assertEquals(1, FailingClient.CALLS.get());
   }
 
   @Test
-  public void providerOutageFailsTheStepAtOnce() {
-    EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class,
-        () -> drain(new EmbeddingProviderUnavailableException("down")));
+  void providerOutageFailsTheStepAtOnce() {
+    EmbeddingProviderUnavailableException down = new EmbeddingProviderUnavailableException("down");
+    EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class, () -> drain(down));
     assertTrue(failure.getMessage().contains("EMBED-COMPUTE-PROVIDER-UNAVAILABLE"), failure.getMessage());
     assertEquals(1, FailingClient.CALLS.get());
   }
 
+  /** A client whose every call is interrupted. */
+  private static final class InterruptedClient implements EmbeddingClient {
+    @Override
+    public void init(EmbeddingModelSpec spec, TypedProperties props) {
+      // nothing to set up: the client only fails
+    }
+
+    @Override
+    public EmbeddingModelSpec spec() {
+      return null;
+    }
+
+    @Override
+    public List<EmbeddingResult> embed(List<EmbeddingInput> inputs) throws InterruptedException {
+      throw new InterruptedException("stopped");
+    }
+  }
+
+  /** An interrupted call ends the step with a transient failure at once, never a retry, and keeps the interrupt flag. */
   @Test
-  public void sourceVersionsSharingAChunkReachOneProviderRequest(@TempDir Path temp) throws Exception {
+  void interruptedCallEndsTheStepAndKeepsTheInterruptFlag() {
+    FailingClient.delegate = new InterruptedClient();
+    try {
+      EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class, () -> drain(null));
+      assertTrue(Thread.interrupted(), "the interrupt flag is restored");
+      assertTrue(failure.getMessage().contains("was interrupted"), failure.getMessage());
+      assertTrue(failure.getCause() instanceof InterruptedException, String.valueOf(failure.getCause()));
+      assertEquals(1, FailingClient.CALLS.get());
+    } finally {
+      Thread.interrupted();
+      FailingClient.delegate = null;
+    }
+  }
+
+  @Test
+  void sourceVersionsSharingAChunkReachOneProviderRequest(@TempDir Path temp) throws Exception {
     Path credential = temp.resolve("openai.key");
     Files.write(credential, "fake-version-key".getBytes(StandardCharsets.UTF_8));
     ObjectMapper mapper = new ObjectMapper();
@@ -335,9 +373,9 @@ public class TestEmbeddingComputeFailureSurfaces {
   }
 
   @Test
-  public void exhaustedRetriesReportTheFullSourceVersionAndChunk() {
-    EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class,
-        () -> drain(new IllegalStateException("temporary failure")));
+  void exhaustedRetriesReportTheFullSourceVersionAndChunk() {
+    IllegalStateException temporary = new IllegalStateException("temporary failure");
+    EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class, () -> drain(temporary));
     String message = failure.getMessage();
     assertTrue(message.contains("source_path_sha=s"), message);
     assertTrue(message.contains("source_modification_time=101"), message);
@@ -347,7 +385,7 @@ public class TestEmbeddingComputeFailureSurfaces {
   }
 
   @Test
-  public void permanentResultKeepsTheRowWithItsPreparedColumnsAndTheError() {
+  void permanentResultKeepsTheRowWithItsPreparedColumnsAndTheError() {
     List<Row> out = drain(null);
     assertEquals(Arrays.asList(
         RowFactory.create("s", 101L, 17L, "text", 0L, "alpha", null, null, "bad input 0"),

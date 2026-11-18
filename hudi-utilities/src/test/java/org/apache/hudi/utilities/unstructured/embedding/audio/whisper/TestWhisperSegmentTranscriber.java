@@ -46,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The whisper transcriber over a fake engine: mapping, bounds, failure classes and the context lifecycle, with no model. */
-public class TestWhisperSegmentTranscriber {
+class TestWhisperSegmentTranscriber {
 
   /** A fake engine factory: returns scripted utterances and records what it was given. */
   private static final class FakeEngines implements WhisperEngine.Factory {
@@ -124,7 +124,7 @@ public class TestWhisperSegmentTranscriber {
   private final WhisperContextPool pool = new WhisperContextPool(engines);
 
   @Test
-  public void mapsCentisecondsOntoVideoTimeline() throws IOException {
+  void mapsCentisecondsOntoVideoTimeline() throws IOException {
     engines.script = Arrays.asList(raw(0, 250, " Hello there."), raw(250, 480, " General."));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       List<TranscriptSegment> out = drain(transcriber.transcribe(
@@ -137,7 +137,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void timestampsClampedIntoSegmentSpan() throws IOException {
+  void timestampsClampedIntoSegmentSpan() throws IOException {
     engines.script = Arrays.asList(raw(0, 90, "a"), raw(150, 400, "b"), raw(400, 900, "c"));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       List<TranscriptSegment> out = drain(transcriber.transcribe(
@@ -152,7 +152,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void startsMadeNonDecreasing() throws IOException {
+  void startsMadeNonDecreasing() throws IOException {
     engines.script = Arrays.asList(raw(100, 200, "a"), raw(50, 120, "b"), raw(300, 350, "c"));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       List<TranscriptSegment> out = drain(transcriber.transcribe(
@@ -164,7 +164,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void shortSegmentPaddedToMinSamples() throws IOException {
+  void shortSegmentPaddedToMinSamples() throws IOException {
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       drain(transcriber.transcribe(WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(0.5)), props()));
       drain(transcriber.transcribe(WhisperTestSegments.pcm(1, 500, WhisperTestSegments.tone(2)), props()));
@@ -173,7 +173,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void emptyPayloadYieldsNoUtterancesAndNoEngine() throws IOException {
+  void emptyPayloadYieldsNoUtterancesAndNoEngine() throws IOException {
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       assertTrue(drain(transcriber.transcribe(WhisperTestSegments.pcm(0, 0, new short[0]), props())).isEmpty());
     }
@@ -181,7 +181,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void blankTagsAndEmptyTextDropped() throws IOException {
+  void blankTagsAndEmptyTextDropped() throws IOException {
     engines.script = Arrays.asList(raw(0, 100, " [BLANK_AUDIO]"), raw(100, 150, "  "), raw(150, 200, null),
         raw(200, 300, " [MUSIC PLAYING]"), raw(300, 320, " [Music]"), raw(320, 340, " (music)"), raw(340, 360, "(upbeat music) "),
         raw(360, 400, " A [pause] word."));
@@ -194,7 +194,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void oneEngineAcrossSegments() throws IOException {
+  void oneEngineAcrossSegments() throws IOException {
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       for (int i = 0; i < 3; i++) {
         drain(transcriber.transcribe(WhisperTestSegments.pcm(i, i * 2_000L, WhisperTestSegments.tone(2)), props()));
@@ -205,7 +205,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void manyUnclosedInstancesSequentiallyShareOneContext() throws IOException {
+  void manyUnclosedInstancesSequentiallyShareOneContext() throws IOException {
     for (int i = 0; i < 5; i++) {
       WhisperSegmentTranscriber leaked = new WhisperSegmentTranscriber(pool);
       drain(leaked.transcribe(WhisperTestSegments.pcm(i, 0, WhisperTestSegments.tone(2)), props()));
@@ -216,7 +216,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void concurrentCallsOpenOneContextEach() throws Exception {
+  void concurrentCallsOpenOneContextEach() throws Exception {
     engines.inside = new CountDownLatch(2);
     engines.proceed = new CountDownLatch(1);
     ExecutorService threads = Executors.newFixedThreadPool(2);
@@ -241,7 +241,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void closeOfLastInstanceFreesIdle() throws IOException {
+  void closeOfLastInstanceFreesIdle() throws IOException {
     WhisperSegmentTranscriber a = new WhisperSegmentTranscriber(pool);
     WhisperSegmentTranscriber b = new WhisperSegmentTranscriber(pool);
     drain(a.transcribe(WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)), props()));
@@ -255,7 +255,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void closeIdempotent() throws IOException {
+  void closeIdempotent() throws IOException {
     WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool);
     transcriber.close();
     drain(transcriber.transcribe(WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)), props()));
@@ -266,7 +266,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void transcribeAfterCloseRecreatesOneContext() throws IOException {
+  void transcribeAfterCloseRecreatesOneContext() throws IOException {
     WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool);
     drain(transcriber.transcribe(WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)), props()));
     transcriber.close();
@@ -279,11 +279,12 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void engineReturnedToPoolAfterFailure() throws IOException {
+  void engineReturnedToPoolAfterFailure() throws IOException {
     engines.failure = new IllegalStateException("whisper refused the audio segment: full() returned -7");
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      IllegalStateException e = assertThrows(IllegalStateException.class,
-          () -> transcriber.transcribe(WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)), props()));
+      WhisperTestSegments.TestSegment segment = WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2));
+      TypedProperties props = props();
+      IllegalStateException e = assertThrows(IllegalStateException.class, () -> transcriber.transcribe(segment, props));
       assertSame(engines.failure, e);
       assertEquals(1, pool.idle(WhisperConfig.from(props())));
       engines.failure = null;
@@ -294,14 +295,14 @@ public class TestWhisperSegmentTranscriber {
 
   /** Whisper cannot tell an allocation or compute failure inside ggml from bad audio: a failed run is the platform's (class P). */
   @Test
-  public void whisperRunThatFailsIsAPlatformFailure() {
+  void whisperRunThatFailsIsAPlatformFailure() {
     PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> NativeWhisperEngine.checkFullResult(-7));
     assertTrue(e.getMessage().contains("returned -7"), e.getMessage());
     NativeWhisperEngine.checkFullResult(0);
   }
 
   @Test
-  public void decodesSigned16BitLittleEndian() throws IOException {
+  void decodesSigned16BitLittleEndian() throws IOException {
     byte[] bytes = {0x00, (byte) 0x80, (byte) 0xFF, 0x7F, (byte) 0xFF, (byte) 0xFF, 0x01, 0x00, 0x00, 0x00};
     WhisperTestSegments.TestSegment segment = new WhisperTestSegments.TestSegment(0, 0, 1_000, 16000, 1, PcmPayload.PCM_S16LE,
         bytes.length, () -> new ByteArrayInputStream(bytes));
@@ -312,7 +313,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void midStreamReadFailureIsIOException() {
+  void midStreamReadFailureIsIOException() {
     IOException failure = new IOException("connection reset after 100 bytes");
     WhisperTestSegments.TestSegment segment = new WhisperTestSegments.TestSegment(0, 0, 1_000, 16000, 1, PcmPayload.PCM_S16LE,
         4096, () -> new java.io.SequenceInputStream(new ByteArrayInputStream(new byte[100]), new java.io.InputStream() {
@@ -322,7 +323,8 @@ public class TestWhisperSegmentTranscriber {
           }
         }));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      assertSame(failure, assertThrows(IOException.class, () -> transcriber.transcribe(segment, props())));
+      TypedProperties props = props();
+      assertSame(failure, assertThrows(IOException.class, () -> transcriber.transcribe(segment, props)));
     }
     assertEquals(0, engines.opened.get());
   }
@@ -333,11 +335,12 @@ public class TestWhisperSegmentTranscriber {
    */
 
   @Test
-  public void payloadLongerThanItsSpanIsAPlatformFailure() throws IOException {
+  void payloadLongerThanItsSpanIsAPlatformFailure() throws IOException {
     WhisperTestSegments.TestSegment twoSeconds = WhisperTestSegments.pcm(0, 10_000, WhisperTestSegments.tone(2));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      PrepPlatformException e = assertThrows(PrepPlatformException.class,
-          () -> transcriber.transcribe(twoSeconds.withSpan(10_000, 11_000), props()));
+      WhisperTestSegments.TestSegment tooLong = twoSeconds.withSpan(10_000, 11_000);
+      TypedProperties props = props();
+      PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(tooLong, props));
       assertTrue(e.getMessage().contains("longer than its span"), e.getMessage());
       // within the 20 ms rounding tolerance: accepted
       drain(transcriber.transcribe(twoSeconds.withSpan(10_000, 11_985), props()));
@@ -346,12 +349,13 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void corruptSegmentTimesArePlatformFailures() {
+  void corruptSegmentTimesArePlatformFailures() {
     WhisperTestSegments.TestSegment good = WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       for (WhisperTestSegments.TestSegment bad : Arrays.asList(good.withSpan(-5, 1_000), good.withSpan(2_000, 2_000),
           good.withSpan(3_000, 1_000))) {
-        PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(bad, props()));
+        TypedProperties props = props();
+        PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(bad, props));
         assertTrue(e.getMessage().startsWith("corrupt audio segment 0"), e.getMessage());
       }
     }
@@ -359,23 +363,25 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void payloadReadFailureIsIOException() {
+  void payloadReadFailureIsIOException() {
     IOException failure = new IOException("spill file gone");
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      IOException e = assertThrows(IOException.class, () -> transcriber.transcribe(
-          WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)).failingReads(failure), props()));
+      WhisperTestSegments.TestSegment segment = WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)).failingReads(failure);
+      TypedProperties props = props();
+      IOException e = assertThrows(IOException.class, () -> transcriber.transcribe(segment, props));
       assertSame(failure, e);
     }
     assertEquals(0, engines.opened.get());
   }
 
   @Test
-  public void oversizedStreamRefusedAtBoundAsAPlatformFailure() {
+  void oversizedStreamRefusedAtBoundAsAPlatformFailure() {
     byte[] large = new byte[2 * 1024 * 1024];
     WhisperTestSegments.TestSegment lying = new WhisperTestSegments.TestSegment(0, 0, 1_000, 16000, 1, PcmPayload.PCM_S16LE,
         1024, () -> new ByteArrayInputStream(large));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(lying, props()));
+      TypedProperties props = props();
+      PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(lying, props));
       assertTrue(e.getMessage().contains("longer than its declared"), e.getMessage());
     }
     assertTrue(lying.bytesRead.get() <= 1025, "read " + lying.bytesRead.get());
@@ -383,17 +389,18 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void shortStreamRefusedAsAPlatformFailure() {
+  void shortStreamRefusedAsAPlatformFailure() {
     WhisperTestSegments.TestSegment shortStream = new WhisperTestSegments.TestSegment(0, 0, 1_000, 16000, 1, PcmPayload.PCM_S16LE,
         4096, () -> new ByteArrayInputStream(new byte[100]));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(shortStream, props()));
+      TypedProperties props = props();
+      PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(shortStream, props));
       assertTrue(e.getMessage().contains("ended after 100"), e.getMessage());
     }
   }
 
   @Test
-  public void wrongRateChannelsEncodingOrOddBytesArePlatformFailures() {
+  void wrongRateChannelsEncodingOrOddBytesArePlatformFailures() {
     WhisperTestSegments.TestSegment good = WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       for (WhisperTestSegments.TestSegment bad : Arrays.asList(
@@ -402,7 +409,8 @@ public class TestWhisperSegmentTranscriber {
           good.with(16000, 1, "flac", good.payloadBytes()),
           good.with(16000, 1, PcmPayload.PCM_S16LE, good.payloadBytes() - 1),
           good.with(16000, 1, PcmPayload.PCM_S16LE, -2))) {
-        PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(bad, props()));
+        TypedProperties props = props();
+        PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(bad, props));
         assertTrue(e.getMessage().startsWith("corrupt audio segment 0"), e.getMessage());
       }
     }
@@ -410,36 +418,39 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void oversizedDeclaredPayloadIsAPlatformFailureBeforeAnyRead() {
+  void oversizedDeclaredPayloadIsAPlatformFailureBeforeAnyRead() {
     WhisperTestSegments.TestSegment segment = WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2));
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      PrepPlatformException e = assertThrows(PrepPlatformException.class,
-          () -> transcriber.transcribe(segment, props(AudioConfigKeys.SEGMENT_MAX_BYTES.key(), "4096")));
+      TypedProperties props = props(AudioConfigKeys.SEGMENT_MAX_BYTES.key(), "4096");
+      PrepPlatformException e = assertThrows(PrepPlatformException.class, () -> transcriber.transcribe(segment, props));
       assertTrue(e.getMessage().contains("above the bound of 4096"), e.getMessage());
     }
     assertEquals(0, segment.bytesRead.get());
   }
 
   @Test
-  public void configChangeMidInstanceRefused() throws IOException {
+  void configChangeMidInstanceRefused() throws IOException {
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       drain(transcriber.transcribe(WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)), props()));
-      assertThrows(IllegalArgumentException.class, () -> transcriber.transcribe(
-          WhisperTestSegments.pcm(1, 0, WhisperTestSegments.tone(2)), props(WhisperConfig.MODEL.key(), "small.en")));
+      WhisperTestSegments.TestSegment segment = WhisperTestSegments.pcm(1, 0, WhisperTestSegments.tone(2));
+      TypedProperties changed = props(WhisperConfig.MODEL.key(), "small.en");
+      assertThrows(IllegalArgumentException.class, () -> transcriber.transcribe(segment, changed));
     }
   }
 
   @Test
-  public void badKeyIsConfigurationError() {
+  void badKeyIsConfigurationError() {
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
-      assertThrows(IllegalArgumentException.class, () -> transcriber.validate(props(WhisperConfig.THREADS.key(), "0")));
-      assertThrows(IllegalArgumentException.class, () -> transcriber.transcribe(
-          WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)), props(WhisperConfig.THREADS.key(), "0")));
+      TypedProperties validated = props(WhisperConfig.THREADS.key(), "0");
+      assertThrows(IllegalArgumentException.class, () -> transcriber.validate(validated));
+      WhisperTestSegments.TestSegment segment = WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2));
+      TypedProperties transcribed = props(WhisperConfig.THREADS.key(), "0");
+      assertThrows(IllegalArgumentException.class, () -> transcriber.transcribe(segment, transcribed));
     }
   }
 
   @Test
-  public void idFollowsValidatedPropsAndSpeakersAreFileScoped() {
+  void idFollowsValidatedPropsAndSpeakersAreFileScoped() {
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber(pool)) {
       IllegalStateException e = assertThrows(IllegalStateException.class, transcriber::id);
       assertTrue(e.getMessage().contains("validate"), e.getMessage());
@@ -452,7 +463,7 @@ public class TestWhisperSegmentTranscriber {
   }
 
   @Test
-  public void noArgConstructorForClassKeySelection() throws Exception {
+  void noArgConstructorForClassKeySelection() throws Exception {
     Object instance = Class.forName(WhisperSegmentTranscriber.class.getName()).getConstructor().newInstance();
     assertTrue(instance instanceof org.apache.hudi.utilities.unstructured.embedding.audio.SegmentTranscriber);
     assertTrue(instance instanceof AutoCloseable);

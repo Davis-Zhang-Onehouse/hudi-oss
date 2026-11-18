@@ -52,7 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * all released on every way a file ends (exhausted, abandoned by the consumer and closed, a failed load, a size cap met mid-copy,
  * a round failure mid-copy, an interrupt, an {@link Error} escaping a page).
  */
-public class TestPdfBoxPageSourceHandleRelease {
+class TestPdfBoxPageSourceHandleRelease {
 
   @TempDir
   Path staging;
@@ -61,17 +61,17 @@ public class TestPdfBoxPageSourceHandleRelease {
   private final AtomicInteger closed = new AtomicInteger();
 
   @BeforeAll
-  public static void fontCache(@TempDir Path cache) {
+  static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
   }
 
   @AfterEach
-  public void clearInterrupt() {
+  void clearInterrupt() {
     Thread.interrupted();
   }
 
   @Test
-  public void exhaustedFileReleasesEverything() throws IOException {
+  void exhaustedFileReleasesEverything() throws IOException {
     byte[] pdf = PdfFixtures.prose(7L, 4, 30);
     List<PdfChunk> chunks = new ArrayList<>();
     try (PdfChunkIterator iterator = open(pdf, config(new TypedProperties()))) {
@@ -86,7 +86,7 @@ public class TestPdfBoxPageSourceHandleRelease {
   }
 
   @Test
-  public void fileAbandonedMidWayIsReleasedByClose() throws IOException {
+  void fileAbandonedMidWayIsReleasedByClose() throws IOException {
     byte[] pdf = PdfFixtures.prose(11L, 12, 60);
     PdfChunkIterator iterator = open(pdf, config(new TypedProperties()));
     assertTrue(iterator.hasNext());
@@ -97,7 +97,7 @@ public class TestPdfBoxPageSourceHandleRelease {
   }
 
   @Test
-  public void failedLoadReleasesEverything() {
+  void failedLoadReleasesEverything() {
     byte[] notAPdf = "%PDF-1.7 broken".getBytes(StandardCharsets.US_ASCII);
     List<PdfChunk> chunks = drain(notAPdf, config(new TypedProperties()));
     assertEquals(1, chunks.size(), chunks.toString());
@@ -107,7 +107,7 @@ public class TestPdfBoxPageSourceHandleRelease {
   }
 
   @Test
-  public void inputLimitMetMidCopyReleasesEverything() throws IOException {
+  void inputLimitMetMidCopyReleasesEverything() throws IOException {
     byte[] pdf = PdfFixtures.prose(3L, 3, 30);
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "1024");
@@ -128,7 +128,7 @@ public class TestPdfBoxPageSourceHandleRelease {
   }
 
   @Test
-  public void roundFailureMidCopyReleasesEverythingBeforeItPropagates() throws IOException {
+  void roundFailureMidCopyReleasesEverythingBeforeItPropagates() throws IOException {
     byte[] pdf = PdfFixtures.prose(5L, 3, 30);
     PdfChunkIterator iterator = new PdfBoxChunker((s, m, c) -> new PdfBoxPageSource(s, m, c, staging.toFile(), true))
         .open(countingSource(pdf, 2), new PdfFileMeta("s", "s.pdf", pdf.length), config(new TypedProperties()), warnings::add);
@@ -139,7 +139,7 @@ public class TestPdfBoxPageSourceHandleRelease {
   }
 
   @Test
-  public void interruptMidFileReleasesEverythingBeforeItPropagates() throws IOException {
+  void interruptMidFileReleasesEverythingBeforeItPropagates() throws IOException {
     byte[] pdf = PdfFixtures.prose(13L, 12, 60);
     PdfChunkIterator iterator = open(pdf, config(new TypedProperties()));
     assertTrue(iterator.hasNext());
@@ -156,7 +156,7 @@ public class TestPdfBoxPageSourceHandleRelease {
   }
 
   @Test
-  public void errorEscapingAPageIsReleasedByTheConsumersClose() throws IOException {
+  void errorEscapingAPageIsReleasedByTheConsumersClose() throws IOException {
     byte[] pdf = PdfFixtures.prose(17L, 4, 30);
     PdfChunkIterator iterator = new PdfBoxChunker((s, m, c) -> new FailingNextPageSource(new PdfBoxPageSource(s, m, c,
         staging.toFile(), true))).open(countingSource(pdf, -1), new PdfFileMeta("s", "s.pdf", pdf.length),

@@ -135,13 +135,7 @@ public final class SdkBedrockInvoker implements BedrockInvoker {
       InvokeModelResponse response = client.invokeModel(request);
       return BedrockReply.ok(response.body().asByteArrayUnsafe(), inputTokens(response));
     } catch (AwsServiceException e) {
-      AwsErrorDetails details = e.awsErrorDetails();
-      // error details are absent when a proxy or VPC endpoint answers instead of Bedrock
-      String code = details != null && details.errorCode() != null ? details.errorCode() : e.getClass().getSimpleName();
-      String message = details != null && details.errorMessage() != null ? details.errorMessage() : e.getMessage();
-      String retryAfter = details != null && details.sdkHttpResponse() != null
-          ? details.sdkHttpResponse().firstMatchingHeader("Retry-After").orElse(null) : null;
-      return BedrockReply.error(e.statusCode(), code, message, retryAfter);
+      return serviceError(e);
     } catch (SdkClientException e) {
       if (e instanceof AbortedException || Thread.currentThread().isInterrupted()) {
         Thread.currentThread().interrupt();
@@ -153,6 +147,16 @@ public final class SdkBedrockInvoker implements BedrockInvoker {
       }
       throw new IOException(e.getClass().getSimpleName() + ": " + e.getMessage(), e);
     }
+  }
+
+  /** The error reply of a service exception; its error details are absent when a proxy or VPC endpoint answers instead of Bedrock. */
+  private static BedrockReply serviceError(AwsServiceException e) {
+    AwsErrorDetails details = e.awsErrorDetails();
+    String code = details != null && details.errorCode() != null ? details.errorCode() : e.getClass().getSimpleName();
+    String message = details != null && details.errorMessage() != null ? details.errorMessage() : e.getMessage();
+    String retryAfter = details != null && details.sdkHttpResponse() != null
+        ? details.sdkHttpResponse().firstMatchingHeader("Retry-After").orElse(null) : null;
+    return BedrockReply.error(e.statusCode(), code, message, retryAfter);
   }
 
   /**

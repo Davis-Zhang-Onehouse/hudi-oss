@@ -71,8 +71,8 @@ public class TestTransformerCommitCallback {
     chain.onCommit(null, null, properties, INSTANT);
 
     assertEquals(Arrays.asList("first@20261113010101000", "second@20261113010101000"), RecordingTransformer.CALLS);
-    assertEquals(Arrays.asList(Map.of("callback.common", "shared"), Map.of("callback.common", "shared")),
-        RecordingTransformer.PROPERTIES);
+    List<Map<Object, Object>> received = RecordingTransformer.PROPERTIES;
+    assertEquals(Arrays.asList(Map.of("callback.common", "shared"), Map.of("callback.common", "shared")), received);
     assertEquals(Map.of("callback.common", "shared"), properties);
   }
 
@@ -91,11 +91,12 @@ public class TestTransformerCommitCallback {
     chain.onCommit(null, null, properties, INSTANT);
 
     assertEquals(Arrays.asList("first@20261113010101000", "second@20261113010101000"), RecordingTransformer.CALLS);
+    List<Map<Object, Object>> received = RecordingTransformer.PROPERTIES;
     assertEquals(Arrays.asList(
         Map.of("callback.name", "first", "callback.only", "only-first", "callback.common", "shared",
             "callback.external.unknown", "retained"),
         Map.of("callback.name", "second", "callback.common", "shared", "callback.external.unknown", "retained")),
-        RecordingTransformer.PROPERTIES);
+        received);
     assertEquals(Map.of("callback.name", "base", "callback.name.z", "first", "callback.name.a", "second",
         "callback.only.z", "only-first", "callback.common", "shared", "callback.external.unknown", "retained"), properties);
   }

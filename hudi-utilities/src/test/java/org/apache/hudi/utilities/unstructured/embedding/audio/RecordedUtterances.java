@@ -126,6 +126,7 @@ public final class RecordedUtterances {
 
     @Override
     public void validate(TypedProperties props) {
+      // a recorded transcript needs no configuration
     }
 
     @Override

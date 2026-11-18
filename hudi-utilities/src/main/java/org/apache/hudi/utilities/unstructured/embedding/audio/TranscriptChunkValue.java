@@ -34,16 +34,30 @@ public final class TranscriptChunkValue implements TranscriptChunk {
   private final long firstSegment;
   private final long lastSegment;
 
-  public TranscriptChunkValue(long ordinal, String text, int tokenCount, long startMs, long endMs, List<String> speakers,
-                              long firstSegment, long lastSegment) {
+  /**
+   * @param timeMs   the chunk's start and end, in ms from the audio's start
+   * @param segments the first and last segment the chunk's utterances come from
+   */
+  public TranscriptChunkValue(long ordinal, String text, int tokenCount, Range timeMs, List<String> speakers, Range segments) {
     this.ordinal = ordinal;
     this.text = Objects.requireNonNull(text, "text");
     this.tokenCount = tokenCount;
-    this.startMs = startMs;
-    this.endMs = endMs;
+    this.startMs = timeMs.first;
+    this.endMs = timeMs.last;
     this.speakers = Collections.unmodifiableList(speakers);
-    this.firstSegment = firstSegment;
-    this.lastSegment = lastSegment;
+    this.firstSegment = segments.first;
+    this.lastSegment = segments.last;
+  }
+
+  /** A closed range [first, last]. */
+  public static final class Range {
+    private final long first;
+    private final long last;
+
+    public Range(long first, long last) {
+      this.first = first;
+      this.last = last;
+    }
   }
 
   @Override

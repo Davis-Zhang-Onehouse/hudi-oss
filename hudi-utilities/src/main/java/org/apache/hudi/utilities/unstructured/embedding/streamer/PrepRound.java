@@ -181,7 +181,7 @@ final class PrepRound {
    * unpersisted output and no balance.
    */
   static Prepared prepare(SparkSession spark, Dataset<Row> blobRows, EmbeddingTableConfig config, StorageConfiguration<?> storageConf,
-                          StructType tableSchema, StructType outputSchema, String instant, StorageLevel level) {
+                          StructType outputSchema, String instant, StorageLevel level) {
     TypedProperties props = config.getProps();
     String target = config.targetTablePath();
     // under the prep extension allow-list, the rows of other extensions are dropped (lazily): no row, no error record
@@ -209,7 +209,7 @@ final class PrepRound {
       PayloadDestination destination = storesInputs(config) ? new PayloadDestination(storageConf, target, props) : null;
       long prefetchMaxBytes = admittedPrefetchBytes(config, spark.sparkContext().getConf());
       JavaRDD<Row> prepared = balanced.getRows().mapPartitions(preprocessFunction(config, instant, storageConf, destination,
-          counters, layoutOf(outputSchema, EmbeddingTableSchema.build(config)), outputSchema, prefetchMaxBytes));
+          counters, outputSchema, prefetchMaxBytes));
       output = spark.createDataFrame(prepared, outputSchema).persist(level);
       // the action that runs preprocessing, inside the round, where a failure rolls the instant back
       long outputRows = output.count();
@@ -277,15 +277,21 @@ final class PrepRound {
 
   private static FlatMapFunction<Iterator<Row>, Row> preprocessFunction(
       EmbeddingTableConfig driverConfig, String instant, StorageConfiguration<?> storageConf, PayloadDestination destination,
-      PrepCounters counters, int[] layout, StructType outputSchema, long prefetchMaxBytes) {
+      PrepCounters counters, StructType outputSchema, long prefetchMaxBytes) {
+    int[] layout = layoutOf(outputSchema, EmbeddingTableSchema.build(driverConfig));
     EmbeddingTableConfig config = EmbeddingTableConfig.from(PrepLogicVersions.from(driverConfig.getProps())
         .executionProperties(driverConfig.getProps()));
     return blobRows -> {
       Deque<PrepSideOutput> sideOutputs = new ArrayDeque<>();
-      PreprocessingIterator rows = new PreprocessingIterator(blobRows, config, instant,
-          new BlobBytesSource(storageConf, config.prepSourceRetry()).withReadahead(BlobBytesSource.PREP_SOURCE_READAHEAD_BYTES),
-          new PreprocessorRegistry(config.getProps()),
-          TokenizerFactory.create(config.getProps()), counters, sideOutputs::add, destination, prefetchMaxBytes);
+      PreprocessingIterator rows = PreprocessingIterator.builder(blobRows, config, instant)
+          .bytesSource(new BlobBytesSource(storageConf, config.prepSourceRetry()).withReadahead(BlobBytesSource.PREP_SOURCE_READAHEAD_BYTES))
+          .registry(new PreprocessorRegistry(config.getProps()))
+          .tokenizer(TokenizerFactory.create(config.getProps()))
+          .counters(counters)
+          .sideOutputs(sideOutputs::add)
+          .destination(destination)
+          .prefetchMaxBytes(prefetchMaxBytes)
+          .build();
       return new Iterator<Row>() {
         @Override
         public boolean hasNext() {

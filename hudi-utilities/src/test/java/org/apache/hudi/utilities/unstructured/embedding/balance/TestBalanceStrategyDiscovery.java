@@ -27,17 +27,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
 /** The size and type aware prep strategy is the default, and the hash strategy can be selected. */
-public class TestBalanceStrategyDiscovery {
+class TestBalanceStrategyDiscovery {
 
   private static final String STRATEGY = "org.apache.hudi.utilities.unstructured.embedding.balance.HashBalancingStrategy";
 
   @Test
-  public void defaultIsSizeTypeAware() {
+  void defaultIsSizeTypeAware() {
     assertInstanceOf(SizeTypeAwareBalancingStrategy.class, RowBalancer.strategyFrom(new TypedProperties()));
   }
 
   @Test
-  public void hashStrategyCanBeSelected() {
+  void hashStrategyCanBeSelected() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.BALANCE_STRATEGY_CLASS.key(), STRATEGY);
     assertEquals(STRATEGY, RowBalancer.strategyFrom(props).getClass().getName());

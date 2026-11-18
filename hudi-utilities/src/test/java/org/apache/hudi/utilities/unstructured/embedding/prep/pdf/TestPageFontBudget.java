@@ -63,8 +63,8 @@ class TestPageFontBudget {
       fonts.setItem(COSName.getPDFName("First"), font(stream(document, 31)));
       fonts.setItem(COSName.getPDFName("Second"), font(stream(document, 31)));
       PDPage page = page(fonts);
-      PageFailure failure = assertThrows(PageFailure.class,
-          () -> new StreamDecodeGuard(32, 48, temp.toFile()).checkPage(page));
+      StreamDecodeGuard guard = new StreamDecodeGuard(32, 48, temp.toFile());
+      PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(page));
       assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
       assertTrue(failure.getMessage().contains("48"), failure.getMessage());
     }
@@ -82,8 +82,9 @@ class TestPageFontBudget {
       document.save(file.toFile());
     }
     try (PDDocument loaded = Loader.loadPDF(file.toFile())) {
-      PageFailure failure = assertThrows(PageFailure.class,
-          () -> new StreamDecodeGuard(32, 48, temp.toFile()).checkPage(loaded.getPage(0)));
+      StreamDecodeGuard guard = new StreamDecodeGuard(32, 48, temp.toFile());
+      PDPage page = loaded.getPage(0);
+      PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(page));
       assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
       assertTrue(failure.getMessage().contains("budget=48"), failure.getMessage());
       System.out.println("SHARED_STREAM_REFUSED " + failure.getMessage());
@@ -151,8 +152,9 @@ class TestPageFontBudget {
       }
       COSDictionary fonts = new COSDictionary();
       fonts.setItem(COSName.getPDFName("F"), font);
-      PageFailure failure = assertThrows(PageFailure.class,
-          () -> new StreamDecodeGuard(32, 1, temp.toFile()).checkPage(page(fonts)));
+      StreamDecodeGuard guard = new StreamDecodeGuard(32, 1, temp.toFile());
+      PDPage page = page(fonts);
+      PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(page));
       assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
       assertTrue(failure.getMessage().contains("budget=1"), failure.getMessage());
       assertTrue(failure.getMessage().contains("sum=2"), failure.getMessage());
@@ -204,8 +206,8 @@ class TestPageFontBudget {
         type0.setItem(COSName.DESCENDANT_FONTS, descendants);
         fonts.setItem(COSName.getPDFName("F"), type0);
       }
-      PageFailure failure = assertThrows(PageFailure.class,
-          () -> new StreamDecodeGuard(32, 1, temp.toFile()).checkPage(page));
+      StreamDecodeGuard guard = new StreamDecodeGuard(32, 1, temp.toFile());
+      PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(page));
       assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
       assertTrue(failure.getMessage().contains("sum=2"));
     }
@@ -244,7 +246,9 @@ class TestPageFontBudget {
       document.save(file.toFile());
     }
     try (PDDocument loaded = Loader.loadPDF(file.toFile())) {
-      assertDoesNotThrow(() -> new StreamDecodeGuard(32, 2, temp.toFile()).checkPage(loaded.getPage(0)));
+      StreamDecodeGuard guard = new StreamDecodeGuard(32, 2, temp.toFile());
+      PDPage page = loaded.getPage(0);
+      assertDoesNotThrow(() -> guard.checkPage(page));
     }
   }
 
@@ -255,8 +259,9 @@ class TestPageFontBudget {
       COSDictionary fonts = new COSDictionary();
       fonts.setItem(COSName.getPDFName("First"), font);
       fonts.setItem(COSName.getPDFName("Again"), font);
-      PageFailure failure = assertThrows(PageFailure.class,
-          () -> new StreamDecodeGuard(32, 3, temp.toFile()).checkPage(page(fonts)));
+      StreamDecodeGuard guard = new StreamDecodeGuard(32, 3, temp.toFile());
+      PDPage page = page(fonts);
+      PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(page));
       assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
       assertTrue(failure.getMessage().contains("sum=4"), failure.getMessage());
     }
@@ -290,12 +295,14 @@ class TestPageFontBudget {
       StreamDecodeGuard guard = new StreamDecodeGuard(32, 3, temp.toFile());
       guard.checkPage(loaded.getPage(0));
       long decoded = guard.decodedStreams();
-      assertEquals(PdfFailureCode.DECODE_LIMIT,
-          assertThrows(PageFailure.class, () -> guard.checkPage(loaded.getPage(1))).code());
-      assertDoesNotThrow(() -> guard.checkPage(loaded.getPage(2)));
+      PDPage second = loaded.getPage(1);
+      assertEquals(PdfFailureCode.DECODE_LIMIT, assertThrows(PageFailure.class, () -> guard.checkPage(second)).code());
+      PDPage third = loaded.getPage(2);
+      assertDoesNotThrow(() -> guard.checkPage(third));
       // each page also decodes its own content stream (pages 2-3: 2); "Another" once on page 2, Shared stays cached
       assertEquals(decoded + 1 + 2, guard.decodedStreams());
-      assertDoesNotThrow(() -> guard.checkPage(loaded.getPage(3)));
+      PDPage fourth = loaded.getPage(3);
+      assertDoesNotThrow(() -> guard.checkPage(fourth));
       assertEquals(decoded + 2 + 3, guard.decodedStreams());
     }
   }
@@ -309,8 +316,9 @@ class TestPageFontBudget {
       }
       COSDictionary fonts = new COSDictionary();
       fonts.setItem(COSName.getPDFName("F"), font(raw));
-      assertEquals(PdfFailureCode.DECODE_LIMIT, assertThrows(PageFailure.class,
-          () -> new StreamDecodeGuard(32, 2, temp.toFile()).checkPage(page(fonts))).code());
+      StreamDecodeGuard guard = new StreamDecodeGuard(32, 2, temp.toFile());
+      PDPage page = page(fonts);
+      assertEquals(PdfFailureCode.DECODE_LIMIT, assertThrows(PageFailure.class, () -> guard.checkPage(page)).code());
     }
   }
 
@@ -326,7 +334,9 @@ class TestPageFontBudget {
       }
       COSDictionary fonts = new COSDictionary();
       fonts.setItem(COSName.getPDFName("F"), font(stream));
-      assertDoesNotThrow(() -> new StreamDecodeGuard(32, 2, temp.toFile()).checkPage(page(fonts)));
+      StreamDecodeGuard guard = new StreamDecodeGuard(32, 2, temp.toFile());
+      PDPage page = page(fonts);
+      assertDoesNotThrow(() -> guard.checkPage(page));
     }
   }
 
@@ -353,7 +363,8 @@ class TestPageFontBudget {
       StreamDecodeGuard guard = new StreamDecodeGuard(32, Long.MAX_VALUE, temp.toFile());
       guard.checkPage(loaded.getPage(0));
       guard.checkPage(loaded.getPage(1));
-      PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(loaded.getPage(2)));
+      PDPage third = loaded.getPage(2);
+      PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(third));
       assertEquals(PdfFailureCode.PAGE_ERROR, failure.code());
       assertTrue(failure.getMessage().contains("4096 font dictionary visits"));
     }

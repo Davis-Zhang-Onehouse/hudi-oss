@@ -53,7 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * or font that is listed (directly or through inherited resources) but never drawn does not fail the page, while the same
  * entry drawn by {@code Do}, {@code Tf} or {@code gs} still does.
  */
-public class TestDecodeGuardDrawnResources {
+class TestDecodeGuardDrawnResources {
 
   /** The guard's per-stream decoded-size cap in these tests; the oversized stream decodes to four times it. */
   private static final long CAP = 64 * 1024;
@@ -66,12 +66,12 @@ public class TestDecodeGuardDrawnResources {
   Path staging;
 
   @BeforeAll
-  public static void fontCache(@TempDir Path cache) {
+  static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
   }
 
   @Test
-  public void undrawnOversizedFormDoesNotFailThePage() throws IOException {
+  void undrawnOversizedFormDoesNotFailThePage() throws IOException {
     byte[] pdf = build((document, page) -> {
       xobjects(page.getResources()).setItem(BIG, oversizedForm(document));
       setContents(document, page, TEXT);
@@ -80,7 +80,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void drawnOversizedFormStillFailsThePage() throws IOException {
+  void drawnOversizedFormStillFailsThePage() throws IOException {
     byte[] pdf = build((document, page) -> {
       xobjects(page.getResources()).setItem(BIG, oversizedForm(document));
       setContents(document, page, "q /Big Do Q " + TEXT);
@@ -89,7 +89,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void undrawnOversizedFormInInheritedResourcesFailsNoPage() throws IOException {
+  void undrawnOversizedFormInInheritedResourcesFailsNoPage() throws IOException {
     byte[] pdf;
     try (PDDocument document = new PDDocument()) {
       PDResources inherited = PdfFixtures.helvetica();
@@ -109,7 +109,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void undrawnOversizedFontDoesNotFailThePageButADrawnOneDoes() throws IOException {
+  void undrawnOversizedFontDoesNotFailThePageButADrawnOneDoes() throws IOException {
     byte[] undrawn = build((document, page) -> {
       fonts(page.getResources()).setItem(F2, toUnicodeFont(PdfFixtures.oversizedFlateStream(document, OVERSIZED)));
       setContents(document, page, TEXT);
@@ -123,7 +123,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void graphicsStateFontIsCheckedOnlyWhenTheStateIsSet() throws IOException {
+  void graphicsStateFontIsCheckedOnlyWhenTheStateIsSet() throws IOException {
     byte[] undrawn = build((document, page) -> {
       page.getResources().getCOSObject().setItem(COSName.EXT_G_STATE, stateWithFont(document));
       setContents(document, page, TEXT);
@@ -137,7 +137,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void formWithoutResourcesDrawsFromItsCallersResources() throws IOException {
+  void formWithoutResourcesDrawsFromItsCallersResources() throws IOException {
     // the page draws /Fm, which has no /Resources, so its "/F2 Tf" resolves in the page's resources (PDFStreamEngine)
     byte[] pdf = build((document, page) -> {
       COSStream form = PdfFixtures.stream(document, "BT /F2 10 Tf 0 0 Td (x) Tj ET\n");
@@ -150,7 +150,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void formReachedThroughTwoResourceDictionariesIsCheckedInBoth() throws IOException {
+  void formReachedThroughTwoResourceDictionariesIsCheckedInBoth() throws IOException {
     // /Fm has no /Resources. Drawn first from the page (whose /F2 is small), then from form /Outer (whose /F2 is the
     // oversized font): the second reach resolves /F2 elsewhere and must be checked again.
     byte[] pdf = build((document, page) -> {
@@ -175,7 +175,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void checkingAFormLeavesItsDictionaryUnchanged() throws IOException {
+  void checkingAFormLeavesItsDictionaryUnchanged() throws IOException {
     try (PDDocument document = new PDDocument()) {
       PDPage page = new PDPage();
       page.setResources(PdfFixtures.helvetica());
@@ -190,7 +190,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void escapedNameResolvesToTheEntryItNames() throws IOException {
+  void escapedNameResolvesToTheEntryItNames() throws IOException {
     byte[] pdf = build((document, page) -> {
       xobjects(page.getResources()).setItem(BIG, oversizedForm(document));
       setContents(document, page, "/B#69g Do " + TEXT);              // #69 is 'i'
@@ -199,7 +199,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void longNameResolvesExactly() throws IOException {
+  void longNameResolvesExactly() throws IOException {
     StringBuilder longName = new StringBuilder();
     for (int i = 0; i < 100; i++) {
       longName.append('n');
@@ -217,7 +217,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void collectorRecordsTheFirstOperandOfDoTfAndGs() throws IOException {
+  void collectorRecordsTheFirstOperandOfDoTfAndGs() throws IOException {
     byte[] content = ("q /Fm0 Do Q BT /X /F1 12 Tf /GS1 gs [/F9 1] TJ (/F8) Tj /F7 12 TL ET\n"
         + "/Fm1 Do /Im#31 Do").getBytes(StandardCharsets.US_ASCII);
     DrawnResources drawn = DrawnResources.collect(new PDFStreamParser(content));
@@ -235,7 +235,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void skippedUndecodableContentStreamIsLoggedOncePerPage() throws IOException {
+  void skippedUndecodableContentStreamIsLoggedOncePerPage() throws IOException {
     byte[] pdf;
     try (PDDocument document = new PDDocument()) {
       for (int p = 0; p < 2; p++) {
@@ -293,7 +293,7 @@ public class TestDecodeGuardDrawnResources {
       "BI 5 /Big Do | Big",
       "BI /K 1 2 /Big Do | Big",
       "IDx ( EI Q /Big Do | Big"})
-  public void contentPdfBoxTokenizesUnusuallyStillRefusesTheDrawnForm(String ops, String drawnName) throws IOException {
+  void contentPdfBoxTokenizesUnusuallyStillRefusesTheDrawnForm(String ops, String drawnName) throws IOException {
     String content = ops.replace("\\n", "\n");
     assertEquals(drawnName, pdfBoxDoOperand(content), "PDFBox resolves this XObject for Do");
     byte[] pdf = build((document, page) -> {
@@ -304,7 +304,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void formWhoseResourcesAreNotADictionaryDrawsNothingFromItsCaller() throws IOException {
+  void formWhoseResourcesAreNotADictionaryDrawsNothingFromItsCaller() throws IOException {
     // PDFormXObject#getResources: a /Resources key that is not a dictionary gives empty resources (PDFBOX-4372), so the
     // form's "/F2 Tf" never reaches the page's oversized /F2
     byte[] pdf = build((document, page) -> {
@@ -319,7 +319,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void directFontSelectedFromTwoFormsIsChargedForEachSelection() throws IOException {
+  void directFontSelectedFromTwoFormsIsChargedForEachSelection() throws IOException {
     // PDFBox caches only indirect fonts: each form's Tf on the one direct font dictionary builds another copy
     try (PDDocument document = new PDDocument()) {
       PDPage page = new PDPage();
@@ -344,7 +344,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void glyphProceduresAreNotKeptInTheDrawnNamesCache() throws IOException {
+  void glyphProceduresAreNotKeptInTheDrawnNamesCache() throws IOException {
     byte[] pdf = PdfFixtures.type3WithCharProcs(3);
     try (PDDocument document = Loader.loadPDF(pdf)) {
       StreamDecodeGuard guard = new StreamDecodeGuard(CAP, staging.toFile());
@@ -354,7 +354,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void skippedStreamListedTwiceIsNamedOnceWithItsDecodeError() throws IOException {
+  void skippedStreamListedTwiceIsNamedOnceWithItsDecodeError() throws IOException {
     byte[] pdf;
     try (PDDocument document = new PDDocument()) {
       PDPage page = new PDPage();
@@ -389,7 +389,7 @@ public class TestDecodeGuardDrawnResources {
    * one graphics state: the walk looks up those entries, it does not visit the whole dictionary on every page.
    */
   @Test
-  public void largeSharedDictionaryCostsTheDrawnEntriesNotItsSize() throws IOException {
+  void largeSharedDictionaryCostsTheDrawnEntriesNotItsSize() throws IOException {
     int entries = 2000;
     int pages = 50;
     byte[] pdf;
@@ -430,7 +430,7 @@ public class TestDecodeGuardDrawnResources {
    * guard must too, or the entry it draws goes unchecked.
    */
   @Test
-  public void drawnNameThatIsNotUtf8IsCheckedLikeAnyOther() throws IOException {
+  void drawnNameThatIsNotUtf8IsCheckedLikeAnyOther() throws IOException {
     COSName xobject = COSName.getPDFName(new byte[] {'X', (byte) 0xE9});
     byte[] form = build((document, page) -> {
       xobjects(page.getResources()).setItem(xobject, oversizedForm(document));
@@ -446,7 +446,7 @@ public class TestDecodeGuardDrawnResources {
   }
 
   @Test
-  public void pageNamingMoreThanTheNameBudgetChecksEveryEntry() throws IOException {
+  void pageNamingMoreThanTheNameBudgetChecksEveryEntry() throws IOException {
     // past DrawnResources.MAX_NAMES the record means every resource: the walk then checks each entry, undrawn ones too
     StringBuilder ops = new StringBuilder();
     for (int i = 0; i <= DrawnResources.MAX_NAMES; i++) {

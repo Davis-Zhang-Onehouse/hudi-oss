@@ -53,7 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The parts of the OpenAI-compatible client that need no endpoint: config keys and the known-model table, the
  * credential source, Retry-After parsing, error classification and request planning.
  */
-public class TestOpenAiClientParts {
+class TestOpenAiClientParts {
 
   private static final String ALIAS = "oai";
   private static final String KEY = "sk-test-ABCDEFGHIJKLMNOP1234";
@@ -64,7 +64,7 @@ public class TestOpenAiClientParts {
   // ---------------------------------------------------------------- request planner
 
   @Test
-  public void testPlannerSplitsByInputCount() {
+  void testPlannerSplitsByInputCount() {
     int[] ones = new int[2049];
     Arrays.fill(ones, 1);
     List<int[]> plan = RequestPlanner.plan(ones, 2048, 300_000L);
@@ -74,7 +74,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testPlannerSplitsByTokenBudget() {
+  void testPlannerSplitsByTokenBudget() {
     int[] hundreds = new int[10];
     Arrays.fill(hundreds, 100);
     List<int[]> plan = RequestPlanner.plan(hundreds, 2048, 350L);
@@ -86,7 +86,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testPlannerGivesAnOversizedItemItsOwnRequest() {
+  void testPlannerGivesAnOversizedItemItsOwnRequest() {
     List<int[]> plan = RequestPlanner.plan(new int[] {10, 500, 10}, 2048, 350L);
     assertEquals(3, plan.size());
     assertArrayEquals(new int[] {1, 2}, plan.get(1));
@@ -96,7 +96,7 @@ public class TestOpenAiClientParts {
   // ---------------------------------------------------------------- Retry-After
 
   @Test
-  public void testRetryAfterHints() {
+  void testRetryAfterHints() {
     long now = 1_760_000_000_000L;
     assertEquals(1500, RetryAfter.hintMillis("1500", "9", now), "retry-after-ms wins");
     assertEquals(2000, RetryAfter.hintMillis(null, "2", now));
@@ -121,7 +121,7 @@ public class TestOpenAiClientParts {
    * access.", https://developers.openai.com/api/docs/guides/error-codes, read 2026-10-27) are out of quota, never a rate limit.
    */
   @Test
-  public void testBillingRateLimitCodesAreQuota() {
+  void testBillingRateLimitCodesAreQuota() {
     for (String code : new String[] {"credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
         "organization_usage_limit_exceeded"}) {
       assertEquals(ProviderResponseKind.QUOTA, ErrorClassifier.classify(OpenAiProvider.OPENAI, 429,
@@ -133,7 +133,7 @@ public class TestOpenAiClientParts {
 
   /** The official SDK retries 409 Conflict ("Retry on lock timeouts", openai-python _base_client._should_retry). */
   @Test
-  public void test409IsRetryable() {
+  void test409IsRetryable() {
     for (OpenAiProvider provider : OpenAiProvider.values()) {
       assertEquals(ProviderResponseKind.RETRYABLE, ErrorClassifier.classify(provider, 409, ErrorBody.parse(new byte[0])),
           provider.id());
@@ -141,7 +141,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testClassification() {
+  void testClassification() {
     OpenAiProvider oai = OpenAiProvider.OPENAI;
     assertEquals(ProviderResponseKind.OK, ErrorClassifier.classify(oai, 200, ErrorBody.parse(new byte[0])));
     assertEquals(ProviderResponseKind.QUOTA, ErrorClassifier.classify(oai, 429, openAiError("quota", "insufficient_quota", null, "insufficient_quota")));
@@ -168,7 +168,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testErrorBodyParsing() {
+  void testErrorBodyParsing() {
     ErrorBody openAi = openAiError("Invalid value for 'dimensions'", "invalid_request_error", "dimensions", "invalid_value");
     assertEquals("Invalid value for 'dimensions'", openAi.message());
     assertEquals("dimensions", openAi.param());
@@ -212,7 +212,7 @@ public class TestOpenAiClientParts {
   // ---------------------------------------------------------------- config
 
   @Test
-  public void testOpenAiDefaults() {
+  void testOpenAiDefaults() {
     OpenAiClientConfig config = config("openai", "text-embedding-3-small", 1536, new TypedProperties());
     assertEquals(OpenAiProvider.OPENAI, config.provider());
     assertEquals("https://api.openai.com/v1", config.endpoint());
@@ -236,14 +236,16 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testDimensionsRules() {
+  void testDimensionsRules() {
     assertEquals(Integer.valueOf(512), config("openai", "text-embedding-3-small", 512, new TypedProperties()).dimensionsParam());
     assertNull(config("openai", "text-embedding-3-large", 3072, new TypedProperties()).dimensionsParam());
     assertNull(config("openai", "text-embedding-ada-002", 1536, new TypedProperties()).dimensionsParam());
+    TypedProperties adaProps = new TypedProperties();
     IllegalArgumentException ada = assertThrows(IllegalArgumentException.class,
-        () -> config("openai", "text-embedding-ada-002", 512, new TypedProperties()));
+        () -> config("openai", "text-embedding-ada-002", 512, adaProps));
     assertTrue(ada.getMessage().contains(EmbeddingTableConfig.MODEL_DIMENSIONS_SUFFIX), ada.getMessage());
-    assertThrows(IllegalArgumentException.class, () -> config("openai", "text-embedding-3-large", 4000, new TypedProperties()));
+    TypedProperties largeProps = new TypedProperties();
+    assertThrows(IllegalArgumentException.class, () -> config("openai", "text-embedding-3-large", 4000, largeProps));
     // an unknown model needs its per-input limit and always gets the dimensions parameter
     TypedProperties unknown = new TypedProperties();
     unknown.setProperty(key(OpenAiClientConfig.REQUEST_MAX_INPUT_TOKENS_SUFFIX), "4096");
@@ -251,15 +253,17 @@ public class TestOpenAiClientParts {
     assertFalse(custom.knownModel().isPresent());
     assertEquals(Integer.valueOf(8), custom.dimensionsParam());
     assertEquals(4096, custom.maxInputTokens());
+    TypedProperties noLimit = new TypedProperties();
     IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
-        () -> config("openai", "my-future-model", 8, new TypedProperties()));
+        () -> config("openai", "my-future-model", 8, noLimit));
     assertTrue(missing.getMessage().contains(key(OpenAiClientConfig.REQUEST_MAX_INPUT_TOKENS_SUFFIX)), missing.getMessage());
   }
 
   @Test
-  public void testAzureNeedsAnEndpointAndUsesTheBaseModelRow() {
+  void testAzureNeedsAnEndpointAndUsesTheBaseModelRow() {
+    TypedProperties noEndpointProps = new TypedProperties();
     IllegalArgumentException noEndpoint = assertThrows(IllegalArgumentException.class,
-        () -> config("azure-openai", "my-dep", 1536, new TypedProperties()));
+        () -> config("azure-openai", "my-dep", 1536, noEndpointProps));
     assertTrue(noEndpoint.getMessage().contains(key(OpenAiClientConfig.ENDPOINT_SUFFIX)), noEndpoint.getMessage());
 
     TypedProperties props = new TypedProperties();
@@ -280,7 +284,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testEndpointMustBeAnAbsoluteHttpUrl() {
+  void testEndpointMustBeAnAbsoluteHttpUrl() {
     for (String endpoint : new String[] {"http://exa mple/v1", "ftp://host/v1", "api.openai.com/v1",
         "https://user:" + KEY + "@api.example.com/v1", "https://api.example.com/v1?api-key=" + KEY,
         "https://api.example.com/v1#" + KEY}) {
@@ -298,7 +302,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testLimitsAreBoundedByTheProvider() {
+  void testLimitsAreBoundedByTheProvider() {
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.REQUEST_MAX_INPUTS_SUFFIX), "4096");
     assertThrows(IllegalArgumentException.class, () -> config("openai", "text-embedding-3-small", 1536, props));
@@ -318,7 +322,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testTeiTakesLimitsFromInfoAndHasNoTokenizer() {
+  void testTeiTakesLimitsFromInfoAndHasNoTokenizer() {
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.ENDPOINT_SUFFIX), "http://tei:8080/v1");
     OpenAiClientConfig tei = config("hf-tei", "BAAI/bge-large-en-v1.5", 1024, props);
@@ -332,14 +336,15 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testUnknownProviderIsRejected() {
-    assertThrows(IllegalArgumentException.class, () -> config("vertex", "x", 8, new TypedProperties()));
+  void testUnknownProviderIsRejected() {
+    TypedProperties props = new TypedProperties();
+    assertThrows(IllegalArgumentException.class, () -> config("vertex", "x", 8, props));
     assertFalse(OpenAiProvider.fromId("dummy").isPresent());
     assertEquals(OpenAiProvider.AZURE_OPENAI, OpenAiProvider.fromId("azure-openai").get());
   }
 
   @Test
-  public void testAuthorizationHeaders() {
+  void testAuthorizationHeaders() {
     Map<String, String> headers = new HashMap<>();
     OpenAiProvider.OPENAI.authorize(headers, KEY);
     assertEquals(Collections.singletonMap("Authorization", "Bearer " + KEY), headers);
@@ -354,7 +359,7 @@ public class TestOpenAiClientParts {
   // ---------------------------------------------------------------- credentials
 
   @Test
-  public void testCredentialFileWinsOverEnv() throws IOException {
+  void testCredentialFileWinsOverEnv() throws IOException {
     Path keyFile = tempDir.resolve("openai.key");
     Files.write(keyFile, (KEY + "\n").getBytes(StandardCharsets.UTF_8));
     TypedProperties props = new TypedProperties();
@@ -369,7 +374,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testCredentialFromTheNamedEnvVar() {
+  void testCredentialFromTheNamedEnvVar() {
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.CREDENTIAL_ENV_SUFFIX), "MY_KEY");
     CredentialSource source = CredentialSource.of(config("openai", "text-embedding-3-small", 1536, props));
@@ -378,7 +383,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testMissingCredentialNamesItsSourceOnly() throws IOException {
+  void testMissingCredentialNamesItsSourceOnly() throws IOException {
     CredentialSource env = CredentialSource.of(config("openai", "text-embedding-3-small", 1536, new TypedProperties()));
     IllegalStateException unset = assertThrows(IllegalStateException.class, () -> env.read(name -> null));
     assertTrue(unset.getMessage().contains("env OPENAI_API_KEY"), unset.getMessage());
@@ -391,13 +396,13 @@ public class TestOpenAiClientParts {
     CredentialSource file = CredentialSource.of(config("openai", "text-embedding-3-small", 1536, props));
     assertThrows(IllegalStateException.class, () -> file.read(name -> KEY));
     props.setProperty(key(OpenAiClientConfig.CREDENTIAL_FILE_SUFFIX), tempDir.resolve("absent.key").toString());
-    IllegalStateException absent = assertThrows(IllegalStateException.class,
-        () -> CredentialSource.of(config("openai", "text-embedding-3-small", 1536, props)).read(name -> KEY));
+    CredentialSource absentFile = CredentialSource.of(config("openai", "text-embedding-3-small", 1536, props));
+    IllegalStateException absent = assertThrows(IllegalStateException.class, () -> absentFile.read(name -> KEY));
     assertFalse(absent.getMessage().contains(KEY), absent.getMessage());
   }
 
   @Test
-  public void testCredentialEnvMustBeANameAndIsNeverEchoed() {
+  void testCredentialEnvMustBeANameAndIsNeverEchoed() {
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.CREDENTIAL_ENV_SUFFIX), KEY);
     IllegalArgumentException pasted = assertThrows(IllegalArgumentException.class,
@@ -407,7 +412,7 @@ public class TestOpenAiClientParts {
   }
 
   @Test
-  public void testTeiWithoutCredentialSendsNoKey() {
+  void testTeiWithoutCredentialSendsNoKey() {
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.ENDPOINT_SUFFIX), "http://tei:8080/v1");
     CredentialSource none = CredentialSource.of(config("hf-tei", "bge", 1024, props));

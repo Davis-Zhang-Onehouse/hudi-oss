@@ -73,6 +73,7 @@ public abstract class AssignmentBalancingStrategy implements RowBalancingStrateg
     BalancingAssignment assignment = assign(blobRows.drop(BlobColumns.BLOB), props);
     Dataset<Row> assigned = assignment.getAssignment().persist(EmbeddingTableConfig.persistLevel(props));
     BalancedRows balanced = null;
+    // by design: a Dataset is not closeable; the finally releases the cached assignment only when no BalancedRows owns it
     try {
       // fills the cache, so the join below is planned on the assignment's real size, with or without adaptive execution
       assigned.count();

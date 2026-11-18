@@ -55,14 +55,9 @@ final class RiffExtent {
       long position = 0;
       while (position + CHUNK_HEADER_BYTES <= length) {
         blob.seek(position);
-        int read = 0;
-        while (read < CHUNK_HEADER_BYTES) {
-          int n = blob.read(header, read, CHUNK_HEADER_BYTES - read);
-          if (n < 0) {
-            // the blob reads shorter than its own length: the cut is the storage's, the file holds fewer bytes than it says
-            return "holds fewer bytes than its length of " + length + " (no RIFF chunk header at offset " + position + ")";
-          }
-          read += n;
+        if (!readHeader(blob, header)) {
+          // the blob reads shorter than its own length: the cut is the storage's, the file holds fewer bytes than it says
+          return "holds fewer bytes than its length of " + length + " (no RIFF chunk header at offset " + position + ")";
         }
         if (!"RIFF".equals(new String(header, 0, 4, StandardCharsets.US_ASCII))) {
           // data after the last RIFF chunk is not a chunk this check can size
@@ -83,5 +78,18 @@ final class RiffExtent {
       throw new UncheckedIOException("video " + video + " RIFF chunk sizes could not be read: storage failure",
           e instanceof BlobReadException ? (BlobReadException) e : new BlobReadException(e));
     }
+  }
+
+  /** Reads a whole chunk header into {@code header}; false when the blob ends first. */
+  private static boolean readHeader(SeekableBlob blob, byte[] header) throws IOException {
+    int read = 0;
+    while (read < CHUNK_HEADER_BYTES) {
+      int n = blob.read(header, read, CHUNK_HEADER_BYTES - read);
+      if (n < 0) {
+        return false;
+      }
+      read += n;
+    }
+    return true;
   }
 }

@@ -87,10 +87,13 @@ public interface EmbeddingClient extends AutoCloseable {
   EmbeddingModelSpec spec();
 
   /**
+   * Any other failure of the call as a whole is a {@link RuntimeException}; every input of the call is then retryable, except
+   * for the failures the class comment names.
+   *
    * @return one result per input, in input order
-   * @throws Exception any failure of the call as a whole; every input of the call is then retryable
+   * @throws InterruptedException the calling thread was interrupted while waiting (e.g. on a rate limit or a retry backoff)
    */
-  List<EmbeddingResult> embed(List<EmbeddingInput> inputs) throws Exception;
+  List<EmbeddingResult> embed(List<EmbeddingInput> inputs) throws InterruptedException;
 
   /**
    * What the last {@link #embed} call cost at the provider (requests, retries, bisection requests, reported tokens,

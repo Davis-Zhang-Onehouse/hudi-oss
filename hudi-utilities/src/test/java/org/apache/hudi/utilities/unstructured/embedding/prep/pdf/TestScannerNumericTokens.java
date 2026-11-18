@@ -33,11 +33,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Numeric admission counts the tokens PDFBox consumes, retaining bounded scanner state. */
-public class TestScannerNumericTokens {
+class TestScannerNumericTokens {
 
   @ParameterizedTest
   @ValueSource(strings = {"1+1 ", "1.2.3 ", "1+1+1 "})
-  public void adjacentNumericTokensAboveTheCapAreRefused(String numbers) throws Exception {
+  void adjacentNumericTokensAboveTheCapAreRefused(String numbers) throws Exception {
     String content = "1 ".repeat(65535) + numbers + "n\n";
     int expected = numbers.equals("1+1+1 ") ? 65538 : 65537;
     assertEquals(expected, maximumPendingOperands(content));
@@ -47,7 +47,7 @@ public class TestScannerNumericTokens {
 
   @ParameterizedTest
   @ValueSource(strings = {"1+1 ", "1.2.3 ", "1-1 ", "--1 ", "+ ", "- ", ". "})
-  public void numericBoundariesAtTheCapPass(String numbers) throws Exception {
+  void numericBoundariesAtTheCapPass(String numbers) throws Exception {
     int tokens = maximumPendingOperands(numbers + "n\n");
     String content = "1 ".repeat(65536 - tokens) + numbers + "n\n";
     assertEquals(65536, maximumPendingOperands(content));
@@ -56,7 +56,7 @@ public class TestScannerNumericTokens {
 
   @ParameterizedTest
   @ValueSource(strings = {"0", "000", "-0", "0.0"})
-  public void oneLongNumericTokenStillCountsAsAnOperand(String suffix) throws Exception {
+  void oneLongNumericTokenStillCountsAsAnOperand(String suffix) throws Exception {
     String content = "1 ".repeat(65536) + "0".repeat(65) + suffix + " n\n";
     assertEquals(65537, maximumPendingOperands(content));
     assertThrows(StreamStructureScanner.Refusal.class, () -> scan(content));
@@ -64,7 +64,7 @@ public class TestScannerNumericTokens {
 
   @ParameterizedTest
   @ValueSource(strings = {"0", ".0", "-0"})
-  public void longNumericTokenAtTheCapPasses(String suffix) throws Exception {
+  void longNumericTokenAtTheCapPasses(String suffix) throws Exception {
     String content = "1 ".repeat(65535) + "0".repeat(65) + suffix + " n\n";
     assertEquals(65536, maximumPendingOperands(content));
     scan(content);
@@ -72,7 +72,7 @@ public class TestScannerNumericTokens {
 
   @ParameterizedTest
   @ValueSource(strings = {"/Name1+2", "(1+2.3)", "<312b32>", "[1 2]", "<</A 1>>", "true", "false", "null"})
-  public void namesStringsHexContainersAndBooleanOperandsKeepTheirBoundaries(String operand) throws Exception {
+  void namesStringsHexContainersAndBooleanOperandsKeepTheirBoundaries(String operand) throws Exception {
     String at = "1 ".repeat(65535) + operand + " n\n";
     assertEquals(65536, maximumPendingOperands(at));
     scan(at);
@@ -83,7 +83,7 @@ public class TestScannerNumericTokens {
 
   @ParameterizedTest
   @ValueSource(strings = {"q1 ", "d01 ", "op2 "})
-  public void numbersFollowingOrdinaryOperatorsAreStillCounted(String prefix) throws Exception {
+  void numbersFollowingOrdinaryOperatorsAreStillCounted(String prefix) throws Exception {
     assertEquals(1, maximumPendingOperands(prefix));
     String over = prefix + "1 ".repeat(65536) + "n\n";
     assertEquals(65537, maximumPendingOperands(over));
@@ -92,7 +92,7 @@ public class TestScannerNumericTokens {
 
   @ParameterizedTest
   @ValueSource(strings = {"d0 ", "d1 ", "false1 ", "true1 ", "null1 ", "BI1 "})
-  public void pdfboxOperatorNamesKeepTheirNumericCharacters(String prefix) throws Exception {
+  void pdfboxOperatorNamesKeepTheirNumericCharacters(String prefix) throws Exception {
     assertEquals(0, maximumPendingOperands(prefix));
     String at = prefix + "1 ".repeat(65536) + "n\n";
     assertEquals(65536, maximumPendingOperands(at));
@@ -101,7 +101,7 @@ public class TestScannerNumericTokens {
 
   @ParameterizedTest
   @CsvSource({"1e2,100.0", "2.0E3,2000.0", "1e+2,100.0", "-1.25,-1.25", "+2.5,2.5"})
-  public void containerNumbersKeepBaseParserGrammar(String number, float value) throws Exception {
+  void containerNumbersKeepBaseParserGrammar(String number, float value) throws Exception {
     PDFStreamParser parser = new PDFStreamParser(("[" + number + "] n").getBytes(StandardCharsets.US_ASCII));
     try {
       COSArray parsed = (COSArray) parser.parseNextToken();
@@ -116,7 +116,7 @@ public class TestScannerNumericTokens {
   }
 
   @Test
-  public void cmapTokensKeepTheirOwnGrammarAndEndOfStreamCheck() throws Exception {
+  void cmapTokensKeepTheirOwnGrammarAndEndOfStreamCheck() throws Exception {
     try (StreamStructureScanner.CMapRanges scanner = new StreamStructureScanner.CMapRanges("CMap boundary")) {
       scanner.write("1 beginbfrange <000000> <03FFFF> /Destination".getBytes(StandardCharsets.US_ASCII));
     }
@@ -147,7 +147,7 @@ public class TestScannerNumericTokens {
     return maximum;
   }
 
-  private static void scan(String content) throws Exception {
+  private static void scan(String content) {
     try (StreamStructureScanner.Operands scanner = new StreamStructureScanner.Operands("numeric-token test content", Long.MAX_VALUE)) {
       byte[] bytes = content.getBytes(StandardCharsets.US_ASCII);
       scanner.write(bytes, 0, bytes.length);

@@ -36,6 +36,8 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
     description = "Configurations controlling audio preparation, speech segmentation and transcription implementations.")
 public final class AudioConfigKeys {
 
+  private static final String SINCE_VERSION = "1.3.0";
+
   /** Prefix of the non-style audio keys. */
   public static final String RUNTIME_PREFIX = EmbeddingTableConfig.PREFIX + "audio.";
 
@@ -49,7 +51,7 @@ public final class AudioConfigKeys {
   public static final ConfigProperty<Boolean> ENABLED = ConfigProperty
       .key(RUNTIME_PREFIX + "enabled")
       .defaultValue(false)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Whether video prep also writes the video's speech rows; default false (audio off). Not a style key: when "
           + "on, the resolved audio logic line is.");
   public static final boolean DEFAULT_ENABLED = false;
@@ -62,7 +64,7 @@ public final class AudioConfigKeys {
       .key(RUNTIME_PREFIX + "segment.source.class")
       .defaultValue("org.apache.hudi.utilities.unstructured.embedding.audio.ffmpeg.FfmpegAudioSegmentSource")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("AudioSegmentSource implementation (public no-arg constructor); unset, the default "
           + "org.apache.hudi.utilities.unstructured.embedding.audio.ffmpeg.FfmpegAudioSegmentSource (FFmpeg). Not a "
           + "style key.");
@@ -75,7 +77,7 @@ public final class AudioConfigKeys {
       .key(RUNTIME_PREFIX + "transcriber.class")
       .defaultValue("org.apache.hudi.utilities.unstructured.embedding.audio.whisper.WhisperSegmentTranscriber")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("SegmentTranscriber implementation (public no-arg constructor); unset, the default "
           + "org.apache.hudi.utilities.unstructured.embedding.audio.whisper.WhisperSegmentTranscriber (whisper). Not a "
           + "style key.");
@@ -88,7 +90,7 @@ public final class AudioConfigKeys {
       .key(RUNTIME_PREFIX + "chunker.class")
       .defaultValue("org.apache.hudi.utilities.unstructured.embedding.audio.TranscriptPacker")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("TranscriptChunker implementation (public no-arg constructor); unset, the default "
           + "org.apache.hudi.utilities.unstructured.embedding.audio.TranscriptPacker (the transcript packer). Not a "
           + "style key.");
@@ -97,7 +99,7 @@ public final class AudioConfigKeys {
   public static final ConfigProperty<Integer> SAMPLE_RATE = ConfigProperty
       .key(STYLE_PREFIX + "sample.rate")
       .defaultValue(16000)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Sample rate the audio is resampled to, Hz; default 16000 (the common speech-model rate).");
   public static final int DEFAULT_SAMPLE_RATE = 16000;
 
@@ -105,7 +107,7 @@ public final class AudioConfigKeys {
   public static final ConfigProperty<Integer> VAD_THRESHOLD_DB = ConfigProperty
       .key(STYLE_PREFIX + "vad.threshold.db")
       .defaultValue(-35)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Speech detection: energy threshold in dBFS below which a window is silence; default -35.");
   /** Placeholder default, not yet measured. */
   public static final int DEFAULT_VAD_THRESHOLD_DB = -35;
@@ -114,7 +116,7 @@ public final class AudioConfigKeys {
   public static final ConfigProperty<Long> VAD_MIN_SILENCE_MS = ConfigProperty
       .key(STYLE_PREFIX + "vad.min.silence.ms")
       .defaultValue(500L)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Speech detection: silence that ends a speech span, ms; default 500.");
   /** Placeholder default, not yet measured. */
   public static final long DEFAULT_VAD_MIN_SILENCE_MS = 500L;
@@ -124,7 +126,7 @@ public final class AudioConfigKeys {
       .key(STYLE_PREFIX + "segment.max.ms")
       .defaultValue(30000L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Longest segment, ms; a longer speech span is cut; default 30000.");
   /** Placeholder default 30 s (not yet measured; bounded by the chosen engine's per-request limit). */
   public static final long DEFAULT_SEGMENT_MAX_MS = 30_000L;
@@ -134,7 +136,7 @@ public final class AudioConfigKeys {
       .key(STYLE_PREFIX + "segment.max.bytes")
       .defaultValue(1048576L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Largest segment payload, bytes; default 1048576 (30 s of 16 kHz mono 16-bit = 960,000 B).");
   public static final long DEFAULT_SEGMENT_MAX_BYTES = 1024L * 1024L;
 
@@ -143,7 +145,7 @@ public final class AudioConfigKeys {
       .key(STYLE_PREFIX + "max.duration.ms")
       .defaultValue(14400000L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Longest audio track accepted, ms; a longer one fails its video before any decode; default 14400000.");
   public static final long DEFAULT_MAX_DURATION_MS = 4L * 60 * 60 * 1000;
 

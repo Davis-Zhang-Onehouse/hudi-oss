@@ -41,15 +41,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * {@link #SEGMENT_SECONDS} s segments. Gated twice: the model cache ({@link WhisperTestClips#CACHE_DIR_PROPERTY}) and the output
  * file ({@link #OUT_PROPERTY}); CI sets neither, and the committed fixture is never rewritten by a test run.
  */
-@EnabledIfSystemProperty(named = RecordWhisperUtterances.OUT_PROPERTY, matches = ".+")
-public class RecordWhisperUtterances {
+@EnabledIfSystemProperty(named = TestRecordWhisperUtterances.OUT_PROPERTY, matches = ".+")
+class TestRecordWhisperUtterances {
 
   static final String OUT_PROPERTY = "hudi.test.whisper.record.out";
   static final int SECONDS = 180;
   static final int SEGMENT_SECONDS = 30;
 
   @Test
-  public void record() throws IOException {
+  void recordUtterances() throws IOException {
     TypedProperties props = new TypedProperties();
     props.setProperty(WhisperConfig.MODEL.key(), "base.en");
     props.setProperty(WhisperConfig.MODEL_DIR.key(), WhisperTestClips.cacheDir().toString());

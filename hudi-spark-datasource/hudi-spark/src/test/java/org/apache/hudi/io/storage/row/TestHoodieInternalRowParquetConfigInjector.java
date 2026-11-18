@@ -108,10 +108,9 @@ public class TestHoodieInternalRowParquetConfigInjector {
   @Test
   void invalidInjectorFailsPublicWriterConstruction() {
     StoragePath path = new StoragePath(tempDir.resolve("invalid.parquet").toUri());
-    assertThrows(HoodieException.class, () -> {
-      HoodieInternalRowFileWriter writer = writer(path, config("org.apache.hudi.io.storage.row.MissingConfigInjector"), new Configuration());
-      writer.close();
-    });
+    HoodieWriteConfig missing = config("org.apache.hudi.io.storage.row.MissingConfigInjector");
+    Configuration storageConfig = new Configuration();
+    assertThrows(HoodieException.class, () -> openAndClose(path, missing, storageConfig));
   }
 
   @Test
@@ -188,4 +187,8 @@ public class TestHoodieInternalRowParquetConfigInjector {
     }
   }
 
+  /** Constructs the public writer and closes it. */
+  private void openAndClose(StoragePath path, HoodieWriteConfig config, Configuration storageConfig) throws Exception {
+    writer(path, config, storageConfig).close();
+  }
 }

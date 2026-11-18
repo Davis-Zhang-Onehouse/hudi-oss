@@ -49,6 +49,8 @@ import java.util.stream.Collectors;
     description = "Configurations controlling how unstructured files are ingested into a Hudi blob table.")
 public class BlobTableConfig extends HoodieConfig {
 
+  private static final String SINCE_VERSION = "1.3.0";
+
   public static final String PREFIX = "hoodie.blob.table.";
 
   /**
@@ -64,7 +66,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "inline.max.bytes")
       .defaultValue(1024L * 1024L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Files with size <= this many bytes are stored inline in the blob column; larger files are "
           + "copied to the table's .hoodie/.blob folder and referenced out of line. The declared default is 1 MiB (1048576 bytes), "
           + "effective on Parquet 1.14+ (the Spark 4 builds). On Spark 3.5's Parquet older than 1.14, which cannot turn off min/max "
@@ -109,7 +111,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "inline.max.heap.fraction")
       .defaultValue(1.0 / 64)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Fraction in (0, 1] of the per-task heap share up to which " + PREFIX + "inline.max.bytes may be set. "
           + "Per-task share = (executor heap - Spark's reserved system memory, 300 MiB outside tests) / task slots, task slots = "
           + "executor cores / spark.task.cpus; in local mode the executor heap is the driver JVM's maximum heap and the cores are "
@@ -128,7 +130,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "inline.ceiling.enforce")
       .defaultValue(true)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("When true (default), an " + PREFIX + "inline.max.bytes above the per-task inline ceiling ("
           + PREFIX + "inline.max.heap.fraction x the per-task heap share) fails the job before any file is read. When false, "
           + "it is only logged at WARN and the threshold is used as configured: the blob job's memory is then no longer "
@@ -141,7 +143,7 @@ public class BlobTableConfig extends HoodieConfig {
   public static final ConfigProperty<String> FILE_EXTENSIONS = ConfigProperty
       .key(PREFIX + "file.extensions")
       .defaultValue("pdf,png,jpg,jpeg,gif,bmp,tif,tiff,mp4,mov,avi,mkv,webm")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Comma-separated file extensions (without the dot) of the object keys to ingest: pdf, image and "
           + "video files by default. Matched case-sensitively against the end of the key, dot included: a key ending in "
           + ".JPG is not ingested. The list may only narrow the default: an empty list, or one naming any other extension, is "
@@ -152,7 +154,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "copy.buffer.bytes")
       .defaultValue(64 * 1024)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Buffer size in bytes used to stream a file larger than the inline threshold into the table.");
 
   /**
@@ -164,7 +166,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "copy.retry.max.attempts")
       .defaultValue(3)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Tries in all of an out-of-line copy that fails with a transient storage fault (a throttled, reset or "
           + "timed-out request) within the same round; the last failure fails the round, which the next run retries from the "
           + "same checkpoint. Must be positive.");
@@ -174,7 +176,7 @@ public class BlobTableConfig extends HoodieConfig {
       .key(PREFIX + "copy.retry.backoff.ms")
       .defaultValue(1000L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Wait in ms before the second try of an out-of-line copy after a transient storage fault; each later "
           + "wait doubles, capped at 30 s. Must not be negative.");
 

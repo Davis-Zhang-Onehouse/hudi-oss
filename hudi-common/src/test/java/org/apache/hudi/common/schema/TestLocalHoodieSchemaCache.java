@@ -48,10 +48,10 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class TestLocalHoodieSchemaCache {
+class TestLocalHoodieSchemaCache {
 
   @Test
-  public void testBasicCacheUsage() {
+  void testBasicCacheUsage() {
     LocalHoodieSchemaCache schemaCache = LocalHoodieSchemaCache.create();
     Integer schemaCacheNum = schemaCache.cacheSchema(HoodieTestDataGenerator.HOODIE_SCHEMA);
     Integer nestedSchemaCacheNum = schemaCache.cacheSchema(HoodieTestDataGenerator.NESTED_SCHEMA);
@@ -72,7 +72,7 @@ public class TestLocalHoodieSchemaCache {
   }
 
   @Test
-  public void testCopiesOfSameSchema() {
+  void testCopiesOfSameSchema() {
     LocalHoodieSchemaCache schemaCache = LocalHoodieSchemaCache.create();
     HoodieSchema testSchema1 = HoodieSchema.parse(HoodieTestDataGenerator.TRIP_EXAMPLE_SCHEMA);
     HoodieSchema testSchema2 = HoodieSchema.parse(HoodieTestDataGenerator.TRIP_EXAMPLE_SCHEMA);
@@ -84,7 +84,7 @@ public class TestLocalHoodieSchemaCache {
   }
 
   @Test
-  public void testCreateReturnsIndependentCaches() {
+  void testCreateReturnsIndependentCaches() {
     LocalHoodieSchemaCache first = LocalHoodieSchemaCache.create();
     LocalHoodieSchemaCache second = LocalHoodieSchemaCache.create();
     assertNotSame(first, second);
@@ -107,7 +107,7 @@ public class TestLocalHoodieSchemaCache {
   }
 
   @Test
-  public void testIdsAreStableAndResolve() {
+  void testIdsAreStableAndResolve() {
     LocalHoodieSchemaCache cache = LocalHoodieSchemaCache.create();
     HoodieSchema a = recordSchema("a");
     HoodieSchema b = recordSchema("b");
@@ -132,7 +132,7 @@ public class TestLocalHoodieSchemaCache {
    * The cache travels inside a serialized {@code RecordContext}: a copy keeps every id and issues fresh ids after them.
    */
   @Test
-  public void testJavaSerializationRoundTrip() throws Exception {
+  void testJavaSerializationRoundTrip() throws Exception {
     LocalHoodieSchemaCache cache = LocalHoodieSchemaCache.create();
     HoodieSchema a = recordSchema("a");
     Integer idA = cache.cacheSchema(a);
@@ -163,7 +163,7 @@ public class TestLocalHoodieSchemaCache {
    */
   @Test
   @Timeout(value = 120, unit = TimeUnit.SECONDS)
-  public void testConcurrentRegistrationAndLookup() throws Exception {
+  void testConcurrentRegistrationAndLookup() throws Exception {
     final int writers = 4;
     final int schemasPerWriter = 20_000;
     final LocalHoodieSchemaCache cache = LocalHoodieSchemaCache.create();

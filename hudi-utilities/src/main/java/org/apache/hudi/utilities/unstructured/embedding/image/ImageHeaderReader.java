@@ -62,12 +62,7 @@ public final class ImageHeaderReader {
    *     is not positive
    */
   public static ImageHeader read(ImageInputStream in) throws ImageHeaderException {
-    ImageReader reader;
-    try {
-      reader = firstReader(in);
-    } catch (IOException e) {
-      throw new ImageHeaderException("cannot probe the image header: " + e.getMessage(), e);
-    }
+    ImageReader reader = firstReader(in);
     if (reader == null) {
       return readWebp(in);
     }
@@ -109,7 +104,7 @@ public final class ImageHeaderReader {
    * A provider that fails during the walk is skipped; the chosen reader is disposed too only when anything else fails the walk
    * (a JVM Error, say), as {@code firstJdk} describes.
    */
-  static ImageReader firstReader(ImageInputStream in) throws IOException {
+  static ImageReader firstReader(ImageInputStream in) {
     return firstJdk(ImageIO.getImageReaders(in), ImageHeaderReader::isJdkReader, ImageReader::dispose);
   }
 
@@ -119,7 +114,7 @@ public final class ImageHeaderReader {
    * iterator, say): the chosen candidate is then disposed too, never stranded, and the failure propagates, any failure of that
    * dispose suppressed.
    */
-  private static <T> T firstJdk(Iterator<T> candidates, Predicate<T> isJdk, Consumer<T> dispose) {
+  static <T> T firstJdk(Iterator<T> candidates, Predicate<T> isJdk, Consumer<T> dispose) {
     T chosen = null;
     try {
       while (candidates.hasNext()) {
@@ -134,10 +129,12 @@ public final class ImageHeaderReader {
         }
       }
       return chosen;
+      // by design: on any failure of the walk, an Error included, the chosen candidate is disposed and the failure rethrown
     } catch (RuntimeException | Error e) {
       if (chosen != null) {
         try {
           dispose.accept(chosen);
+          // by design: a failure of that dispose, an Error included, is kept as suppressed on the walk's failure
         } catch (RuntimeException | Error suppressed) {
           e.addSuppressed(suppressed);
         }

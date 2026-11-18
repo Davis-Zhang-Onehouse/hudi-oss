@@ -169,12 +169,14 @@ public class SizeTypeAwareBalancingStrategy extends AssignmentBalancingStrategy 
             row.isNullAt(3) ? 0 : row.getLong(3), row.isNullAt(4) ? 0 : row.getLong(4)))
         .collect(Collectors.toList());
     TaskPlan plan = TaskPlan.plan(stats, group -> budgets.getOrDefault(group, Long.MAX_VALUE), p.parallelism());
-    LOG.info("Balancing prep by preprocessor group into {} partitions, P = {}: {}", plan.numPartitions(), p,
-        stats.stream().sorted((a, b) -> a.group().compareTo(b.group()))
-            .map(s -> s.group() + " files=" + s.files() + " bytes=" + s.bytes() + " budget="
-                + (BalanceGroups.UNMAPPED.equals(s.group()) ? "n/a" : String.valueOf(budgets.get(s.group())))
-                + " tasks=" + plan.tasks(s.group()) + " (" + plan.soloTasks(s.group()) + " solo)")
-            .collect(Collectors.joining("; ")));
+    if (LOG.isInfoEnabled()) {
+      LOG.info("Balancing prep by preprocessor group into {} partitions, P = {}: {}", plan.numPartitions(), p,
+          stats.stream().sorted((a, b) -> a.group().compareTo(b.group()))
+              .map(s -> s.group() + " files=" + s.files() + " bytes=" + s.bytes() + " budget="
+                  + (BalanceGroups.UNMAPPED.equals(s.group()) ? "n/a" : String.valueOf(budgets.get(s.group())))
+                  + " tasks=" + plan.tasks(s.group()) + " (" + plan.soloTasks(s.group()) + " solo)")
+              .collect(Collectors.joining("; ")));
+    }
     if (stats.isEmpty()) {
       return new BalancingAssignment(1, spark.createDataFrame(Collections.emptyList(),
           SortedRanks.assignmentSchema(weighted.schema())));

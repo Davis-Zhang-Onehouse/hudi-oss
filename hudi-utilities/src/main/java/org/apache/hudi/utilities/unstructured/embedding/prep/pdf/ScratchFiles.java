@@ -35,6 +35,9 @@ import java.nio.file.Path;
  */
 final class ScratchFiles {
 
+  private static final String WRITING = "writing the scratch file ";
+  private static final String FAILED = " failed";
+
   private ScratchFiles() {
   }
 
@@ -55,43 +58,7 @@ final class ScratchFiles {
     } catch (IOException | RuntimeException e) {
       throw failure("cannot write the scratch file " + path, e);
     }
-    return new OutputStream() {
-      @Override
-      public void write(int b) {
-        try {
-          out.write(b);
-        } catch (IOException e) {
-          throw failure("writing the scratch file " + path + " failed", e);
-        }
-      }
-
-      @Override
-      public void write(byte[] b, int off, int len) {
-        try {
-          out.write(b, off, len);
-        } catch (IOException e) {
-          throw failure("writing the scratch file " + path + " failed", e);
-        }
-      }
-
-      @Override
-      public void flush() {
-        try {
-          out.flush();
-        } catch (IOException e) {
-          throw failure("writing the scratch file " + path + " failed", e);
-        }
-      }
-
-      @Override
-      public void close() {
-        try {
-          out.close();
-        } catch (IOException e) {
-          throw failure("closing the scratch file " + path + " failed", e);
-        }
-      }
-    };
+    return new ScratchOutput(path, out);
   }
 
   /** Reads {@code path}, a scratch file this chunker wrote. */
@@ -102,38 +69,96 @@ final class ScratchFiles {
     } catch (IOException | RuntimeException e) {
       throw failure("cannot read the scratch file " + path, e);
     }
-    return new InputStream() {
-      @Override
-      public int read() {
-        try {
-          return in.read();
-        } catch (IOException e) {
-          throw failure("reading the scratch file " + path + " failed", e);
-        }
-      }
-
-      @Override
-      public int read(byte[] b, int off, int len) {
-        try {
-          return in.read(b, off, len);
-        } catch (IOException e) {
-          throw failure("reading the scratch file " + path + " failed", e);
-        }
-      }
-
-      @Override
-      public void close() {
-        try {
-          in.close();
-        } catch (IOException e) {
-          throw failure("closing the scratch file " + path + " failed", e);
-        }
-      }
-    };
+    return new ScratchInput(path, in);
   }
 
   /** A failure of the local scratch disk: the round fails. */
   static PrepPlatformException failure(String message, Throwable cause) {
     return new PrepPlatformException("PDF chunker local scratch disk: " + message, cause);
+  }
+
+  /** Owns {@code out}: its I/O failures become this chunker's local disk failures, naming {@code path}. */
+  private static final class ScratchOutput extends OutputStream {
+    private final Path path;
+    private final OutputStream out;
+
+    private ScratchOutput(Path path, OutputStream out) {
+      this.path = path;
+      this.out = out;
+    }
+
+    @Override
+    public void write(int b) {
+      try {
+        out.write(b);
+      } catch (IOException e) {
+        throw failure(WRITING + path + FAILED, e);
+      }
+    }
+
+    @Override
+    public void write(byte[] b, int off, int len) {
+      try {
+        out.write(b, off, len);
+      } catch (IOException e) {
+        throw failure(WRITING + path + FAILED, e);
+      }
+    }
+
+    @Override
+    public void flush() {
+      try {
+        out.flush();
+      } catch (IOException e) {
+        throw failure(WRITING + path + FAILED, e);
+      }
+    }
+
+    @Override
+    public void close() {
+      try {
+        out.close();
+      } catch (IOException e) {
+        throw failure("closing the scratch file " + path + FAILED, e);
+      }
+    }
+  }
+
+  /** Owns {@code in}: its I/O failures become this chunker's local disk failures, naming {@code path}. */
+  private static final class ScratchInput extends InputStream {
+    private final Path path;
+    private final InputStream in;
+
+    private ScratchInput(Path path, InputStream in) {
+      this.path = path;
+      this.in = in;
+    }
+
+    @Override
+    public int read() {
+      try {
+        return in.read();
+      } catch (IOException e) {
+        throw failure("reading the scratch file " + path + FAILED, e);
+      }
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) {
+      try {
+        return in.read(b, off, len);
+      } catch (IOException e) {
+        throw failure("reading the scratch file " + path + FAILED, e);
+      }
+    }
+
+    @Override
+    public void close() {
+      try {
+        in.close();
+      } catch (IOException e) {
+        throw failure("closing the scratch file " + path + FAILED, e);
+      }
+    }
   }
 }

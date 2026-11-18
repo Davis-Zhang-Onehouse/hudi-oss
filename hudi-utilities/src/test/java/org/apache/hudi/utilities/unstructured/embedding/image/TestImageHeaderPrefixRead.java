@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * are fetched in one request, so a reader that probes, seeks back and re-reads sends one request; and every header, and every
  * refusal, is the one the unbounded stream (compute's, unchanged) reads.
  */
-public class TestImageHeaderPrefixRead {
+class TestImageHeaderPrefixRead {
 
   private static final long HEADER_MAX_BYTES = 1024L * 1024;
 
@@ -48,7 +48,7 @@ public class TestImageHeaderPrefixRead {
    * tables-only probe, then the header), so it is served more than 1 MiB over fewer distinct bytes.
    */
   @Test
-  public void headerReadTwiceDoesNotFailAFileSmallerThanTheBound() throws IOException {
+  void headerReadTwiceDoesNotFailAFileSmallerThanTheBound() throws IOException {
     byte[] jpeg = jpegWithMetadataSegments(9, 0xE2);
     assertTrue(jpeg.length < HEADER_MAX_BYTES, "the file is smaller than the bound: " + jpeg.length);
     CountingBlob blob = new CountingBlob(jpeg);
@@ -64,7 +64,7 @@ public class TestImageHeaderPrefixRead {
 
   /** The bound still holds: a header that needs more distinct bytes than the bound fails as it always has. */
   @Test
-  public void headerNeedingMoreDistinctBytesThanTheBoundStillFails() {
+  void headerNeedingMoreDistinctBytesThanTheBoundStillFails() {
     byte[] jpeg = jpegWithMetadataSegments(9, 0xE2);
     long bound = 300L * 1024;
     ImageHeaderException capped = assertThrows(ImageHeaderException.class, () -> {
@@ -80,7 +80,7 @@ public class TestImageHeaderPrefixRead {
    * seek back and re-read is served from memory (a TIFF's directory after its pixel data included).
    */
   @Test
-  public void headerWithinThePrefixIsOneRequest() throws IOException {
+  void headerWithinThePrefixIsOneRequest() throws IOException {
     for (Map.Entry<String, byte[]> image : corpus().entrySet()) {
       byte[] bytes = image.getValue();
       if (bytes.length == 0 || bytes.length > SeekableBlobImageInputStream.PREFIX_MAX_BYTES) {
@@ -96,7 +96,7 @@ public class TestImageHeaderPrefixRead {
 
   /** A file larger than the prefix reads its leading bytes in one request, then only what the reader asks for past them. */
   @Test
-  public void headerPastThePrefixReadsOnlyWhatTheReaderAsks() throws IOException {
+  void headerPastThePrefixReadsOnlyWhatTheReaderAsks() throws IOException {
     // a TIFF whose directory lies after ~1.4 MiB of pixel data: the reader seeks there and reads a few hundred bytes
     byte[] tiff = ImageFixtures.singleStripTiff(800, 600);
     assertTrue(tiff.length > SeekableBlobImageInputStream.PREFIX_MAX_BYTES, "larger than the prefix: " + tiff.length);
@@ -117,7 +117,7 @@ public class TestImageHeaderPrefixRead {
 
   /** Every header and every refusal of the bounded stream is the unbounded stream's, over formats and malformed inputs. */
   @Test
-  public void boundedHeadersAndRefusalsMatchTheUnboundedStream() throws IOException {
+  void boundedHeadersAndRefusalsMatchTheUnboundedStream() throws IOException {
     for (Map.Entry<String, byte[]> image : corpus().entrySet()) {
       String bounded;
       try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new CountingBlob(image.getValue()), HEADER_MAX_BYTES)) {
@@ -132,7 +132,7 @@ public class TestImageHeaderPrefixRead {
    * failure where the reader does read surfaces as before.
    */
   @Test
-  public void failureWhileFetchingThePrefixPastTheHeaderIsNotTheReaders() throws IOException {
+  void failureWhileFetchingThePrefixPastTheHeaderIsNotTheReaders() throws IOException {
     byte[] png = ImageFixtures.image("png", 300, 200);
     assertTrue(png.length > 8192, "the failure lies past the header: " + png.length);
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new FailingAfterBlob(png, 4096), HEADER_MAX_BYTES)) {
@@ -148,7 +148,7 @@ public class TestImageHeaderPrefixRead {
 
   /** A bound smaller than the prefix bounds the prefix too. */
   @Test
-  public void theBoundBoundsThePrefix() throws IOException {
+  void theBoundBoundsThePrefix() throws IOException {
     CountingBlob blob = new CountingBlob(new byte[10_000]);
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(blob, 100)) {
       assertEquals(4, in.read(new byte[4], 0, 4));
@@ -158,7 +158,7 @@ public class TestImageHeaderPrefixRead {
 
   /** The end of the blob, not the bound, ends a primitive read across it: an EOFException, as before. */
   @Test
-  public void primitiveReadPastTheEndIsTheEndNotTheBound() throws IOException {
+  void primitiveReadPastTheEndIsTheEndNotTheBound() throws IOException {
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new CountingBlob(new byte[10]), 12)) {
       in.readFully(new byte[9]);
       // 3 bytes of budget left, 1 byte of blob: the blob's end cuts the int, so the reader's EOF, not the bound's exception
@@ -168,7 +168,7 @@ public class TestImageHeaderPrefixRead {
 
   /** Re-reads are bounded too: a reader re-reading the same bytes without end stops at the bound's exception. */
   @Test
-  public void endlessReReadsStopAtTheBound() throws IOException {
+  void endlessReReadsStopAtTheBound() throws IOException {
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new CountingBlob(new byte[100]), 10)) {
       ImageHeaderException capped = assertThrows(ImageHeaderException.class, () -> {
         while (true) {
@@ -185,7 +185,7 @@ public class TestImageHeaderPrefixRead {
    * earlier than that, and refused once more bytes are served than the bound.
    */
   @Test
-  public void scatteredReadsPastTheTrackedRangesAreBoundByBytesServed() throws IOException {
+  void scatteredReadsPastTheTrackedRangesAreBoundByBytesServed() throws IOException {
     int ranges = SeekableBlobImageInputStream.MAX_DISTINCT_RANGES + 100;
     byte[] bytes = new byte[2 * ranges + 4];
     long bound = ranges + 10L;
@@ -206,7 +206,7 @@ public class TestImageHeaderPrefixRead {
 
   /** Past the tracked ranges, a bound near Long.MAX_VALUE does not overflow: reads go on as within any bound. */
   @Test
-  public void boundNearTheLongMaximumDoesNotOverflowPastTheTrackedRanges() throws IOException {
+  void boundNearTheLongMaximumDoesNotOverflowPastTheTrackedRanges() throws IOException {
     int ranges = SeekableBlobImageInputStream.MAX_DISTINCT_RANGES + 2;
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new CountingBlob(new byte[2 * ranges + 4]), Long.MAX_VALUE - 1)) {
       for (int i = 0; i < ranges; i++) {
@@ -219,7 +219,7 @@ public class TestImageHeaderPrefixRead {
   }
 
   @Test
-  public void distinctRangesCountEachByteOnce() {
+  void distinctRangesCountEachByteOnce() {
     SeekableBlobImageInputStream.DistinctRanges ranges = new SeekableBlobImageInputStream.DistinctRanges();
     ranges.add(0, 10);
     ranges.add(5, 15);
@@ -350,6 +350,7 @@ public class TestImageHeaderPrefixRead {
 
     @Override
     public void close() {
+      // in-memory bytes: nothing to release
     }
   }
 

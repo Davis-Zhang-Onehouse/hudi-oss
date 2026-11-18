@@ -41,51 +41,51 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The graphics depth limit of {@link GuardedPageStripper}: {@code maxDepth} nested {@code q} or marked-content sequences
  * pass and one more fails the page, and the graphics states of the enclosing streams count while a form is drawn.
  */
-public class TestGraphicsDepthLimit {
+class TestGraphicsDepthLimit {
 
   private static final int MAX_DEPTH = 16;
   private static final String TEXT = "BT /F1 10 Tf 50 700 Td (deep) Tj ET\n";
 
   @Test
-  public void graphicsStateNestingAtTheLimitPasses() throws IOException {
+  void graphicsStateNestingAtTheLimitPasses() throws IOException {
     assertEquals("deep", extract(repeat("q ", MAX_DEPTH) + TEXT));
   }
 
   @Test
-  public void graphicsStateNestingAboveTheLimitFails() throws IOException {
+  void graphicsStateNestingAboveTheLimitFails() {
     assertDepthFailure(repeat("q ", MAX_DEPTH + 1) + TEXT);
   }
 
   @Test
-  public void markedContentNestingAtTheLimitPasses() throws IOException {
+  void markedContentNestingAtTheLimitPasses() throws IOException {
     assertEquals("deep", extract(repeat("/A BMC ", MAX_DEPTH) + TEXT));
   }
 
   @Test
-  public void markedContentNestingAboveTheLimitFails() throws IOException {
+  void markedContentNestingAboveTheLimitFails() {
     assertDepthFailure(repeat("/A BMC ", MAX_DEPTH + 1) + TEXT);
   }
 
   @Test
-  public void nestedFormsShareTheLimit() throws IOException {
+  void nestedFormsShareTheLimit() {
     // each stream alone stays far below the limit; together the page, two forms and their q exceed it
     assertDepthFailure(repeat("q ", 6) + "/X1 Do\n", repeat("q ", 6) + "/X2 Do\n", repeat("q ", 6) + TEXT);
   }
 
   @Test
-  public void nestedTransparencyGroupsShareTheLimit() throws IOException {
+  void nestedTransparencyGroupsShareTheLimit() {
     assertDepthFailure(true, repeat("q ", 6) + "/X1 Do\n", repeat("q ", 6) + "/X2 Do\n", repeat("q ", 6) + TEXT);
   }
 
   @Test
-  public void nestedFormsAtTheLimitPass() throws IOException {
+  void nestedFormsAtTheLimitPass() throws IOException {
     // a drawn form holds one graphics state of its own: 5 + (1 + 5) + (1 + 4) = 16 states above the page's base state
     assertEquals("deep", extract(false, repeat("q ", 5) + "/X1 Do\n", repeat("q ", 5) + "/X2 Do\n", repeat("q ", 4) + TEXT));
     assertDepthFailure(repeat("q ", 5) + "/X1 Do\n", repeat("q ", 5) + "/X2 Do\n", repeat("q ", 5) + TEXT);
   }
 
   @Test
-  public void depthOfAFinishedFormIsReleased() throws IOException {
+  void depthOfAFinishedFormIsReleased() throws IOException {
     // two forms drawn one after the other, each close to the limit: only the one being drawn counts
     String form = repeat("q ", MAX_DEPTH - 1) + TEXT;
     assertTrue(extract(false, "/X1 Do\n/X2 Do\n", form, form).contains("deep"));

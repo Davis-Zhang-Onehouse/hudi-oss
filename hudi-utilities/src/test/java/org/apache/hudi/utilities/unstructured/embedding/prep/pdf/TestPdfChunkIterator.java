@@ -53,7 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The parser-free iterator over fake page sources: lifecycle, records, the
  * hold-back loss signal, error isolation, interruption, WARN budget and the adapter memory bound.
  */
-public class TestPdfChunkIterator {
+class TestPdfChunkIterator {
 
   private static final Tokenizer WORDS = new WordCountTokenizer();
   private static final PdfFileMeta META = new PdfFileMeta("fid-1", "file:///docs/x.pdf", 100);
@@ -184,10 +184,16 @@ public class TestPdfChunkIterator {
     return chunks;
   }
 
+  private static void drainInto(ClosableIterator<PdfChunk> iterator, List<PdfChunk> emitted) {
+    while (iterator.hasNext()) {
+      emitted.add(iterator.next());
+    }
+  }
+
   // ------------------------------------------------------------------ lifecycle
 
   @Test
-  public void openDoesNoIo() {
+  void openDoesNoIo() {
     AtomicBoolean called = new AtomicBoolean();
     PdfChunkIterator iterator = open(small(), 1, i -> text(sentences("a", 2)), () -> {
       called.set(true);
@@ -201,14 +207,14 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void openReturnsHudiClosableIterator() {
+  void openReturnsHudiClosableIterator() {
     PdfChunker chunker = new PdfBoxChunker((s, m, c) -> new FakeSource(s, 1, i -> text("One sentence.")));
     ClosableIterator<PdfChunk> iterator = chunker.open(() -> new ByteArrayInputStream(new byte[1]), META, small());
     assertEquals("One sentence.", drain(iterator).get(0).text());
   }
 
   @Test
-  public void hasNextIdempotent() {
+  void hasNextIdempotent() {
     PdfChunkIterator iterator = open(small(), Collections.singletonList(text(sentences("a", 6))));
     for (int i = 0; i < 5; i++) {
       assertTrue(iterator.hasNext());
@@ -221,7 +227,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void nextAfterEndThrows() {
+  void nextAfterEndThrows() {
     PdfChunkIterator iterator = open(small(), Collections.singletonList(text("Only one.")));
     drain(iterator);
     assertFalse(iterator.hasNext());
@@ -229,21 +235,21 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void noThreadsStarted() {
+  void noThreadsStarted() {
     int before = Thread.activeCount();
     drain(open(small(), Arrays.asList(text(sentences("a", 20)), text(sentences("b", 20)))));
     assertEquals(before, Thread.activeCount());
   }
 
   @Test
-  public void everyRecordCarriesTheSourcePathSha() {
+  void everyRecordCarriesTheSourcePathSha() {
     List<PdfChunk> chunks = drain(open(small(), Arrays.asList(text(sentences("a", 9)), text(sentences("b", 9)))));
     assertTrue(chunks.size() > 3);
     assertTrue(chunks.stream().allMatch(c -> "fid-1".equals(c.sourcePathSha())));
   }
 
   @Test
-  public void chunkIdsAreConsecutiveFromZero() {
+  void chunkIdsAreConsecutiveFromZero() {
     List<PdfChunk> chunks = drain(open(small(), Arrays.asList(text(sentences("a", 9)), text(sentences("b", 9)))));
     for (int i = 0; i < chunks.size(); i++) {
       assertEquals(i, chunks.get(i).chunkId());
@@ -252,7 +258,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void closeTwiceIsNoop() {
+  void closeTwiceIsNoop() {
     PdfChunkIterator iterator = open(small(), Collections.singletonList(text(sentences("a", 9))));
     assertTrue(iterator.hasNext());
     iterator.close();
@@ -264,7 +270,7 @@ public class TestPdfChunkIterator {
   // ------------------------------------------------------------------ records
 
   @Test
-  public void lossSummaryOnLastChunk() {
+  void lossSummaryOnLastChunk() {
     List<PdfChunk> chunks = drain(open(small(), Arrays.asList(text(sentences("a", 6)),
         throwing(new IllegalStateException("broken content stream")), text(sentences("c", 6)))));
     PdfChunk last = chunks.get(chunks.size() - 1);
@@ -299,7 +305,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void tokenizerErrorAfterChunksSignalled() {
+  void tokenizerErrorAfterChunksSignalled() {
     PdfChunkerConfig config = config(new FailingTokenizer(), EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "20",
         EmbeddingTableConfig.CHUNK_OVERLAP_TOKENS.key(), "0");
     List<PdfChunk> chunks = drain(open(config, Arrays.asList(text(sentences("a", 12)), text("FAIL_TOKEN is here. " + sentences("c", 6)))));
@@ -312,7 +318,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void tokenizerThrowsOnSecondFileOnly() {
+  void tokenizerThrowsOnSecondFileOnly() {
     PdfChunkerConfig config = config(new FailingTokenizer(), EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "20",
         EmbeddingTableConfig.CHUNK_OVERLAP_TOKENS.key(), "0");
     List<PdfChunk> first = drain(open(config, Collections.singletonList(text(sentences("a", 6)))));
@@ -327,7 +333,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void corruptFileYieldsOneFailedMarker() {
+  void corruptFileYieldsOneFailedMarker() {
     PdfBoxChunker chunker = new PdfBoxChunker((s, m, c) -> new FakeSource(s, 0, i -> null) {
       @Override
       public void open() {
@@ -341,7 +347,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void unexpectedFileLevelExceptionIsInternal() {
+  void unexpectedFileLevelExceptionIsInternal() {
     // an exception outside a page extraction that is not a PdfFileFailure gives FAILED INTERNAL
     PageSourceFactory factory = (s, m, c) -> new IllegalStateOnOpen(s);
     PdfChunkIterator iterator = new PdfBoxChunker(factory).open(() -> new ByteArrayInputStream(new byte[1]), META, small(),
@@ -385,16 +391,12 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void retryableTokenizerFailureAfterChunksFailsTheRound() {
+  void retryableTokenizerFailureAfterChunksFailsTheRound() {
     PdfChunkerConfig config = config(new KindTokenizer(TokenizerException.Kind.RETRYABLE), EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(),
         "20", EmbeddingTableConfig.CHUNK_OVERLAP_TOKENS.key(), "0");
     PdfChunkIterator iterator = open(config, Arrays.asList(text(sentences("a", 12)), text("FAIL_TOKEN is here. " + sentences("c", 6))));
     List<PdfChunk> emitted = new ArrayList<>();
-    RuntimeException e = assertThrows(RuntimeException.class, () -> {
-      while (iterator.hasNext()) {
-        emitted.add(iterator.next());
-      }
-    });
+    RuntimeException e = assertThrows(RuntimeException.class, () -> drainInto(iterator, emitted));
     assertTrue(PrepFailures.roundFailure(e) instanceof TokenizerException, String.valueOf(e));
     assertTrue(emitted.stream().allMatch(c -> c.status() == PdfChunk.Status.OK && c.statusDetail() == null),
         "no chunk carries a loss summary: the file is not committed truncated");
@@ -402,16 +404,16 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void retryableTokenizerFailureBeforeAnyChunkFailsTheRound() {
+  void retryableTokenizerFailureBeforeAnyChunkFailsTheRound() {
     PdfChunkerConfig config = config(new KindTokenizer(TokenizerException.Kind.RETRYABLE), EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(),
         "20", EmbeddingTableConfig.CHUNK_OVERLAP_TOKENS.key(), "0");
-    RuntimeException e = assertThrows(RuntimeException.class,
-        () -> drain(open(config, Collections.singletonList(text("FAIL_TOKEN. " + sentences("b", 6))))));
+    PdfChunkIterator iterator = open(config, Collections.singletonList(text("FAIL_TOKEN. " + sentences("b", 6))));
+    RuntimeException e = assertThrows(RuntimeException.class, () -> drain(iterator));
     assertTrue(PrepFailures.roundFailure(e) instanceof TokenizerException, String.valueOf(e));
   }
 
   @Test
-  public void permanentTokenizerFailureStaysTheFilesOwn() {
+  void permanentTokenizerFailureStaysTheFilesOwn() {
     PdfChunkerConfig config = config(new KindTokenizer(TokenizerException.Kind.PERMANENT), EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(),
         "20", EmbeddingTableConfig.CHUNK_OVERLAP_TOKENS.key(), "0");
     List<PdfChunk> chunks = drain(open(config, Collections.singletonList(text("FAIL_TOKEN. " + sentences("b", 6)))));
@@ -421,7 +423,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void sourceReadFailureOpeningTheSourceFailsTheRound() {
+  void sourceReadFailureOpeningTheSourceFailsTheRound() {
     SourceReadException read = new SourceReadException("Failed to read the blob source", new java.io.IOException("throttled"));
     PdfChunkIterator iterator = open(small(), 1, i -> text("One."), () -> {
       throw read;
@@ -431,15 +433,11 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void platformFailureOnAPageFailsTheRound() {
+  void platformFailureOnAPageFailsTheRound() {
     PrepPlatformException scratch = new PrepPlatformException("local scratch disk full", new java.io.IOException("ENOSPC"));
     PdfChunkIterator iterator = open(small(), Arrays.asList(text(sentences("a", 6)), throwing(scratch), text(sentences("c", 6))));
     List<PdfChunk> emitted = new ArrayList<>();
-    RuntimeException e = assertThrows(RuntimeException.class, () -> {
-      while (iterator.hasNext()) {
-        emitted.add(iterator.next());
-      }
-    });
+    RuntimeException e = assertThrows(RuntimeException.class, () -> drainInto(iterator, emitted));
     assertSame(scratch, PrepFailures.roundFailure(e));
     assertEquals(0, iterator.stats().pagesFailed(), "not counted as a page error");
     assertTrue(emitted.stream().allMatch(c -> c.statusDetail() == null), "no loss summary");
@@ -447,7 +445,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void platformFailureWrappedInAPageFailureFailsTheRound() {
+  void platformFailureWrappedInAPageFailureFailsTheRound() {
     PrepPlatformException scratch = new PrepPlatformException("local scratch disk full", new java.io.IOException("ENOSPC"));
     PdfChunkIterator iterator = open(small(), Arrays.asList(text(sentences("a", 6)),
         throwing(new PageFailure(PdfFailureCode.PAGE_ERROR, "decode guard", scratch))));
@@ -456,7 +454,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void whitespaceOnlyPagesAreNoText() {
+  void whitespaceOnlyPagesAreNoText() {
     List<PdfChunk> chunks = drain(open(small(), Arrays.asList(text(" \n\t "), text("\u200B\u00AD"), text(""))));
     assertEquals(1, chunks.size());
     assertEquals(PdfChunk.Status.NO_TEXT, chunks.get(0).status());
@@ -465,13 +463,13 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void partialFailureYieldsNoMarker() {
+  void partialFailureYieldsNoMarker() {
     List<PdfChunk> chunks = drain(open(small(), Arrays.asList(throwing(new RuntimeException("p1")), text(sentences("b", 4)))));
     assertTrue(chunks.stream().allMatch(c -> c.status() == PdfChunk.Status.OK));
   }
 
   @Test
-  public void allPagesFailedIsFailedMarker() {
+  void allPagesFailedIsFailedMarker() {
     List<PdfChunk> chunks = drain(open(small(), Arrays.asList(throwing(new RuntimeException("p1")), text(""))));
     assertEquals(1, chunks.size());
     assertEquals(PdfChunk.Status.FAILED, chunks.get(0).status());
@@ -479,7 +477,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void mixedPageFailuresKeepTheAggregateFailureCode() {
+  void mixedPageFailuresKeepTheAggregateFailureCode() {
     List<PdfChunk> chunks = drain(open(small(), Arrays.asList(
         throwing(new PageFailure(PdfFailureCode.DECODE_ERROR, "content cannot decode")),
         throwing(new PageFailure(PdfFailureCode.PAGE_ERROR, "page cannot be read")))));
@@ -493,7 +491,7 @@ public class TestPdfChunkIterator {
   // ------------------------------------------------------------------ errors
 
   @Test
-  public void stackOverflowOnPageIsolated() {
+  void stackOverflowOnPageIsolated() {
     List<PdfChunk> chunks = drain(open(small(), Arrays.asList(text(sentences("a", 4)), throwing(new StackOverflowError()),
         text(sentences("c", 4)))));
     assertTrue(chunks.stream().anyMatch(c -> c.text().contains("c3")));
@@ -501,7 +499,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void outOfMemoryErrorPropagates() {
+  void outOfMemoryErrorPropagates() {
     PdfChunkIterator iterator = open(small(), Arrays.asList(text(sentences("a", 4)), throwing(new OutOfMemoryError("fake"))));
     assertThrows(OutOfMemoryError.class, () -> drain(iterator));
     iterator.close();
@@ -509,7 +507,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void interruptPropagatesNotPageError() {
+  void interruptPropagatesNotPageError() {
     FakePage interrupting = () -> {
       Thread.currentThread().interrupt();
       throw new ClosedChannelException();
@@ -526,7 +524,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void interruptWithClearedFlagStillPropagates() {
+  void interruptWithClearedFlagStillPropagates() {
     // a library caught InterruptedException and cleared the flag, but its InterruptedIOException says it all
     FakePage page = () -> {
       throw new java.io.IOException("read failed", new InterruptedIOException("stream interrupted"));
@@ -537,7 +535,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void failingSourceCloseKeepsTheRecords() {
+  void failingSourceCloseKeepsTheRecords() {
     // a throwing PageSource.close() must not replace the last OK chunk with a FAILED marker
     PdfBoxChunker chunker = new PdfBoxChunker((s, m, c) -> new FakeSource(s, 1, i -> text(sentences("a", 6))) {
       @Override
@@ -552,7 +550,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void cleanNoTextFileWarnsWithoutALossSummary() {
+  void cleanNoTextFileWarnsWithoutALossSummary() {
     drain(open(small(), Arrays.asList(text(""), text(""))));
     assertEquals(1, warnings.size());
     assertTrue(warnings.get(0).contains("status=NO_TEXT pages=2 (no text)"), warnings.get(0));
@@ -560,7 +558,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void incrementalPackingKeepsOnlyBoundedText() {
+  void incrementalPackingKeepsOnlyBoundedText() {
     List<FakePage> pages = new ArrayList<>();
     StringBuilder expected = new StringBuilder();
     for (int p = 0; p < 20; p++) {
@@ -588,7 +586,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void warnLinesBoundedPerFile() {
+  void warnLinesBoundedPerFile() {
     List<FakePage> pages = new ArrayList<>();
     for (int i = 0; i < 50; i++) {
       pages.add(throwing(new IllegalArgumentException("bad page " + i)));
@@ -600,7 +598,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void suppressedWarningsOnALossFreeFileStillGetASummary() {
+  void suppressedWarningsOnALossFreeFileStillGetASummary() {
     // 12 pages each with an unpaired surrogate is an OK, loss-free file whose 11th and 12th WARNs are
     // suppressed; one summary line says so
     List<FakePage> pages = new ArrayList<>();
@@ -620,7 +618,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void warnNeverContainsText() {
+  void warnNeverContainsText() {
     StringBuilder huge = new StringBuilder();
     for (int i = 0; i < 300_000; i++) {
       huge.append(i % 7 == 0 ? ' ' : 'q');
@@ -633,7 +631,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void maxPagesStopsWithWarning() {
+  void maxPagesStopsWithWarning() {
     PdfChunkerConfig config = config(WORDS, EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "20", EmbeddingTableConfig.CHUNK_OVERLAP_TOKENS.key(),
         "0", EmbeddingTableConfig.PDF_MAX_PAGES.key(), "3");
     List<FakePage> pages = new ArrayList<>();
@@ -648,7 +646,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void pageLimitedScanWithoutTextFailsWithItsLosses() {
+  void pageLimitedScanWithoutTextFailsWithItsLosses() {
     // pages past max.pages were never read, so the file is not known to have no text: it fails with a durable PAGE_LIMIT
     PdfChunkerConfig config = config(WORDS, EmbeddingTableConfig.PDF_MAX_PAGES.key(), "2");
     List<PdfChunk> chunks = drain(open(config, Arrays.asList(text(""), text(""), text("late text."), text(""))));
@@ -705,7 +703,7 @@ public class TestPdfChunkIterator {
   }
 
   @Test
-  public void statsCountPages() {
+  void statsCountPages() {
     PdfChunkIterator iterator = open(small(), Arrays.asList(text(sentences("a", 4)), text(""),
         throwing(new PageFailure(PdfFailureCode.DECODE_LIMIT, "oversized input")), throwing(new PageFailure(PdfFailureCode.PAGE_GLYPH_LIMIT, "g")),
         throwing(new PageFailure(PdfFailureCode.GRAPHICS_DEPTH_LIMIT, "q")), text(sentences("b", 4))));

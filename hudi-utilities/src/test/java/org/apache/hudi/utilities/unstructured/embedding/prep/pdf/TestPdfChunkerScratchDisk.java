@@ -48,19 +48,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code PAGE_ERROR}. The disk failure is injected into PDFBox's own scratch cache ({@link FailingScratchCache}); the fixture is
  * an owner-password-only PDF, the shape whose loading and extraction write PDFBox's scratch.
  */
-public class TestPdfChunkerScratchDisk {
+class TestPdfChunkerScratchDisk {
 
   @TempDir
   Path staging;
   private final List<String> warnings = new ArrayList<>();
 
   @BeforeAll
-  public static void fontCache(@TempDir Path cache) {
+  static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
   }
 
   @Test
-  public void scratchDiskFullWhileLoadingFailsTheRound() throws IOException {
+  void scratchDiskFullWhileLoadingFailsTheRound() throws IOException {
     FailingScratchCache cache = new FailingScratchCache().arm();
     Outcome outcome = run(pdfSource -> pdfSource, cache, PdfFixtures.ownerPasswordOnly("Secret page one.", "Secret page two."));
     assertTrue(cache.failedWrites() > 0, "the load wrote PDFBox's scratch");
@@ -68,7 +68,7 @@ public class TestPdfChunkerScratchDisk {
   }
 
   @Test
-  public void scratchDiskFullWhileExtractingFailsTheRound() throws IOException {
+  void scratchDiskFullWhileExtractingFailsTheRound() throws IOException {
     FailingScratchCache cache = new FailingScratchCache();
     Outcome outcome = run(cache::armedAfterOpen, cache, PdfFixtures.ownerPasswordOnly("Secret page one.", "Secret page two."));
     assertTrue(cache.failedWrites() > 0, "page extraction wrote PDFBox's scratch");
@@ -76,7 +76,7 @@ public class TestPdfChunkerScratchDisk {
   }
 
   @Test
-  public void ownerPasswordOnlyFileIsChunkedWhenTheDiskIsFine() throws IOException {
+  void ownerPasswordOnlyFileIsChunkedWhenTheDiskIsFine() throws IOException {
     FailingScratchCache cache = new FailingScratchCache();
     Outcome outcome = run(pdfSource -> pdfSource, cache, PdfFixtures.ownerPasswordOnly("Secret page one.", "Secret page two."));
     assertNull(outcome.failure, String.valueOf(outcome.failure));
@@ -87,7 +87,7 @@ public class TestPdfChunkerScratchDisk {
   }
 
   @Test
-  public void corruptFileStaysLoadErrorWithTheScratchCacheInPlace() throws IOException {
+  void corruptFileStaysLoadErrorWithTheScratchCacheInPlace() {
     // PDFBox gives up before it writes any scratch: the classifying cache changes nothing for a file that is not a PDF
     FailingScratchCache cache = new FailingScratchCache().arm();
     Outcome outcome = run(pdfSource -> pdfSource, cache, "%PDF-1.7 broken".getBytes(StandardCharsets.US_ASCII));
@@ -99,7 +99,7 @@ public class TestPdfChunkerScratchDisk {
   }
 
   @Test
-  public void undecodablePageOfAnEncryptedFileRecordsLossWhileItsScratchIsWritten() throws IOException {
+  void undecodablePageOfAnEncryptedFileRecordsLossWhileItsScratchIsWritten() throws IOException {
     // page 2's stream is decrypted into PDFBox's scratch, then fails to decode: the file's own fault, not the disk's, and
     // page 2 fails decoding and the round goes on with a durable loss summary
     byte[] pdf = PdfFixtures.ownerPasswordOnly(PdfFixtures.brokenPage2("Page one text.", "Page two text.", "Page three text."));

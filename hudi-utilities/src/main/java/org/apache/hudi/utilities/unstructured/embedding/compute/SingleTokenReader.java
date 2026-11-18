@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 /**
  * Reads one secret token (an API key, an access token) from a file (e.g. a mounted Kubernetes secret) or an environment
@@ -44,7 +45,7 @@ public final class SingleTokenReader {
    * @throws RuntimeException from {@code failure} when the source is unreadable, empty or holds anything but one printable ASCII
    *     token (a multi-line file, an inner space)
    */
-  public static String read(String file, String env, Function<String, String> environment, String what, String source,
+  public static String read(String file, String env, UnaryOperator<String> environment, String what, String source,
                             Function<String, ? extends RuntimeException> failure) {
     String value;
     if (file != null) {

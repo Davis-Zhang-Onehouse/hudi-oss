@@ -157,6 +157,7 @@ public class TestPreprocessingIterator {
       return new ClosableIterator<Chunk>() {
         @Override
         public void close() {
+          // nothing to release: the chunk is held in memory
         }
 
         @Override
@@ -173,7 +174,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void derivedPayloadWithoutDestinationChecksContentType() {
+  void derivedPayloadWithoutDestinationChecksContentType() {
     TypedProperties props = derivedPayloadProps();
     props.setProperty("test.payload.type", "application/octet-stream");
     try (PreprocessingIterator iterator = iterator(props, blobRow("sha", "txt", "input"))) {
@@ -183,7 +184,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void derivedPayloadWithoutDestinationUsesSharedSizeFailure() {
+  void derivedPayloadWithoutDestinationUsesSharedSizeFailure() {
     TypedProperties props = derivedPayloadProps();
     props.setProperty("test.payload.size", "4");
     try (PreprocessingIterator iterator = iterator(props, blobRow("sha", "txt", "input"))) {
@@ -193,7 +194,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void validDerivedPayloadWithoutDestinationKeepsBytes() {
+  void validDerivedPayloadWithoutDestinationKeepsBytes() {
     TypedProperties props = derivedPayloadProps();
     try (PreprocessingIterator iterator = iterator(props, blobRow("sha", "txt", "input"))) {
       List<Row> rows = drain(iterator);
@@ -233,7 +234,7 @@ public class TestPreprocessingIterator {
   private LongAccumulator chunks;
 
   @BeforeEach
-  public void reset() throws IOException {
+  void reset() throws IOException {
     // an existing (empty) embedding table
     embeddingTable = temp.resolve("embedding").toUri().toString();
     HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
@@ -266,11 +267,12 @@ public class TestPreprocessingIterator {
   }
 
   private PreprocessingIterator iterator(TypedProperties props, Row... rows) {
-    return new PreprocessingIterator(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), "001",
-        new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())), new PreprocessorRegistry(props),
-        new WordCountTokenizer(),
-        new PrepCounters(filesOk, filesFailed, chunks, new LongAccumulator(), new LongAccumulator()),
-        null);
+    return PreprocessingIterator.builder(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), "001")
+        .bytesSource(new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())))
+        .registry(new PreprocessorRegistry(props))
+        .tokenizer(new WordCountTokenizer())
+        .counters(new PrepCounters(filesOk, filesFailed, chunks, new LongAccumulator(), new LongAccumulator()))
+        .build();
   }
 
   /** The value of {@code name} in an output row (a schemaless RowFactory row): looked up through the table layout. */
@@ -287,7 +289,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void causeCycleIsFormattedAsAFileFailureWithoutHanging() {
+  void causeCycleIsFormattedAsAFileFailureWithoutHanging() {
     assertEquals(1, drain(iterator(props(), blobRow("control", "txt", "alpha"))).size());
     TypedProperties failing = props();
     failing.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
@@ -302,7 +304,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void executorMustMatchDriverPinsBeforeOpeningAFile() {
+  void executorMustMatchDriverPinsBeforeOpeningAFile() {
     TypedProperties matching = PrepLogicVersions.from(props()).executionProperties(props());
     assertEquals(1, drain(iterator(matching, blobRow("control", "txt", "alpha"))).size());
     int opened = PipeSplitPreprocessor.OPENED.get();
@@ -323,7 +325,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void textRowsCarryOnePrepLogicVersion() {
+  void textRowsCarryOnePrepLogicVersion() {
     List<Row> rows = drain(iterator(props(), blobRow("sha-a", "txt", "alpha beta")));
     assertEquals(1, rows.size());
     Map<String, String> aux = rows.get(0).getJavaMap(10);
@@ -334,7 +336,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void rowsCarryTheFiveKeyColumnsAndTheSourceColumns() {
+  void rowsCarryTheFiveKeyColumnsAndTheSourceColumns() {
     List<Row> rows = drain(iterator(props("m1", "m2"), blobRow("sha-a", "txt", "alpha beta|gamma")));
 
     assertEquals(2, rows.size());
@@ -366,7 +368,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void userPartitionColumnsAreCopiedFromTheSourceRow() {
+  void userPartitionColumnsAreCopiedFromTheSourceRow() {
     TypedProperties props = props("m1");
     props.setProperty(CloudSourceConfig.PATH_BASED_PARTITION_FIELDS.key(), "team,missing");
     StructType schema = EmbeddingTableSchema.build(EmbeddingTableConfig.from(props));
@@ -381,7 +383,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void chunkIdsRestartAtZeroForEveryFile() {
+  void chunkIdsRestartAtZeroForEveryFile() {
     List<Row> rows = drain(iterator(props("m1"),
         blobRow("sha-a", "txt", "a|b|c"), blobRow("sha-b", "TXT", "d|e")));
 
@@ -402,7 +404,7 @@ public class TestPreprocessingIterator {
    * the files beside it are prepared.
    */
   @Test
-  public void overwrittenObjectFailsPrepInsteadOfUsingItsPreviousVersionKey() throws IOException {
+  void overwrittenObjectFailsPrepInsteadOfUsingItsPreviousVersionKey() throws IOException {
     Path file = temp.resolve("source.txt");
     Files.write(file, new byte[] {'a'});
     Files.setLastModifiedTime(file, FileTime.fromMillis(MODIFICATION_TIME));
@@ -436,7 +438,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void relativeOutOfLineReferenceFailsTheFileOnly() {
+  void relativeOutOfLineReferenceFailsTheFileOnly() {
     PreprocessingIterator iterator = iterator(props("m1"), outOfLineRow("sha-rel", ".hoodie/.blob/txt/a.bin"),
         blobRow("sha-b", "txt", "d|e"));
     List<Row> rows = drain(iterator);
@@ -460,7 +462,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void goneObjectWithAPreprocessorIsAFailedFileNamedGoneSinceAnnounced() {
+  void goneObjectWithAPreprocessorIsAFailedFileNamedGoneSinceAnnounced() {
     PreprocessingIterator iterator = iterator(props("m1"), goneRow("sha-a", "txt"), blobRow("sha-b", "txt", "beta"));
     List<Row> rows = drain(iterator);
     assertEquals(1, rows.size(), "only the other file's chunk");
@@ -479,7 +481,7 @@ public class TestPreprocessingIterator {
 
   /** A gone object no preprocessor would have read is what it always was: an empty "no preprocessor" output, not a failure. */
   @Test
-  public void goneObjectWithoutAPreprocessorStaysANoPreprocessorOutput() {
+  void goneObjectWithoutAPreprocessorStaysANoPreprocessorOutput() {
     PreprocessingIterator iterator = iterator(props("m1"), goneRow("sha-a", "bin"));
     assertEquals(0, drain(iterator).size());
     assertEquals(1, iterator.getSideOutputs().size());
@@ -497,7 +499,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void carriesTheSourceFileColumns() {
+  void carriesTheSourceFileColumns() {
     StructType schema = DataTypes.createStructType(new StructField[] {
         DataTypes.createStructField(BlobColumns.SOURCE_PATH_SHA, DataTypes.StringType, false),
         DataTypes.createStructField(BlobColumns.SOURCE_MODIFICATION_TIME, DataTypes.LongType, false),
@@ -524,7 +526,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void closesEveryFilesChunksOnce() {
+  void closesEveryFilesChunksOnce() {
     PreprocessingIterator iterator = iterator(props("m1"), blobRow("sha-a", "txt", "a|b"), blobRow("sha-b", "txt", "c"));
     drain(iterator);
     iterator.close();
@@ -534,7 +536,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void closeMidFileClosesTheOpenFileAndEndsTheIteration() {
+  void closeMidFileClosesTheOpenFileAndEndsTheIteration() {
     PreprocessingIterator iterator = iterator(props("m1"), blobRow("sha-a", "txt", "a|b"), blobRow("sha-b", "txt", "c"));
     assertTrue(iterator.hasNext());
     iterator.next();
@@ -547,7 +549,7 @@ public class TestPreprocessingIterator {
   }
 
   @Test
-  public void anEmptyBatchYieldsNoRow() {
+  void anEmptyBatchYieldsNoRow() {
     PreprocessingIterator iterator = iterator(props("m1"));
 
     assertFalse(iterator.hasNext());

@@ -48,6 +48,7 @@ import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceConfig;
 import org.apache.hudi.utilities.testutils.UtilitiesTestBase;
 import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingTableTransformer;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -78,7 +79,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * last, from the merged properties, after the contract's checks: a job they refuse never builds its source. A refusal before the
  * metrics are built (a settings conflict) leaves no metrics registered; a later one leaves them, as upstream does.
  */
-public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
+class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
 
   private static final String RECORD_KEY = KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key();
   private static final String REQUIRED_KEY = "source_path_sha,source_modification_time,source_file_size";
@@ -91,17 +92,17 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   Path tempDir;
 
   @BeforeAll
-  public static void initClass() throws Exception {
+  static void initClass() throws Exception {
     UtilitiesTestBase.initTestServices();
   }
 
   @AfterAll
-  public static void cleanupClass() throws Exception {
+  static void cleanupClass() {
     UtilitiesTestBase.cleanUpUtilitiesTestServices();
   }
 
   @BeforeEach
-  public void resetSource() {
+  void resetSource() {
     ContractTestSource.SEEN.set(null);
     ContractTestSource.BUILT.set(0);
   }
@@ -310,9 +311,11 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     cfg.transformerClassNames = Collections.singletonList(TestUnstructuredChainPlan.DropColumnTransformer.class.getName());
     TypedProperties props = jobProps();
     props.setProperty("test.drop.column", "source_file_size");
+    HoodieSparkEngineContext engineContext = new HoodieSparkEngineContext(jsc);
+    Configuration hadoopConf = jsc.hadoopConfiguration();
+    DefaultStreamContext streamContext = new DefaultStreamContext(null, Option.empty());
     assertThrows(HoodieSchemaException.class, () -> new StreamSync(cfg, sparkSession, props,
-        new HoodieSparkEngineContext(jsc), fs, jsc.hadoopConfiguration(), client -> true,
-        new DefaultStreamContext(null, Option.empty())));
+        engineContext, fs, hadoopConf, client -> true, streamContext));
     assertEquals(0, ContractTestSource.BUILT.get());
   }
 
@@ -329,7 +332,8 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   @Test
   void existingTableWithOtherKeyRefusedByCheckTable() throws Exception {
     createTableWithKey("x");
-    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> streamSync(jobProps()));
+    TypedProperties props = jobProps();
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> streamSync(props));
     assertTrue(refused.getMessage().startsWith(ContractTestSource.NAME + " requires the table's "
         + HoodieTableConfig.RECORDKEY_FIELDS.key() + "=" + REQUIRED_KEY), refused.getMessage());
     assertEquals(0, ContractTestSource.BUILT.get(), "the refused job built its source");
@@ -345,14 +349,18 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     createTableWithKey(REQUIRED_KEY);
     TypedProperties conflicting = jobProps();
     conflicting.setProperty(RECORD_KEY, "y");
-    String sourceRefusal = causes(assertThrows(Exception.class, () -> new HoodieStreamer(config(), jsc, Option.of(conflicting))));
+    HoodieStreamer.Config conflictingCfg = config();
+    Option<TypedProperties> conflictingProps = Option.of(conflicting);
+    String sourceRefusal = causes(assertThrows(Exception.class, () -> new HoodieStreamer(conflictingCfg, jsc, conflictingProps)));
     assertTrue(sourceRefusal.contains(ContractTestSource.NAME + " requires " + RECORD_KEY + "=" + REQUIRED_KEY), sourceRefusal);
 
     TypedProperties partitioned = jobProps();
     partitioned.setProperty(RECORD_KEY, " " + REQUIRED_KEY.replace(",", " , "));
     partitioned.setProperty(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key(), "p");
     partitioned.setProperty("hoodie.datasource.write.keygenerator.class", "org.apache.hudi.keygen.ComplexKeyGenerator");
-    String stockRefusal = causes(assertThrows(Exception.class, () -> new HoodieStreamer(config(), jsc, Option.of(partitioned))));
+    HoodieStreamer.Config partitionedCfg = config();
+    Option<TypedProperties> partitionedProps = Option.of(partitioned);
+    String stockRefusal = causes(assertThrows(Exception.class, () -> new HoodieStreamer(partitionedCfg, jsc, partitionedProps)));
     assertTrue(stockRefusal.contains("Config conflict"), stockRefusal);
     assertFalse(stockRefusal.contains("RecordKey"), "the job's key is compared in its required form: " + stockRefusal);
     assertFalse(stockRefusal.contains(ContractTestSource.NAME), stockRefusal);
@@ -396,9 +404,12 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   void excludedTransformerRefusedBeforeTheSourceIsBuilt() {
     HoodieStreamer.Config cfg = config();
     cfg.transformerClassNames = Collections.singletonList(EmbeddingTableTransformer.class.getName());
+    TypedProperties props = jobProps();
+    HoodieSparkEngineContext engineContext = new HoodieSparkEngineContext(jsc);
+    Configuration hadoopConf = jsc.hadoopConfiguration();
+    DefaultStreamContext streamContext = new DefaultStreamContext(null, Option.empty());
     HoodieTransformPlanException refused = assertThrows(HoodieTransformPlanException.class,
-        () -> new StreamSync(cfg, sparkSession, jobProps(), new HoodieSparkEngineContext(jsc), fs, jsc.hadoopConfiguration(),
-            client -> true, new DefaultStreamContext(null, Option.empty())));
+        () -> new StreamSync(cfg, sparkSession, props, engineContext, fs, hadoopConf, client -> true, streamContext));
     assertTrue(refused.getMessage().startsWith("UnstructuredDataSource does not run with " + EmbeddingTableTransformer.class.getName()),
         refused.getMessage());
     assertEquals(0, ContractTestSource.BUILT.get(), "the refused job built its source");
@@ -408,7 +419,9 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   @Test
   void existingTableWithOtherKeyRefusedByTheStreamerNamingTheSource() throws Exception {
     createTableWithKey("x");
-    String refusal = causes(assertThrows(Exception.class, () -> new HoodieStreamer(config(), jsc, Option.of(jobProps()))));
+    HoodieStreamer.Config cfg = config();
+    Option<TypedProperties> props = Option.of(jobProps());
+    String refusal = causes(assertThrows(Exception.class, () -> new HoodieStreamer(cfg, jsc, props)));
     assertTrue(refusal.contains(ContractTestSource.NAME + " requires the table's " + HoodieTableConfig.RECORDKEY_FIELDS.key()
         + "=" + REQUIRED_KEY), refusal);
     assertFalse(refusal.contains("Config conflict"), "the source's check runs before the stock one: " + refusal);

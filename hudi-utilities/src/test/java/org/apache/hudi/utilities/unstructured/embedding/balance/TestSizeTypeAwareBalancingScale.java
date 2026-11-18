@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * so the sort keeps the {@value #SHUFFLE_PARTITIONS} partitions it would size from a larger batch.
  */
 @Tag("functional")
-public class TestSizeTypeAwareBalancingScale extends SparkClientFunctionalTestHarness {
+class TestSizeTypeAwareBalancingScale extends SparkClientFunctionalTestHarness {
 
   private static final long FILES = 100_000L;
   private static final int SHUFFLE_PARTITIONS = 8;
@@ -95,7 +95,7 @@ public class TestSizeTypeAwareBalancingScale extends SparkClientFunctionalTestHa
   }
 
   @Test
-  public void groupsGetTheirTasksWithinTheirBudgetsAndNoTaskRanksAWholeGroup() throws Exception {
+  void groupsGetTheirTasksWithinTheirBudgetsAndNoTaskRanksAWholeGroup() throws Exception {
     Map<String, String> previous = new HashMap<>();
     Map<String, String> conf = new HashMap<>();
     conf.put("spark.sql.shuffle.partitions", String.valueOf(SHUFFLE_PARTITIONS));

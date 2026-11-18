@@ -52,6 +52,7 @@ public class StubSegmentTranscriber implements SegmentTranscriber {
 
   @Override
   public void validate(TypedProperties props) {
+    // the stub reads no settings, so there is nothing to validate
   }
 
   @Override

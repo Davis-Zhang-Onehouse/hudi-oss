@@ -57,7 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Physical page bounds for inline prepared images through the embedding table's real writer factory. */
-public class TestEmbeddingPageBound {
+class TestEmbeddingPageBound {
 
   /** Each image fits below the 1 MiB inline threshold and just below the default page target. */
   private static final int IMAGE_BYTES = 1_000_000;
@@ -69,7 +69,7 @@ public class TestEmbeddingPageBound {
   /** The single-row case controls the setup; a supported builder must flush the larger batch during the write. */
   @ParameterizedTest
   @ValueSource(ints = {1, 24})
-  public void inlineImagePagesFollowTheWritersSupportedCadence(int rows) throws Exception {
+  void inlineImagePagesFollowTheWritersSupportedCadence(int rows) throws Exception {
     Schema blobSchema = HoodieSchema.createBlob().toAvroSchema();
     Schema avro = SchemaBuilder.record("EmbeddingRow").fields().requiredString("source_path_sha")
         .name(EmbeddingTableSchema.PREPARED_IMAGE).type(blobSchema).noDefault().endRecord();

@@ -41,14 +41,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Inline-image boundaries agree with the consuming PDFBox parser. */
-public class TestScannerInlineImages {
+class TestScannerInlineImages {
 
   @TempDir
   Path temp;
 
   @ParameterizedTest
   @ValueSource(strings = {"xEI ", "x EI ", "xEI\r", "xEI\n"})
-  public void operandsAfterImageRespectTheExistingCap(String ending) throws Exception {
+  void operandsAfterImageRespectTheExistingCap(String ending) throws Exception {
     String content = "q BI /W 1 /H 1 /BPC 8 /CS /G ID " + ending + "Q\n" + "1 ".repeat(65537) + "n\n";
     assertEquals(65537, maximumPendingNumbers(content));
     StreamStructureScanner.Refusal failure = assertThrows(StreamStructureScanner.Refusal.class, () -> scan(content));
@@ -57,7 +57,7 @@ public class TestScannerInlineImages {
 
   @ParameterizedTest
   @ValueSource(strings = {"xEI ", "x EI ", "xEI\r", "xEI\n"})
-  public void operandsAtTheCapPassAfterImage(String ending) throws Exception {
+  void operandsAtTheCapPassAfterImage(String ending) throws Exception {
     String content = "q BI /W 1 /H 1 /BPC 8 /CS /G ID " + ending + "Q\n" + "1 ".repeat(65536) + "n\n";
     assertEquals(65536, maximumPendingNumbers(content));
     scan(content);
@@ -65,7 +65,7 @@ public class TestScannerInlineImages {
 
   @ParameterizedTest
   @ValueSource(strings = {"\001 ", "\377 ", "\f ", "unexpected ", "Q \001 ", "Q \377 ", "longtokenvalue"})
-  public void embeddedEiWithBinaryOrUnacceptedFollowingBytesStaysImageData(String following) throws Exception {
+  void embeddedEiWithBinaryOrUnacceptedFollowingBytesStaysImageData(String following) throws Exception {
     String image = "x EI " + following + "1 ".repeat(65537);
     String content = "q BI /W 1 /H 1 /BPC 8 /CS /G ID " + image + "EI Q\n1 n\n";
     assertEquals(1, maximumPendingNumbers(content));
@@ -82,7 +82,7 @@ public class TestScannerInlineImages {
   }
 
   @Test
-  public void inlineImageLookaheadContinuesAcrossContentsStreams() throws Exception {
+  void inlineImageLookaheadContinuesAcrossContentsStreams() throws Exception {
     String first = "q BI /W 1 /H 1 /BPC 8 /CS /G ID x EI Q ";
     String second = "\001 " + "1 ".repeat(65537) + "EI Q\n1 n\n";
     byte[] pdf = PdfFixtures.contentsStreams(first, second);
@@ -103,7 +103,7 @@ public class TestScannerInlineImages {
   }
 
   @Test
-  public void formRefusalDuringFinalTokenIsCachedBeforeAnotherPage() throws Exception {
+  void formRefusalDuringFinalTokenIsCachedBeforeAnotherPage() throws Exception {
     byte[] pdf;
     try (PDDocument document = new PDDocument()) {
       COSStream form = PdfFixtures.stream(document, "1 ".repeat(65536) + "1");
@@ -123,11 +123,11 @@ public class TestScannerInlineImages {
     }
     try (PDDocument document = Loader.loadPDF(pdf)) {
       StreamDecodeGuard guard = new StreamDecodeGuard(33554432, temp.toFile());
-      assertEquals(PdfFailureCode.DECODE_LIMIT,
-          assertThrows(PageFailure.class, () -> guard.checkPage(document.getPage(0))).code());
+      PDPage first = document.getPage(0);
+      PDPage second = document.getPage(1);
+      assertEquals(PdfFailureCode.DECODE_LIMIT, assertThrows(PageFailure.class, () -> guard.checkPage(first)).code());
       assertEquals(2, guard.decodedStreams(), "the page's own content stream, then the form");
-      assertEquals(PdfFailureCode.DECODE_LIMIT,
-          assertThrows(PageFailure.class, () -> guard.checkPage(document.getPage(1))).code());
+      assertEquals(PdfFailureCode.DECODE_LIMIT, assertThrows(PageFailure.class, () -> guard.checkPage(second)).code());
       assertEquals(3, guard.decodedStreams(), "only page 2's content stream: the failed final scan was cached, not accepted "
           + "as a passed form");
     }
@@ -135,7 +135,7 @@ public class TestScannerInlineImages {
 
   @ParameterizedTest
   @ValueSource(strings = {"Q", "EMC", "S", "1", "123456789012345"})
-  public void acceptedFollowingTokensResumeOrdinaryOperands(String next) throws Exception {
+  void acceptedFollowingTokensResumeOrdinaryOperands(String next) throws Exception {
     String content = "q BI /W 1 /H 1 /BPC 8 /CS /G ID xEI " + next + " n\n" + "1 ".repeat(65537) + "n\n";
     assertEquals(65537, maximumPendingNumbers(content));
     assertThrows(StreamStructureScanner.Refusal.class, () -> scan(content));
@@ -143,7 +143,7 @@ public class TestScannerInlineImages {
 
   @ParameterizedTest
   @ValueSource(strings = {"\t", "\f", "\000"})
-  public void onlySpaceOrReturnImmediatelyAfterEiCanEndImage(String separator) throws Exception {
+  void onlySpaceOrReturnImmediatelyAfterEiCanEndImage(String separator) throws Exception {
     String image = "xEI" + separator + "1 ".repeat(65537);
     String content = "q BI /W 1 /H 1 /BPC 8 /CS /G ID " + image + "EI Q\n1 n\n";
     assertEquals(1, maximumPendingNumbers(content));
@@ -170,7 +170,7 @@ public class TestScannerInlineImages {
     return maximum;
   }
 
-  private static void scan(String content) throws Exception {
+  private static void scan(String content) {
     try (StreamStructureScanner.Operands scanner = new StreamStructureScanner.Operands("inline-image test content", Long.MAX_VALUE)) {
       byte[] bytes = content.getBytes(StandardCharsets.ISO_8859_1);
       for (byte value : bytes) {

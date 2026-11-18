@@ -35,12 +35,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The PDF chunker's configuration and its tokenizer selection. */
-public class TestPdfChunkerConfig {
+class TestPdfChunkerConfig {
 
   private static final Tokenizer BPE = new OpenAiBpeTokenizer();
 
   @Test
-  public void defaults() {
+  void defaults() {
     PdfChunkerConfig config = PdfChunkerConfig.from(new TypedProperties(), BPE);
     assertEquals(256, config.maxTokens());
     assertEquals(128, config.overlapTokens());
@@ -65,7 +65,7 @@ public class TestPdfChunkerConfig {
 
   /** A preprocessor builds its config (and logs an envelope WARN) once, not once per file; other props build a new one. */
   @Test
-  public void cacheBuildsOnceForTheSamePropsAndTokenizer() {
+  void cacheBuildsOnceForTheSamePropsAndTokenizer() {
     PdfChunkerConfig.Cache cache = new PdfChunkerConfig.Cache();
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PDF_MAX_PAGES.key(), String.valueOf(EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGES + 1));
@@ -83,7 +83,7 @@ public class TestPdfChunkerConfig {
   }
 
   @Test
-  public void unknownPdfKeysAreRejected() {
+  void unknownPdfKeysAreRejected() {
     // a misspelt or misplaced pdf.* key fails fast instead of being ignored
     TypedProperties typo = new TypedProperties();
     typo.setProperty("hoodie.unstructured.pdf.max.page", "50");
@@ -103,7 +103,7 @@ public class TestPdfChunkerConfig {
   }
 
   @Test
-  public void validationRejects() {
+  void validationRejects() {
     String[][] cases = {
         {EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "15"},
         {EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "8192"},
@@ -135,11 +135,12 @@ public class TestPdfChunkerConfig {
     windowBelowWords.setProperty(EmbeddingTableConfig.CHUNK_WINDOW_MAX_CHARS.key(), "299");
     windowBelowWords.setProperty(EmbeddingTableConfig.PDF_MAX_PAGE_CHARS.key(), "8192");
     assertThrows(IllegalArgumentException.class, () -> PdfChunkerConfig.from(windowBelowWords, BPE));
-    assertThrows(IllegalArgumentException.class, () -> PdfChunkerConfig.from(new TypedProperties(), null));
+    TypedProperties noProps = new TypedProperties();
+    assertThrows(IllegalArgumentException.class, () -> PdfChunkerConfig.from(noProps, null));
   }
 
   @Test
-  public void maxTokensUpperBound() {
+  void maxTokensUpperBound() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "8191");
     assertEquals(8191, PdfChunkerConfig.from(props, BPE).maxTokens());
@@ -148,7 +149,7 @@ public class TestPdfChunkerConfig {
   }
 
   @Test
-  public void aboveEnvelopeWarns() {
+  void aboveEnvelopeWarns() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PDF_MAX_PAGES.key(), "10001");
     assertTrue(PdfChunkerConfig.from(props, BPE).aboveEnvelope());

@@ -48,14 +48,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The blocks under the FFmpeg frame source's one view of a video: the bytes of any read and seek sequence are the source's,
  * storage is read in whole blocks, a failure happens at the read that would fail unbuffered, and one clip is one open.
  */
-public class TestBlockBufferedBlob {
+class TestBlockBufferedBlob {
 
   @TempDir
   Path dir;
 
   /** Random seeks and reads of random sizes return what the file holds there, through 3 KiB blocks. */
   @Test
-  public void randomReadsReturnTheSourceBytes() throws IOException {
+  void randomReadsReturnTheSourceBytes() throws IOException {
     byte[] content = new byte[20_000];
     new Random(7).nextBytes(content);
     Path file = Files.write(dir.resolve("random.bin"), content);
@@ -81,7 +81,7 @@ public class TestBlockBufferedBlob {
 
   /** Sequential 4 KiB reads of a file go to storage as one read per block, never one per 4 KiB. */
   @Test
-  public void sequentialReadsReachStorageOncePerBlock() throws IOException {
+  void sequentialReadsReachStorageOncePerBlock() throws IOException {
     byte[] content = new byte[100_000];
     new Random(3).nextBytes(content);
     Path file = Files.write(dir.resolve("seq.bin"), content);
@@ -105,7 +105,7 @@ public class TestBlockBufferedBlob {
    * succeed although the block they lie in crosses it, and the first read past it throws and is counted.
    */
   @Test
-  public void failureHappensAtTheReadThatWouldFailUnbuffered() throws IOException {
+  void failureHappensAtTheReadThatWouldFailUnbuffered() throws IOException {
     byte[] content = new byte[50_000];
     new Random(5).nextBytes(content);
     Path file = Files.write(dir.resolve("fail.bin"), content);
@@ -127,7 +127,7 @@ public class TestBlockBufferedBlob {
 
   /** A stored file shorter than its length is the file's data: thrown as it is, never counted as a storage failure. */
   @Test
-  public void truncatedSourceIsNotAStorageFailure() throws IOException {
+  void truncatedSourceIsNotAStorageFailure() throws IOException {
     SeekableBlob truncated = new SeekableBlob() {
       private long pos;
 
@@ -153,6 +153,7 @@ public class TestBlockBufferedBlob {
 
       @Override
       public void close() {
+        // nothing to release: the blob holds no stream
       }
     };
     try (BlockBufferedBlob blob = new BlockBufferedBlob(truncated, 4096)) {
@@ -165,7 +166,7 @@ public class TestBlockBufferedBlob {
 
   /** A source that returns no bytes ends the fill (no spin); the read is handed to the source as it would be unbuffered. */
   @Test
-  public void sourceReturningNothingEndsTheFill() throws IOException {
+  void sourceReturningNothingEndsTheFill() throws IOException {
     int[] calls = {0};
     SeekableBlob empty = new FixedBlob(10_000) {
       @Override
@@ -182,7 +183,7 @@ public class TestBlockBufferedBlob {
 
   /** An interrupt under a fill is thrown at once and counted, never retried unbuffered. */
   @Test
-  public void interruptUnderAFillIsThrownNotRetried() throws IOException {
+  void interruptUnderAFillIsThrownNotRetried() throws IOException {
     int[] calls = {0};
     SeekableBlob interrupted = new FixedBlob(10_000) {
       @Override
@@ -224,12 +225,13 @@ public class TestBlockBufferedBlob {
 
     @Override
     public void close() {
+      // nothing to release: the blob holds no stream
     }
   }
 
   /** The frame source opens a clip once (one grabber over one view), and its frames are the clip's kept keyframes. */
   @Test
-  public void clipIsOpenedOnce() throws IOException {
+  void clipIsOpenedOnce() throws IOException {
     Path clip = VideoClips.generate(dir.resolve("clip.mp4"), 32, 10, 2, 320, 240, 10, 20);
     int[] opens = {0};
     List<CountingBlob> views = new ArrayList<>();

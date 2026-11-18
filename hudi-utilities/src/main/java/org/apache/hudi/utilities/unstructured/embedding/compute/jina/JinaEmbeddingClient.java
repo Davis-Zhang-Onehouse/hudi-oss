@@ -47,14 +47,15 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
-import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 /**
  * Text embeddings over Jina's HTTP endpoint, with bearer credentials from a file or named environment variable.
@@ -78,7 +79,7 @@ public class JinaEmbeddingClient implements EmbeddingClient {
   private final LongSupplier clock;
   private final ProviderRetryLoop.Sleeper sleeper;
   private final Random jitter;
-  private final Function<String, String> environment;
+  private final UnaryOperator<String> environment;
   private EmbeddingModelSpec spec;
   private JinaClientConfig config;
   private String key;
@@ -87,11 +88,11 @@ public class JinaEmbeddingClient implements EmbeddingClient {
 
   /** Production wiring: the system clock, real sleeps, the process environment. */
   public JinaEmbeddingClient() {
-    this(System::currentTimeMillis, Thread::sleep, new Random(), System::getenv);
+    this(System::currentTimeMillis, Thread::sleep, new SecureRandom(), System::getenv);
   }
 
   /** Test seam: the clock and sleeper of the retry loop and rate limiter, the backoff jitter, the environment. */
-  JinaEmbeddingClient(LongSupplier clock, ProviderRetryLoop.Sleeper sleeper, Random jitter, Function<String, String> environment) {
+  JinaEmbeddingClient(LongSupplier clock, ProviderRetryLoop.Sleeper sleeper, Random jitter, UnaryOperator<String> environment) {
     this.clock = clock;
     this.sleeper = sleeper;
     this.jitter = jitter;
@@ -225,15 +226,22 @@ public class JinaEmbeddingClient implements EmbeddingClient {
       return Answer.failed(ProviderResponseKind.CONFIG, "the request cannot be sent: " + redact(e.getMessage()), -1);
     }
     int status = response.statusCode();
-    if (status / 100 == 2) {
-      try {
-        return Answer.ok(parse(call, response.body(), expected));
-      } catch (NonDenseAnswerException e) {
-        return Answer.failed(ProviderResponseKind.CONFIG, e.getMessage(), -1);
-      } catch (IOException e) {
-        return Answer.failed(ProviderResponseKind.RETRYABLE, "malformed answer: " + e.getMessage(), -1);
-      }
+    return status / 100 == 2 ? okAnswer(call, response.body(), expected) : errorAnswer(response, status);
+  }
+
+  /** The answer of a 2xx: the parsed vectors; a non-dense answer is a configuration failure, a malformed one retryable. */
+  private Answer<float[][]> okAnswer(Call call, byte[] body, int expected) {
+    try {
+      return Answer.ok(parse(call, body, expected));
+    } catch (NonDenseAnswerException e) {
+      return Answer.failed(ProviderResponseKind.CONFIG, e.getMessage(), -1);
+    } catch (IOException e) {
+      return Answer.failed(ProviderResponseKind.RETRYABLE, "malformed answer: " + e.getMessage(), -1);
     }
+  }
+
+  /** The answer of an error status: classified by status and code, the provider's message kept unless it may echo the key. */
+  private Answer<float[][]> errorAnswer(HttpResponse<byte[]> response, int status) {
     String detail = null;
     String code = null;
     try {
@@ -304,30 +312,12 @@ public class JinaEmbeddingClient implements EmbeddingClient {
     for (JsonNode entry : data) {
       JsonNode index = entry.get("index");
       JsonNode embedding = entry.get("embedding");
-      // the documented non-dense answers (MultiEmbeddingData's "embeddings", a sparse token map, an embedding object or array of
-      // arrays): the model, not this answer, is wrong for a vector column
-      boolean multi = entry.has("embeddings") || (embedding != null && embedding.isArray() && embedding.size() > 0
-          && embedding.get(0).isArray());
-      boolean sparse = (embedding != null && embedding.isObject()) || (entry.isObject() && embedding == null && index == null);
-      if (multi || sparse) {
-        throw new NonDenseAnswerException("Jina answered a " + (multi ? "multi-vector" : "sparse")
-            + " embedding; the model must return one dense vector per input");
-      }
+      rejectNonDense(entry, index, embedding);
       if (index == null || !index.isInt() || index.asInt() < 0 || index.asInt() >= expected || vectors[index.asInt()] != null
           || embedding == null || !embedding.isArray() || embedding.size() == 0) {
         throw new IOException("data entry with index " + index + " for " + expected + " inputs, or without a float embedding");
       }
-      float[] vector = new float[embedding.size()];
-      for (int j = 0; j < vector.length; j++) {
-        if (!embedding.get(j).isNumber()) {
-          throw new IOException("an embedding holds a non-number");
-        }
-        vector[j] = (float) embedding.get(j).asDouble();
-        if (!Float.isFinite(vector[j])) {
-          throw new IOException("an embedding holds a non-finite float");
-        }
-      }
-      vectors[index.asInt()] = vector;
+      vectors[index.asInt()] = floatVector(embedding);
     }
     for (int i = 0; i < expected; i++) {
       if (vectors[i] == null) {
@@ -339,6 +329,34 @@ public class JinaEmbeddingClient implements EmbeddingClient {
       call.tokens = Math.max(call.tokens, 0) + tokens.asLong();
     }
     return vectors;
+  }
+
+  /** Throws {@link NonDenseAnswerException} when a data entry is a multi-vector or sparse answer. */
+  private static void rejectNonDense(JsonNode entry, JsonNode index, JsonNode embedding) {
+    // the documented non-dense answers (MultiEmbeddingData's "embeddings", a sparse token map, an embedding object or array of
+    // arrays): the model, not this answer, is wrong for a vector column
+    boolean multi = entry.has("embeddings") || (embedding != null && embedding.isArray() && embedding.size() > 0
+        && embedding.get(0).isArray());
+    boolean sparse = (embedding != null && embedding.isObject()) || (entry.isObject() && embedding == null && index == null);
+    if (multi || sparse) {
+      throw new NonDenseAnswerException("Jina answered a " + (multi ? "multi-vector" : "sparse")
+          + " embedding; the model must return one dense vector per input");
+    }
+  }
+
+  /** Converts a non-empty JSON array of numbers to finite floats. */
+  private static float[] floatVector(JsonNode embedding) throws IOException {
+    float[] vector = new float[embedding.size()];
+    for (int j = 0; j < vector.length; j++) {
+      if (!embedding.get(j).isNumber()) {
+        throw new IOException("an embedding holds a non-number");
+      }
+      vector[j] = (float) embedding.get(j).asDouble();
+      if (!Float.isFinite(vector[j])) {
+        throw new IOException("an embedding holds a non-finite float");
+      }
+    }
+    return vector;
   }
 
   private EmbeddingClientConfigException configFailure(String error) {
@@ -355,7 +373,7 @@ public class JinaEmbeddingClient implements EmbeddingClient {
   }
 
   /** The API key: one printable token from the configured file or environment variable; the value never leaks. */
-  private static String readKey(JinaClientConfig config, Function<String, String> environment) {
+  private static String readKey(JinaClientConfig config, UnaryOperator<String> environment) {
     return SingleTokenReader.read(config.credentialFile(), config.credentialEnv(), environment, "Jina API key",
         config.describeCredential(), EmbeddingClientConfigException::new);
   }

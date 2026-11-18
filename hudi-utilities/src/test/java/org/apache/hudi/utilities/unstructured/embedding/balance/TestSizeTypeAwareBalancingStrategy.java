@@ -60,7 +60,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * exactly the rows assigned to k.
  */
 @Tag("functional")
-public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTestHarness {
+class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTestHarness {
 
   private static final long MIB = 1024L * 1024L;
   private static final long GIB = 1024L * MIB;
@@ -146,7 +146,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void missingAssignmentFailsInsteadOfDroppingASourceVersion() {
+  void missingAssignmentFailsInsteadOfDroppingASourceVersion() {
     Dataset<Row> input = batch(Arrays.asList(new File("keep", "pdf", 1L), new File("missing", "pdf", 2L)));
     TypedProperties props = props(1);
     try (BalancedRows balanced = new SizeTypeAwareBalancingStrategy().balance(input, props)) {
@@ -168,7 +168,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void groupColumnMatchesGroupOf() {
+  void groupColumnMatchesGroupOf() {
     List<File> files = Arrays.asList(new File("a", "pdf", 1L), new File("b", "PNG", 1L), new File("c", "mov", 1L),
         new File("d", null, 1L), new File("e", "docx", 1L));
     BalanceGroups groups = BalanceGroups.from(mediaProps());
@@ -181,7 +181,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void groupsNeverShareAPartition() {
+  void groupsNeverShareAPartition() {
     List<File> files = new ArrayList<>();
     files.addAll(files("pdf", "pdf", 12, 3 * MIB));
     files.addAll(files("img", "JPG", 9, 2 * MIB));
@@ -208,7 +208,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void soloFileIsAlone() {
+  void soloFileIsAlone() {
     List<File> files = new ArrayList<>(files("vid", "mp4", 5, 100 * MIB));
     files.add(new File("big", "mov", 3 * GIB));
     BalancingAssignment assignment = new SizeTypeAwareBalancingStrategy().assign(batch(files),
@@ -222,7 +222,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void budgetRespectedWithinOneFile() {
+  void budgetRespectedWithinOneFile() {
     Random random = new Random(42);
     List<File> files = new ArrayList<>();
     for (int i = 0; i < 100; i++) {
@@ -244,7 +244,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void snakeEvensTotals() {
+  void snakeEvensTotals() {
     List<File> files = new ArrayList<>();
     for (int i = 1; i <= 40; i++) {
       files.add(new File(String.format("pdf-%02d", i), "pdf", i * MIB));
@@ -254,13 +254,13 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
     assertEquals(4, assignment.getNumPartitions());
     Map<Integer, Long> totals = totals(files, collect(assignment, files));
     assertEquals(4, totals.size());
-    // sizes 40..1 dealt 0,1,2,3 then 3,2,1,0: every pair of rounds adds 73 MiB to each task, so the totals are equal (205 MiB);
+    // sizes 40..1 dealt 0,1,2,3 then 3,2,1,0: every pair of rounds adds 73 MiB to each task, so the totals are equal (205 MiB), where
     // a plain round-robin would leave a 30 MiB spread
     assertEquals(Collections.singleton(205 * MIB), new HashSet<>(totals.values()), "task totals " + totals);
   }
 
   @Test
-  public void soloFileOfALaterBlockIsAlone() {
+  void soloFileOfALaterBlockIsAlone() {
     // block order: image [0, 4), pdf after it; the pdf ranks start after the image files in the global sort
     List<File> files = new ArrayList<>(files("img", "png", 10, MIB));
     files.addAll(files("pdf", "pdf", 6, MIB));
@@ -277,7 +277,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void assignmentKeepsTheBatchKeyColumnTypes() {
+  void assignmentKeepsTheBatchKeyColumnTypes() {
     StructType intSized = DataTypes.createStructType(new StructField[] {
         DataTypes.createStructField(BlobColumns.SOURCE_PATH_SHA, DataTypes.StringType, false),
         DataTypes.createStructField(BlobColumns.SOURCE_MODIFICATION_TIME, DataTypes.LongType, false),
@@ -292,7 +292,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void smallBatchSpreads() {
+  void smallBatchSpreads() {
     List<File> files = files("pdf", "pdf", 50, 2 * MIB);
     BalancingAssignment assignment = new SizeTypeAwareBalancingStrategy().assign(batch(files), props(8));
     assertEquals(8, assignment.getNumPartitions());
@@ -300,7 +300,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void severalGroupsEachTakeTheirFloor() {
+  void severalGroupsEachTakeTheirFloor() {
     List<File> files = new ArrayList<>(files("pdf", "pdf", 1000, 100 * 1024L));
     files.add(new File("video", "mp4", 2 * GIB));
     BalancingAssignment assignment = new SizeTypeAwareBalancingStrategy().assign(batch(files), props(8));
@@ -313,7 +313,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void fewerFilesThanParallelismCreatesNoEmptyPartition() {
+  void fewerFilesThanParallelismCreatesNoEmptyPartition() {
     List<File> files = files("vid", "mp4", 3, 10 * MIB);
     BalancingAssignment assignment = new SizeTypeAwareBalancingStrategy().assign(batch(files), props(40));
     assertEquals(3, assignment.getNumPartitions());
@@ -321,7 +321,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void parallelismFromTheSparkContextWhenUnset() {
+  void parallelismFromTheSparkContextWhenUnset() {
     // the harness master is local[n, retries]: with num.partitions unset P is n, and 50 small PDFs take n tasks
     String master = spark().sparkContext().master();
     Matcher local = Pattern.compile("local\\[(\\d+)(,\\s*\\d+)?]").matcher(master);
@@ -335,7 +335,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void deterministicWithTies() {
+  void deterministicWithTies() {
     List<File> files = files("pdf", "pdf", 30, 5 * MIB);
     Collections.shuffle(files, new Random(7));
     Map<String, Integer> first = assign(files, props(4));
@@ -344,14 +344,14 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void missingVersionKeyCannotProduceAnAssignment() {
+  void missingVersionKeyCannotProduceAnAssignment() {
     Dataset<Row> unsized = batch(files("pdf", "pdf", 6, MIB)).drop(BlobColumns.SOURCE_FILE_SIZE);
     Exception failure = assertThrows(Exception.class, () -> new SizeTypeAwareBalancingStrategy().assign(unsized, props(4)));
     assertTrue(failure.getMessage().contains(BlobColumns.SOURCE_FILE_SIZE), failure.getMessage());
   }
 
   @Test
-  public void nullAndNegativeSizes() {
+  void nullAndNegativeSizes() {
     List<File> files = Arrays.asList(new File("a", "pdf", null), new File("b", "pdf", -1L), new File("c", "pdf", 3 * MIB),
         new File("d", "png", null));
     BalancingAssignment assignment = new SizeTypeAwareBalancingStrategy().assign(batch(files),
@@ -364,14 +364,14 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void emptyBatch() {
+  void emptyBatch() {
     BalancingAssignment assignment = new SizeTypeAwareBalancingStrategy().assign(batch(Collections.emptyList()), props(4));
     assertEquals(1, assignment.getNumPartitions());
     assertEquals(0, assignment.getAssignment().count());
   }
 
   @Test
-  public void throughRowBalancer() {
+  void throughRowBalancer() {
     List<File> files = new ArrayList<>();
     files.addAll(files("pdf", "pdf", 10, 3 * MIB));
     files.addAll(files("img", "png", 4, MIB));
@@ -396,7 +396,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
-  public void samePathVersionsAreAssignedOnceAndDeterministically() {
+  void samePathVersionsAreAssignedOnceAndDeterministically() {
     List<Row> versions = Arrays.asList(RowFactory.create("same", 100L, "pdf", 5 * MIB),
         RowFactory.create("same", 200L, "pdf", 5 * MIB), RowFactory.create("same", 100L, "pdf", 7 * MIB));
     Dataset<Row> batch = spark().createDataFrame(versions, SCHEMA);

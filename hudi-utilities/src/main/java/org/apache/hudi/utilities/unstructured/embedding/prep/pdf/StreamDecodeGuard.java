@@ -48,6 +48,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -57,6 +58,7 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -133,6 +135,7 @@ import java.util.function.Consumer;
 final class StreamDecodeGuard {
 
   private static final Logger LOG = LoggerFactory.getLogger(StreamDecodeGuard.class);
+  private static final String STREAM = "stream ";
 
   static final int MAX_STREAMS_PER_PAGE = 4096;
   static final int MAX_CHAR_PROCS_PER_FONT = 1024;
@@ -266,6 +269,8 @@ final class StreamDecodeGuard {
     skippedContent = 0;
     skippedContentKeys = new HashSet<>();
     skippedContentNames = new ArrayList<>();
+    // by design: the try holds the page's scanner; try-with-resources would run its close() on the failure path too, a behaviour
+    // change; the finally only drops references
     try {
       COSDictionary pageDict = page.getCOSObject();
       COSBase contents = pageDict.getItem(COSName.CONTENTS);
@@ -363,6 +368,13 @@ final class StreamDecodeGuard {
    * Checks the entries of {@code resources} that {@code drawn} names: forms (recursively), fonts, and ExtGState fonts.
    */
   private void walkResources(COSDictionary resources, int level, DrawnResources drawn) throws IOException {
+    walkDrawnForms(resources, level, drawn);
+    checkDrawnFonts(resources, drawn);
+    checkDrawnExtGStateFonts(resources, drawn);
+  }
+
+  /** Visits the drawn form XObjects of {@code resources}, while the form nesting is under its limit. */
+  private void walkDrawnForms(COSDictionary resources, int level, DrawnResources drawn) throws IOException {
     COSDictionary xobjects = dictionary(resources.getItem(COSName.XOBJECT));
     if (xobjects != null && level < MAX_FORM_LEVEL) {
       for (COSName name : drawnEntries(xobjects, DrawnResources.Category.XOBJECT, drawn)) {
@@ -373,12 +385,20 @@ final class StreamDecodeGuard {
         }
       }
     }
+  }
+
+  /** Checks the drawn fonts of {@code resources}. */
+  private void checkDrawnFonts(COSDictionary resources, DrawnResources drawn) throws IOException {
     COSDictionary fonts = dictionary(resources.getItem(COSName.FONT));
     if (fonts != null) {
       for (COSName name : drawnEntries(fonts, DrawnResources.Category.FONT, drawn)) {
         checkFont(fonts.getItem(name));
       }
     }
+  }
+
+  /** Checks the font named by each drawn ExtGState of {@code resources}. */
+  private void checkDrawnExtGStateFonts(COSDictionary resources, DrawnResources drawn) throws IOException {
     COSDictionary states = dictionary(resources.getItem(COSName.EXT_G_STATE));
     if (states != null) {
       for (COSName name : drawnEntries(states, DrawnResources.Category.EXT_G_STATE, drawn)) {
@@ -455,7 +475,7 @@ final class StreamDecodeGuard {
     if (font == null) {
       return;
     }
-    COSObjectKey key = fontItem instanceof COSObject ? ((COSObject) fontItem).getKey() : null;
+    COSObjectKey key = fontItem instanceof COSObject ? fontItem.getKey() : null;
     if (cacheable && key != null && !chargedFontObjects.add(key)) {
       return;
     }
@@ -469,33 +489,43 @@ final class StreamDecodeGuard {
       checkFontFiles(dictionary(font.getItem(COSName.FONT_DESC)));
       checkOptionalStream(font.getItem(COSName.TO_UNICODE), Kind.CMAP);
       checkOptionalStream(font.getItem(COSName.ENCODING), Kind.CMAP);
-      COSBase descendants = resolve(font.getItem(COSName.DESCENDANT_FONTS));
-      if (descendants instanceof COSArray) {
-        COSArray array = (COSArray) descendants;
-        for (int i = 0; i < array.size(); i++) {
-          COSDictionary descendant = dictionary(array.get(i));
-          if (descendant != null) {
-            checkFontFiles(dictionary(descendant.getItem(COSName.FONT_DESC)));
-            checkOptionalStream(descendant.getItem(COSName.CID_TO_GID_MAP), Kind.OPAQUE_COPIED);
-          }
-        }
-      }
-      COSDictionary charProcs = dictionary(font.getItem(COSName.CHAR_PROCS));
-      if (charProcs != null) {
-        if (charProcs.size() > MAX_CHAR_PROCS_PER_FONT) {
-          throw new PageFailure(PdfFailureCode.PAGE_ERROR, "Type3 font with " + charProcs.size() + " CharProcs, more than "
-              + MAX_CHAR_PROCS_PER_FONT);
-        }
-        for (COSName name : charProcs.keySet()) {
-          COSBase item = charProcs.getItem(name);
-          COSBase proc = resolve(item);
-          if (proc instanceof COSStream) {
-            checkStream(item, (COSStream) proc, true, true, Kind.CONTENT);
-          }
-        }
-      }
+      checkDescendantFonts(resolve(font.getItem(COSName.DESCENDANT_FONTS)));
+      checkCharProcs(dictionary(font.getItem(COSName.CHAR_PROCS)));
     } finally {
       chargedFontStreams = null;
+    }
+  }
+
+  /** Checks the font files and CIDToGIDMap of each descendant font of a composite font. */
+  private void checkDescendantFonts(COSBase descendants) throws IOException {
+    if (!(descendants instanceof COSArray)) {
+      return;
+    }
+    COSArray array = (COSArray) descendants;
+    for (int i = 0; i < array.size(); i++) {
+      COSDictionary descendant = dictionary(array.get(i));
+      if (descendant != null) {
+        checkFontFiles(dictionary(descendant.getItem(COSName.FONT_DESC)));
+        checkOptionalStream(descendant.getItem(COSName.CID_TO_GID_MAP), Kind.OPAQUE_COPIED);
+      }
+    }
+  }
+
+  /** Checks a Type3 font's CharProcs against the per-font limit, then each CharProc stream. */
+  private void checkCharProcs(COSDictionary charProcs) throws IOException {
+    if (charProcs == null) {
+      return;
+    }
+    if (charProcs.size() > MAX_CHAR_PROCS_PER_FONT) {
+      throw new PageFailure(PdfFailureCode.PAGE_ERROR, "Type3 font with " + charProcs.size() + " CharProcs, more than "
+          + MAX_CHAR_PROCS_PER_FONT);
+    }
+    for (COSName name : charProcs.keySet()) {
+      COSBase item = charProcs.getItem(name);
+      COSBase proc = resolve(item);
+      if (proc instanceof COSStream) {
+        checkStream(item, (COSStream) proc, true, true, Kind.CONTENT);
+      }
     }
   }
 
@@ -521,9 +551,8 @@ final class StreamDecodeGuard {
    */
   private DrawnResources checkStream(COSBase item, COSStream stream, boolean charProc, boolean fontSide, Kind kind)
       throws IOException {
-    COSObjectKey key = item instanceof COSObject ? ((COSObject) item).getKey() : stream.getKey();
+    COSObjectKey key = item instanceof COSObject ? item.getKey() : stream.getKey();
     boolean countFont = fontSide && kind != Kind.CONTENT;
-    boolean chargeDecoded = false;
     boolean pageContent = kind == Kind.CONTENT && pageOperands != null;
     boolean streamingContent = pageContent && stream == streamingFlateContent;
     Set<COSObjectKey> streamFailures = streamingContent ? streamingContentFailed : failed;
@@ -531,88 +560,157 @@ final class StreamDecodeGuard {
     if (pageContent) {
       pageContentStreams++;
     }
-    if (key != null) {
-      if (streamFailures.contains(key)) {
-        throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "stream " + key + " already failed the decode guard");
-      }
-      if (streamUndecodable.contains(key)) {
-        noteSkippedContent(kind, charProc, key, null);
-        if (pageContent) {
-          undecodableContentStreams++;
-        }
-        return null;                                   // skipped again, as on the page that first met it
-      }
-      EnumMap<Kind, Long> kinds = passed.get(key);
-      if (countFont && firstFontStreamVisit(stream)) {
-        if (kinds != null) {
-          fontBytes.add(kinds.values().iterator().next());
-        } else {
-          chargeDecoded = true;
-        }
-      }
-      if (!pageContent && kinds != null && kinds.containsKey(kind)) {
-        return kind == Kind.CONTENT ? contentParsed(key, stream, charProc) : null;
-      }
+    checkNotFailedBefore(key, streamFailures);
+    if (key != null && streamUndecodable.contains(key)) {
+      noteSkippedAgain(kind, charProc, key, pageContent);
+      return null;                                     // skipped again, as on the page that first met it
     }
-    if (key == null && countFont && firstFontStreamVisit(stream)) {
-      chargeDecoded = true;
+    EnumMap<Kind, Long> kinds = key != null ? passed.get(key) : null;
+    boolean chargeDecoded = chargeFontVisit(countFont, stream, kinds);
+    if (!pageContent && kinds != null && kinds.containsKey(kind)) {
+      return passedBefore(key, stream, charProc, kind);
     }
-    if (!charProc && ++visited > MAX_STREAMS_PER_PAGE) {
-      throw new PageFailure(PdfFailureCode.PAGE_ERROR, "more than " + MAX_STREAMS_PER_PAGE + " streams to check on one page");
-    }
-    StreamStructureScanner.Scanner scanner = pageContent ? pageOperands : scanner(kind, key);
-    StreamStructureScanner.Operands beforeStream = pageContent ? pageOperands.copy() : null;
-    File spool = kind == Kind.TYPE1 ? ScratchFiles.createTempFile(tempDir.toPath(), "guard-type1-", ".bin") : null;
-    long length;
-    try {
-      if (spool == null) {
-        length = decodeCounting(stream, key, scanner, kind == Kind.CONTENT, chargeDecoded);
-      } else {
-        try (OutputStream out = new BufferedOutputStream(ScratchFiles.newOutputStream(spool.toPath()), BUFFER)) {
-          length = decodeCounting(stream, key, out, false, chargeDecoded);
-        }
-        Type1FontCheck.check(spool, stream.getInt(COSName.LENGTH1), stream.getInt(COSName.LENGTH2), "stream " + key);
-      }
-      if (pageContent && pageContentsArray) {
-        pageOperands.write('\n');                    // PDPage.getContentsForRandomAccess puts a newline after each stream
-      }
-    } catch (PageFailure e) {
-      if (key != null && e.code() == PdfFailureCode.DECODE_LIMIT && !(e instanceof FontBudgetRefusal)
-          && !(pageContent && e instanceof StreamStructureScanner.Refusal)) {
-        streamFailures.add(key);                       // a sequence-dependent refusal is not a property of the stream
-      }
-      throw e;
-    } catch (IOException e) {
-      RuntimeException round = PrepFailures.roundFailure(e);
-      if (round != null) {
-        throw round;                                   // a decoder wrapped a scratch disk failure: never the stream's
-      }
-      if (key != null) {
-        streamUndecodable.add(key);
-      }
-      if (pageContent) {
-        undecodableContentStreams++;
-        pageOperands = beforeStream;                   // PDFBox parses the page without any byte of this stream
-      }
-      noteSkippedContent(kind, charProc, key, e);
+    countVisitedStream(charProc);
+    OptionalLong length = decodeChecked(stream, key, kind, charProc, pageContent, chargeDecoded,
+        streamFailures, streamUndecodable);
+    if (!length.isPresent()) {
       return null;                                     // skipped, as PDFBox skips it
-    } finally {
-      delete(spool);
     }
-    if (pageContent && !filters(stream, key).isEmpty()) {
-      pageContentBytes += length;                      // after the catch: a sum refusal is not a property of the stream
-      if (pageContentBytes > maxDecodedBytes) {
-        throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "the filtered /Contents streams of the page decode to more than "
-            + maxDecodedBytes + " bytes together");
-      }
-    }
-    if (key != null && !pageContent) {
-      passed.computeIfAbsent(key, k -> new EnumMap<>(Kind.class)).put(kind, length);
-    }
+    chargePageContentBytes(pageContent, stream, key, length.getAsLong());
+    rememberPassed(key, pageContent, kind, length.getAsLong());
     if (kind != Kind.CONTENT || pageContent) {
       return null;
     }
     return contentParsed(key, stream, charProc);
+  }
+
+  /** Refuses a stream that already failed the decode guard in this document. */
+  private void checkNotFailedBefore(COSObjectKey key, Set<COSObjectKey> streamFailures) {
+    if (key != null && streamFailures.contains(key)) {
+      throw new PageFailure(PdfFailureCode.DECODE_LIMIT, STREAM + key + " already failed the decode guard");
+    }
+  }
+
+  /** Notes a stream already known to be undecodable as skipped on this page. */
+  private void noteSkippedAgain(Kind kind, boolean charProc, COSObjectKey key, boolean pageContent) {
+    noteSkippedContent(kind, charProc, key, null);
+    if (pageContent) {
+      undecodableContentStreams++;
+    }
+  }
+
+  /**
+   * Charges the font budget on a font stream's first visit on this page: its decoded size when it passed before.
+   *
+   * @return whether the decode must charge the font budget instead (a stream not decoded before)
+   */
+  private boolean chargeFontVisit(boolean countFont, COSStream stream, EnumMap<Kind, Long> kinds) {
+    if (!countFont || !firstFontStreamVisit(stream)) {
+      return false;
+    }
+    if (kinds == null) {
+      return true;
+    }
+    fontBytes.add(kinds.values().iterator().next());
+    return false;
+  }
+
+  /** The result for a stream that passed this check as {@code kind} before. */
+  private DrawnResources passedBefore(COSObjectKey key, COSStream stream, boolean charProc, Kind kind) {
+    return kind == Kind.CONTENT ? contentParsed(key, stream, charProc) : null;
+  }
+
+  /** Counts a stream against the per-page stream limit; CharProcs are not counted. */
+  private void countVisitedStream(boolean charProc) {
+    if (!charProc && ++visited > MAX_STREAMS_PER_PAGE) {
+      throw new PageFailure(PdfFailureCode.PAGE_ERROR, "more than " + MAX_STREAMS_PER_PAGE + " streams to check on one page");
+    }
+  }
+
+  /**
+   * Decodes the stream within the decode budget, scanning its structure.
+   *
+   * @return its decoded length; empty when it is skipped as undecodable
+   */
+  private OptionalLong decodeChecked(COSStream stream, COSObjectKey key, Kind kind, boolean charProc, boolean pageContent,
+      boolean chargeDecoded, Set<COSObjectKey> streamFailures, Set<COSObjectKey> streamUndecodable) throws IOException {
+    StreamStructureScanner.Scanner scanner = pageContent ? pageOperands : scanner(kind, key);
+    StreamStructureScanner.Operands beforeStream = pageContent ? pageOperands.copy() : null;
+    File spool = kind == Kind.TYPE1 ? ScratchFiles.createTempFile(tempDir.toPath(), "guard-type1-", ".bin") : null;
+    try {
+      long length = decodeInto(stream, key, kind, scanner, spool, chargeDecoded);
+      if (pageContent && pageContentsArray) {
+        pageOperands.write('\n');                    // PDPage.getContentsForRandomAccess puts a newline after each stream
+      }
+      return OptionalLong.of(length);
+    } catch (PageFailure e) {
+      rememberFailed(key, e, pageContent, streamFailures);
+      throw e;
+    } catch (IOException e) {
+      skipUndecodable(e, kind, charProc, key, pageContent, beforeStream, streamUndecodable);
+      return OptionalLong.empty();
+    } finally {
+      delete(spool);
+    }
+  }
+
+  /** Decodes into the scanner, or for a Type1 font file into the spool file, which is then checked. */
+  private long decodeInto(COSStream stream, COSObjectKey key, Kind kind, StreamStructureScanner.Scanner scanner,
+      File spool, boolean chargeDecoded) throws IOException {
+    if (spool == null) {
+      return decodeCounting(stream, key, scanner, kind == Kind.CONTENT, chargeDecoded);
+    }
+    long length;
+    try (OutputStream out = new BufferedOutputStream(ScratchFiles.newOutputStream(spool.toPath()), BUFFER)) {
+      length = decodeCounting(stream, key, out, false, chargeDecoded);
+    }
+    Type1FontCheck.check(spool, stream.getInt(COSName.LENGTH1), stream.getInt(COSName.LENGTH2), STREAM + key);
+    return length;
+  }
+
+  /** Remembers a decode-limit refusal that is a property of the stream itself as failed. */
+  private void rememberFailed(COSObjectKey key, PageFailure e, boolean pageContent, Set<COSObjectKey> streamFailures) {
+    if (key != null && e.code() == PdfFailureCode.DECODE_LIMIT && !(e instanceof FontBudgetRefusal)
+        && !(pageContent && e instanceof StreamStructureScanner.Refusal)) {
+      streamFailures.add(key);                         // a sequence-dependent refusal is not a property of the stream
+    }
+  }
+
+  /** Records a stream that cannot be decoded as skipped; a scratch disk failure fails the round instead. */
+  private void skipUndecodable(IOException e, Kind kind, boolean charProc, COSObjectKey key, boolean pageContent,
+      StreamStructureScanner.Operands beforeStream, Set<COSObjectKey> streamUndecodable) {
+    RuntimeException round = PrepFailures.roundFailure(e);
+    if (round != null) {
+      throw round;                                     // a decoder wrapped a scratch disk failure: never the stream's
+    }
+    if (key != null) {
+      streamUndecodable.add(key);
+    }
+    if (pageContent) {
+      undecodableContentStreams++;
+      pageOperands = beforeStream;                     // PDFBox parses the page without any byte of this stream
+    }
+    noteSkippedContent(kind, charProc, key, e);
+  }
+
+  /** Charges a filtered page /Contents stream against the page's decoded-bytes budget. */
+  private void chargePageContentBytes(boolean pageContent, COSStream stream, COSObjectKey key, long length)
+      throws IOException {
+    if (!pageContent || filters(stream, key).isEmpty()) {
+      return;
+    }
+    pageContentBytes += length;                        // after the catch: a sum refusal is not a property of the stream
+    if (pageContentBytes > maxDecodedBytes) {
+      throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "the filtered /Contents streams of the page decode to more than "
+          + maxDecodedBytes + " bytes together");
+    }
+  }
+
+  /** Remembers the decoded length of an indirect stream that passed as {@code kind}, outside the page /Contents. */
+  private void rememberPassed(COSObjectKey key, boolean pageContent, Kind kind, long length) {
+    if (key != null && !pageContent) {
+      passed.computeIfAbsent(key, k -> new EnumMap<>(Kind.class)).put(kind, length);
+    }
   }
 
   /**
@@ -637,7 +735,10 @@ final class StreamDecodeGuard {
   private DrawnResources contentParsed(COSObjectKey key, COSStream stream, boolean charProc) {
     if (key != null && parsedWithinBudgets.contains(key)) {
       DrawnResources cached = drawnByStream.get(key);
-      return charProc ? null : cached != null ? cached : DrawnResources.everything();
+      if (charProc) {
+        return null;
+      }
+      return cached != null ? cached : DrawnResources.everything();
     }
     DrawnResources drawn;
     try {
@@ -678,16 +779,10 @@ final class StreamDecodeGuard {
       return DrawnResources.collect(parser);
     } catch (PageFailure | PrepPlatformException e) {
       throw e;                                         // a budget refusal; the executor's scratch disk, never the page
-    } catch (IOException e) {
+    } catch (IOException | RuntimeException e) {
       RuntimeException round = PrepFailures.roundFailure(e);
       if (round != null) {
-        throw round;
-      }
-      return DrawnResources.everything();
-    } catch (RuntimeException e) {
-      RuntimeException round = PrepFailures.roundFailure(e);
-      if (round != null) {
-        throw round;                                   // an unchecked wrapper around a scratch-disk failure
+        throw round;                                   // a scratch-disk failure, or an unchecked wrapper around one
       }
       return DrawnResources.everything();
     }
@@ -740,7 +835,7 @@ final class StreamDecodeGuard {
       if (error.length() > MAX_LOGGED_ERROR_CHARS) {
         error = error.substring(0, MAX_LOGGED_ERROR_CHARS) + "...";
       }
-      skippedContentNames.add((key == null ? "a direct stream" : "stream " + key) + " (" + error + ")");
+      skippedContentNames.add((key == null ? "a direct stream" : STREAM + key) + " (" + error + ")");
     }
   }
 
@@ -756,7 +851,7 @@ final class StreamDecodeGuard {
   }
 
   private StreamStructureScanner.Scanner scanner(Kind kind, COSObjectKey key) {
-    String where = "stream " + key;
+    String where = STREAM + key;
     switch (kind) {
       case CONTENT:
         return new StreamStructureScanner.Operands(where, maxDecodedBytes);
@@ -786,21 +881,33 @@ final class StreamDecodeGuard {
     decodedStreams++;
     boolean streamingFlate = pageOperands != null && stream == streamingFlateContent;
     if (filters.isEmpty() || streamingFlate) {
-      // PDPage's single scalar-Flate parser streams inflation without Predictor; array contents use Filter.decode below.
-      try (InputStream raw = stream.createRawInputStream();
-           InputStream in = streamingFlate ? new FlateFilterDecoderStream(raw) : raw;
-           CountingSink out = new CountingSink(scanner, viewWhenUnfiltered && filters.isEmpty() ? Long.MAX_VALUE : maxDecodedBytes, key,
-               chargeFont ? fontBytes : null)) {
-        byte[] buffer = new byte[BUFFER];
-        for (int n = in.read(buffer); n >= 0; n = in.read(buffer)) {
-          out.write(buffer, 0, n);
-        }
-        return out.count;
-      }
+      // Single scalar-Flate page content streams inflation without Predictor; arrays use Filter.decode below.
+      return copyRaw(stream, key, scanner, viewWhenUnfiltered && filters.isEmpty() ? Long.MAX_VALUE : maxDecodedBytes,
+          chargeFont, streamingFlate);
     }
     for (int i = 0; i < filters.size(); i++) {
       refuseHugePredictorRow(stream, names(stream).get(i), i, key);
     }
+    return decodeChain(stream, key, scanner, filters, chargeFont);
+  }
+
+  /** Copies raw or scalar-Flate-streamed bytes to {@code scanner} within {@code limit}; returns the count. */
+  private long copyRaw(COSStream stream, COSObjectKey key, OutputStream scanner, long limit, boolean chargeFont, boolean streamingFlate)
+      throws IOException {
+    try (InputStream raw = stream.createRawInputStream();
+         InputStream in = streamingFlate ? new FlateFilterDecoderStream(raw) : raw;
+         CountingSink out = new CountingSink(scanner, limit, key, chargeFont ? fontBytes : null)) {
+      byte[] buffer = new byte[BUFFER];
+      for (int n = in.read(buffer); n >= 0; n = in.read(buffer)) {
+        out.write(buffer, 0, n);
+      }
+      return out.count;
+    }
+  }
+
+  /** Decodes {@code filters} in turn, each into a scratch file and the last into {@code scanner}; returns the last's count. */
+  private long decodeChain(COSStream stream, COSObjectKey key, OutputStream scanner, List<Filter> filters, boolean chargeFont)
+      throws IOException {
     File previous = null;
     File next = null;
     long finalLength = 0;
@@ -934,8 +1041,15 @@ final class StreamDecodeGuard {
   }
 
   private static void delete(File file) {
-    if (file != null && !file.delete() && file.exists()) {
-      file.deleteOnExit();
+    if (file == null) {
+      return;
+    }
+    try {
+      Files.deleteIfExists(file.toPath());
+    } catch (IOException e) {
+      if (file.exists()) {
+        file.deleteOnExit();
+      }
     }
   }
 
@@ -996,7 +1110,7 @@ final class StreamDecodeGuard {
 
     private void add(long n) {
       if (n > cap - count) {
-        throw new PageFailure(PdfFailureCode.DECODE_LIMIT, "stream " + key + " decodes to more than " + cap + " bytes");
+        throw new PageFailure(PdfFailureCode.DECODE_LIMIT, STREAM + key + " decodes to more than " + cap + " bytes");
       }
       if (fontBytes != null) {
         fontBytes.add(n);

@@ -54,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * previous round's checkpoint (next segment, end of its last segment, next ordinal): the source's resume contract, which data
  * prep (reading a video whole) does not use but a caller that splits a video may.
  */
-public class TestAudioTranscriptFlow {
+class TestAudioTranscriptFlow {
 
   /** One speech row as data prep writes it. */
   private static final class Row {
@@ -109,6 +109,7 @@ public class TestAudioTranscriptFlow {
 
     @Override
     public void validate(TypedProperties props) {
+      // this test transcriber reads no settings, so there is nothing to validate
     }
 
     @Override
@@ -201,6 +202,7 @@ public class TestAudioTranscriptFlow {
     return new ClosableIterator<T>() {
       @Override
       public void close() {
+        // an iterator over an in-memory list holds no resource to release
       }
 
       @Override
@@ -273,7 +275,7 @@ public class TestAudioTranscriptFlow {
   }
 
   @Test
-  public void speechClipBecomesTranscriptRowsAcrossResumedRounds() throws IOException, URISyntaxException {
+  void speechClipBecomesTranscriptRowsAcrossResumedRounds() throws IOException, URISyntaxException {
     Path clip = Paths.get(Objects.requireNonNull(getClass().getResource("/video/h264-aac-speech-12s.mp4")).toURI());
     AudioInput video = AudioClips.input("fid-speech", clip, VideoClips.supplier(clip));
     TypedProperties props = new TypedProperties();

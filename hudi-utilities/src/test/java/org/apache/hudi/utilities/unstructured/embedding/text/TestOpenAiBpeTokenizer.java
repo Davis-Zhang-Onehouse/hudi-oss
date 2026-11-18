@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The OpenAI BPE tokenizer against the counts measured with jtokkit 1.1.0 and tiktoken on the same {@code sample.txt}. */
-public class TestOpenAiBpeTokenizer {
+class TestOpenAiBpeTokenizer {
 
   private static final String SAMPLE = "/unstructured/tokenizer/sample.txt";
 
@@ -41,7 +41,7 @@ public class TestOpenAiBpeTokenizer {
   }
 
   @Test
-  public void testCountsMatchTiktoken() throws IOException {
+  void testCountsMatchTiktoken() throws IOException {
     String sample = sample();
     assertEquals(691, sample.length());
     // tiktoken counts the same sample as 154 (cl100k_base) and 152 (o200k_base)
@@ -50,11 +50,11 @@ public class TestOpenAiBpeTokenizer {
   }
 
   @Test
-  public void testPrefixEndIsTheInclusiveIndexPlusOne() throws IOException {
+  void testPrefixEndIsTheInclusiveIndexPlusOne() throws IOException {
     String sample = sample();
     OpenAiBpeTokenizer tokenizer = new OpenAiBpeTokenizer();
-    // measured: encodeOrdinary(maxTokens=32) lastProcessedCharacterIndex=181 (INCLUSIVE);
-    // substring(0, 181) counts 34 tokens, substring(0, 182) counts 32
+    // measured: encodeOrdinary with at most 32 tokens reports lastProcessedCharacterIndex 181, an inclusive index.
+    // The first 181 chars count 34 tokens, the first 182 count 32
     assertEquals(34, tokenizer.countTokens(sample.substring(0, 181)));
     int end = tokenizer.prefixEndWithin(sample, 32);
     assertEquals(182, end);
@@ -62,7 +62,7 @@ public class TestOpenAiBpeTokenizer {
   }
 
   @Test
-  public void testPrefixEndOfShortTextIsItsLength() {
+  void testPrefixEndOfShortTextIsItsLength() {
     OpenAiBpeTokenizer tokenizer = new OpenAiBpeTokenizer();
     assertEquals(11, tokenizer.prefixEndWithin("hello world", 32));
     assertEquals(0, tokenizer.prefixEndWithin("", 5));
@@ -70,18 +70,18 @@ public class TestOpenAiBpeTokenizer {
   }
 
   @Test
-  public void testPrefixEndNeverSplitsASurrogatePair() {
+  void testPrefixEndNeverSplitsASurrogatePair() {
     OpenAiBpeTokenizer tokenizer = new OpenAiBpeTokenizer();
     String emojis = "😀😁😂😃";
     for (int max = 1; max <= 8; max++) {
       int end = tokenizer.prefixEndWithin(emojis, max);
-      assertTrue(end % 2 == 0, "cut inside a surrogate pair at max=" + max + ": " + end);
+      assertEquals(0, end % 2, "cut inside a surrogate pair at max=" + max + ": " + end);
       assertTrue(tokenizer.countTokens(emojis.substring(0, end)) <= max);
     }
   }
 
   @Test
-  public void testLoneSurrogateIsNormalised() {
+  void testLoneSurrogateIsNormalised() {
     OpenAiBpeTokenizer tokenizer = new OpenAiBpeTokenizer();
     // measured: jtokkit counts "ab\uD83Dcd" as 5 tokens, tiktoken encode_ordinary as 3; the tokenizer replaces
     // the lone surrogate with U+FFFD first, which jtokkit counts as tiktoken does
@@ -93,13 +93,13 @@ public class TestOpenAiBpeTokenizer {
   }
 
   @Test
-  public void testSpecialTokenTextIsOrdinary() {
+  void testSpecialTokenTextIsOrdinary() {
     // jtokkit encode() throws on special-token text; the ordinary methods count it as text
     assertTrue(new OpenAiBpeTokenizer().countTokens("<|endoftext|>") > 1);
   }
 
   @Test
-  public void testIdAndUnit() {
+  void testIdAndUnit() {
     assertEquals("openai-bpe:cl100k_base", new OpenAiBpeTokenizer().id());
     assertEquals("openai-bpe:o200k_base", new OpenAiBpeTokenizer("o200k_base").id());
     assertEquals(TokenUnit.MODEL_TOKENS, new OpenAiBpeTokenizer().unit());
@@ -108,7 +108,7 @@ public class TestOpenAiBpeTokenizer {
   }
 
   @Test
-  public void testUnknownEncodingIsRejected() {
+  void testUnknownEncodingIsRejected() {
     IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> new OpenAiBpeTokenizer("nope"));
     assertTrue(e.getMessage().contains("nope"), e.getMessage());
     assertTrue(e.getMessage().contains("cl100k_base"), e.getMessage());

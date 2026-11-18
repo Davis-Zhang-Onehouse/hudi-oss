@@ -172,7 +172,7 @@ final class DecoderIntermediates {
       } else {
         TIFFField rowsPerStrip = directory.getTIFFField(BaselineTIFFTagSet.TAG_ROWS_PER_STRIP);
         long rows = rowsPerStrip == null ? header.getHeight() : Math.min(rowsPerStrip.getAsLong(0), header.getHeight());
-        pixels = (long) header.getWidth() * rows;
+        pixels = header.getWidth() * rows;
       }
       long decoded = Math.addExact(Math.multiplyExact(pixels, bitsPerPixel), 7) / 8;
       return Math.addExact(decoded, Math.multiplyExact(compressedCopies(directory), largestByteCount(directory, decoded)));
@@ -238,13 +238,13 @@ final class DecoderIntermediates {
     long compression = le32(header, BMP_COMPRESSION_OFFSET);
     if (compression == BMP_BI_RGB || compression == BMP_BI_BITFIELDS || compression == BMP_BI_ALPHABITFIELDS) {
       long bitsPerPixel = (header[BMP_BITS_PER_PIXEL_OFFSET] & 0xffL) | (header[BMP_BITS_PER_PIXEL_OFFSET + 1] & 0xffL) << 8;
-      return ((long) image.getWidth() * bitsPerPixel + 31) / 32 * 4;
+      return (image.getWidth() * bitsPerPixel + 31) / 32 * 4;
     }
     if (compression != BMP_BI_RLE8 && compression != BMP_BI_RLE4) {
       return sourceRow;
     }
     long imageSize = le32(header, BMP_IMAGE_SIZE_OFFSET);
-    long bitmap = imageSize != 0 ? imageSize : le32(header, BMP_FILE_SIZE_OFFSET) - le32(header, BMP_BITMAP_OFFSET_OFFSET);
+    long bitmap = imageSize == 0 ? le32(header, BMP_FILE_SIZE_OFFSET) - le32(header, BMP_BITMAP_OFFSET_OFFSET) : imageSize;
     return BMP_RLE_COPIES * Math.max(0, bitmap) + sourceRow;
   }
 
@@ -259,7 +259,7 @@ final class DecoderIntermediates {
       throw new EOFException("PNG shorter than its IHDR");
     }
     long bitDepth = ihdr[PNG_BIT_DEPTH_OFFSET] & 0xff;
-    long row = ((long) header.getWidth() * pngSamplesPerPixel(ihdr[PNG_COLOR_TYPE_OFFSET] & 0xff) * bitDepth + 7) / 8;
+    long row = (bitDepth * header.getWidth() * pngSamplesPerPixel(ihdr[PNG_COLOR_TYPE_OFFSET] & 0xff) + 7) / 8;
     return PNG_ROW_COPIES * row;
   }
 

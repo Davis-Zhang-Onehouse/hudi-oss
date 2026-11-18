@@ -21,6 +21,7 @@ package org.apache.hudi.utilities.unstructured.storage;
 import org.apache.hudi.exception.HoodieException;
 
 import java.io.Closeable;
+import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -55,7 +56,7 @@ public final class OutOfLineWritePool implements Closeable {
 
   private final Semaphore pendingBytes = new Semaphore(MAX_PENDING_BYTES);
   private final AtomicReference<Throwable> failure = new AtomicReference<>();
-  private final ExecutorService threads;
+  private final ExecutorService writeThreads;
   private int submitted;
   private final AtomicInteger finished = new AtomicInteger();
   private final Object done = new Object();
@@ -63,7 +64,7 @@ public final class OutOfLineWritePool implements Closeable {
   public OutOfLineWritePool() {
     int pool = POOLS.incrementAndGet();
     AtomicInteger thread = new AtomicInteger();
-    this.threads = new ThreadPoolExecutor(THREADS, THREADS, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
+    this.writeThreads = new ThreadPoolExecutor(THREADS, THREADS, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
       Thread t = new Thread(runnable, "hudi-out-of-line-write-" + pool + "-" + thread.incrementAndGet());
       t.setDaemon(true);
       return t;
@@ -73,7 +74,7 @@ public final class OutOfLineWritePool implements Closeable {
   /** One write: it throws what the task should fail with. */
   @FunctionalInterface
   public interface Write {
-    void run() throws Exception;
+    void run() throws IOException, InterruptedException;
   }
 
   /**
@@ -84,7 +85,7 @@ public final class OutOfLineWritePool implements Closeable {
    */
   public void submit(long bytes, Write write) {
     rethrowFailure();
-    if (threads.isShutdown()) {
+    if (writeThreads.isShutdown()) {
       throw new HoodieException("The out-of-line write pool is closed");
     }
     int permits = (int) Math.min(MAX_PENDING_BYTES, Math.max(1L, bytes));
@@ -96,7 +97,7 @@ public final class OutOfLineWritePool implements Closeable {
     }
     submitted++;
     try {
-      threads.execute(new Pending(permits, write));
+      writeThreads.execute(new Pending(permits, write));
     } catch (RejectedExecutionException e) {
       submitted--;
       pendingBytes.release(permits);
@@ -118,6 +119,7 @@ public final class OutOfLineWritePool implements Closeable {
     public void run() {
       try {
         write.run();
+        // by design: any failure of a background write, an Error included, is kept: the first one, later ones suppressed on it
       } catch (Throwable t) {
         if (!failure.compareAndSet(null, t) && failure.get() != t) {
           failure.get().addSuppressed(t);
@@ -165,7 +167,7 @@ public final class OutOfLineWritePool implements Closeable {
    */
   @Override
   public void close() {
-    List<Runnable> dropped = threads.shutdownNow();
+    List<Runnable> dropped = writeThreads.shutdownNow();
     if (!dropped.isEmpty()) {
       // their files were never written: a barrier after this close fails rather than pass without them
       HoodieException notWritten = new HoodieException(dropped.size() + " out-of-line writes were dropped by close before they ran");
@@ -181,7 +183,8 @@ public final class OutOfLineWritePool implements Closeable {
     boolean terminated = false;
     while (!terminated) {
       try {
-        terminated = threads.awaitTermination(1, TimeUnit.MINUTES);
+        terminated = writeThreads.awaitTermination(1, TimeUnit.MINUTES);
+        // by design: every write thread must end before close returns; the interrupt is restored after the loop
       } catch (InterruptedException e) {
         interrupted = true;
       }

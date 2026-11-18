@@ -74,7 +74,7 @@ import static org.mockito.Mockito.when;
  * caller classified it. The shared writer's marker and target ordering is covered in TestOutOfLineWriter.
  */
 @ExtendWith(OutOfLineWriterTestExtension.class)
-public class TestPayloadWriter {
+class TestPayloadWriter {
 
   private static final String ROW = "source_path_sha=0123456789abcdef0123456789abcdef01234567 source_modification_time=1761868800000 "
       + "source_file_size=4096 modality=image chunk_id=3";
@@ -128,7 +128,7 @@ public class TestPayloadWriter {
   }
 
   @Test
-  public void writesOnceWithOneCreateAndNoRename() throws Exception {
+  void writesOnceWithOneCreateAndNoRename() throws Exception {
     byte[] payload = bytes(100, 1);
     String written = write(payload);
     assertEquals(lastPath, written, "the returned path is the marked one");
@@ -143,7 +143,7 @@ public class TestPayloadWriter {
    * returns the reference only (inline field null); at the threshold the row stays INLINE and nothing is written.
    */
   @Test
-  public void preparedInputsWithADestinationWritesThePayloadAndKeepsTheReferenceOnly() throws Exception {
+  void preparedInputsWithADestinationWritesThePayloadAndKeepsTheReferenceOnly() throws Exception {
     byte[] payload = bytes(100, 1);
     PreparedInputs inputs = inputs();
     Row prepared = inputs.prepare(ROW, PARTITION, ImageContentTypes.JPEG, () -> new ByteArrayInputStream(payload),
@@ -177,7 +177,7 @@ public class TestPayloadWriter {
 
   /** The target's stream fails part way: the partial file is removed, and the write fails with the row and the step. */
   @Test
-  public void failureDeletesPartialAndThrowsWithFields() throws Exception {
+  void failureDeletesPartialAndThrowsWithFields() throws Exception {
     doAnswer(invocation -> {
       OutputStream real = (OutputStream) invocation.callRealMethod();
       return new OutputStream() {
@@ -201,7 +201,8 @@ public class TestPayloadWriter {
       };
     }).when(storage).create(any(StoragePath.class), eq(false));
 
-    EmbeddingPayloadWriteException e = assertThrows(EmbeddingPayloadWriteException.class, () -> write(bytes(100, 1)));
+    byte[] content = bytes(100, 1);
+    EmbeddingPayloadWriteException e = assertThrows(EmbeddingPayloadWriteException.class, () -> write(content));
 
     assertEquals(ROW, e.getRow());
     assertEquals(PayloadWriter.STEP_WRITE, e.getStep());
@@ -213,25 +214,27 @@ public class TestPayloadWriter {
 
   /** A storage failure creating the payload file is an interruption naming the create step. */
   @Test
-  public void createFailureIsAnInterruption() throws IOException {
+  void createFailureIsAnInterruption() throws IOException {
     doAnswer(invocation -> {
       throw new IOException("503 Slow Down");
     }).when(storage).create(any(StoragePath.class), anyBoolean());
-    EmbeddingPayloadWriteException failure = assertThrows(EmbeddingPayloadWriteException.class, () -> write(bytes(64, 9)));
+    byte[] content = bytes(64, 9);
+    EmbeddingPayloadWriteException failure = assertThrows(EmbeddingPayloadWriteException.class, () -> write(content));
     assertEquals(PayloadWriter.STEP_CREATE, failure.getStep());
     assertTrue(failure.getMessage().contains("503 Slow Down"), failure.getMessage());
   }
 
   /** A FileNotFoundException of the TARGET's write (an S3A 404 on completion) is an interruption like any write failure. */
   @Test
-  public void targetWriteFileNotFoundIsAnInterruption() throws IOException {
+  void targetWriteFileNotFoundIsAnInterruption() throws IOException {
     doAnswer(invocation -> new OutputStream() {
       @Override
       public void write(int b) throws IOException {
         throw new FileNotFoundException("upload gone");
       }
     }).when(storage).create(any(StoragePath.class), anyBoolean());
-    EmbeddingPayloadWriteException failure = assertThrows(EmbeddingPayloadWriteException.class, () -> write(bytes(64, 4)));
+    byte[] content = bytes(64, 4);
+    EmbeddingPayloadWriteException failure = assertThrows(EmbeddingPayloadWriteException.class, () -> write(content));
     assertEquals(PayloadWriter.STEP_WRITE, failure.getStep());
     assertTrue(failure.getCause() instanceof FileNotFoundException, String.valueOf(failure.getCause()));
   }
@@ -241,10 +244,11 @@ public class TestPayloadWriter {
    * failure it reports as a HoodieIOException) propagates unchanged, never as a write failure, and leaves no file.
    */
   @Test
-  public void payloadStreamFailureKeepsTheCallersClassification() throws IOException {
+  void payloadStreamFailureKeepsTheCallersClassification() {
     IllegalArgumentException shortPayload = new IllegalArgumentException("payload shorter than declared");
+    PayloadWriter.Payload shortTarget = payload(64);
     IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-        () -> PayloadWriter.stream(writer, payload(64), () -> new FilterInputStream(new ByteArrayInputStream(bytes(64, 1))) {
+        () -> PayloadWriter.stream(writer, shortTarget, () -> new FilterInputStream(new ByteArrayInputStream(bytes(64, 1))) {
           @Override
           public int read(byte[] buffer, int offset, int len) {
             throw shortPayload;
@@ -253,8 +257,9 @@ public class TestPayloadWriter {
     assertSame(shortPayload, thrown);
     assertFalse(Files.exists(target()), "the partial payload file is removed");
 
+    PayloadWriter.Payload failingTarget = payload(64);
     HoodieIOException readFailure = assertThrows(HoodieIOException.class,
-        () -> PayloadWriter.stream(writer, payload(64), () -> new InputStream() {
+        () -> PayloadWriter.stream(writer, failingTarget, () -> new InputStream() {
           @Override
           public int read() throws IOException {
             throw new IOException("Connection reset");

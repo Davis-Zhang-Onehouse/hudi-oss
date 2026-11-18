@@ -72,19 +72,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Source activation and caller injector composition through the registered writer hook. */
 @Tag("functional")
-public class TestBlobParquetConfigInjector extends UtilitiesTestBase {
+class TestBlobParquetConfigInjector extends UtilitiesTestBase {
   /** A job's own row-group size, well under the file target, in the factory test. */
 
   @TempDir
   Path tempDir;
 
   @BeforeAll
-  public static void initClass() throws Exception {
+  static void initClass() throws Exception {
     UtilitiesTestBase.initTestServices();
   }
 
   @AfterAll
-  public static void cleanupClass() throws Exception {
+  static void cleanupClass() {
     UtilitiesTestBase.cleanUpUtilitiesTestServices();
   }
 
@@ -93,7 +93,7 @@ public class TestBlobParquetConfigInjector extends UtilitiesTestBase {
    * bounds a row on a Parquet without per-column statistics).
    */
   @Test
-  void sourceKeepsSmallFilePackingInPlannerConfig() throws Exception {
+  void sourceKeepsSmallFilePackingInPlannerConfig() {
     TypedProperties props = sourceProps();
     newSource(props);
     assertEquals(104857600, plannerConfig(props).getParquetSmallFileLimit());
@@ -133,7 +133,7 @@ public class TestBlobParquetConfigInjector extends UtilitiesTestBase {
   }
 
   @Test
-  void composesCallerFirstPreservesSmallerCapsAndRepeatedSources() throws Exception {
+  void composesCallerFirstPreservesSmallerCapsAndRepeatedSources() {
     TypedProperties props = sourceProps();
     // the job's own injector, which the blob injector runs first
     props.setProperty(BlobParquetConfigInjector.DELEGATE_CLASS, CallerInjector.class.getName());
@@ -162,7 +162,7 @@ public class TestBlobParquetConfigInjector extends UtilitiesTestBase {
    * blob writer keeps the job's page size; the per-record check still closes a page at about one inline value.
    */
   @Test
-  void callerPageSizeIsKept() throws Exception {
+  void callerPageSizeIsKept() {
     TypedProperties props = sourceProps();
     props.setProperty(HoodieStorageConfig.PARQUET_PAGE_SIZE.key(), "2097152");
     newSource(props);
@@ -303,7 +303,7 @@ public class TestBlobParquetConfigInjector extends UtilitiesTestBase {
     }
   }
 
-  private TypedProperties sourceProps() throws Exception {
+  private TypedProperties sourceProps() {
     TypedProperties props = new TypedProperties();
     props.setProperty(UnstructuredSourceConfig.MODE.key(), "blob");
     props.setProperty(UnstructuredSourceConfig.CLOUD.key(), "s3");

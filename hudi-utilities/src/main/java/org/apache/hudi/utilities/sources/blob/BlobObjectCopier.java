@@ -19,6 +19,7 @@
 package org.apache.hudi.utilities.sources.blob;
 
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.common.util.Option;
 import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.storage.HoodieStorage;
@@ -153,13 +154,11 @@ public final class BlobObjectCopier {
         return new BlobCopyFailure(sourcePathSha, sourcePath, fileSize, step, cause, BlobCopyFailure.Fault.PLATFORM);
       }
       if (sourceFs != null && ExceptionUtil.isCausedBy(cause, FileNotFoundException.class)) {
-        Boolean exists = sourceExists(sourceFs, source);
-        if (Boolean.FALSE.equals(exists)) {
-          return new BlobCopyFailure(sourcePathSha, sourcePath, fileSize, step, cause, BlobCopyFailure.Fault.CONTENT);
-        }
-        if (Boolean.TRUE.equals(exists)) {
-          // a source that is there but cannot be read (a local "Permission denied"): an access denial
-          return new BlobCopyFailure(sourcePathSha, sourcePath, fileSize, step, cause, BlobCopyFailure.Fault.PLATFORM);
+        Option<Boolean> exists = sourceExists(sourceFs, source);
+        if (exists.isPresent()) {
+          // absent: the record's content; there but cannot be read (a local "Permission denied"): an access denial
+          BlobCopyFailure.Fault fault = Boolean.TRUE.equals(exists.get()) ? BlobCopyFailure.Fault.PLATFORM : BlobCopyFailure.Fault.CONTENT;
+          return new BlobCopyFailure(sourcePathSha, sourcePath, fileSize, step, cause, fault);
         }
       }
       return new BlobCopyFailure(sourcePathSha, sourcePath, fileSize, step, cause, BlobCopyFailure.Fault.TRANSIENT);
@@ -208,15 +207,15 @@ public final class BlobObjectCopier {
   }
 
   /**
-   * Whether {@code fs} answers that {@code path} exists; null when it cannot be asked (no answer is no proof of absence). A
+   * Whether {@code fs} answers that {@code path} exists; empty when it cannot be asked (no answer is no proof of absence). A
    * FileNotFoundException of a source is its absence only when this answers false: it also reports a file that is there but
    * may not be read (a local "Permission denied").
    */
-  static Boolean sourceExists(FileSystem fs, Path path) {
+  static Option<Boolean> sourceExists(FileSystem fs, Path path) {
     try {
-      return fs.exists(path);
+      return Option.of(fs.exists(path));
     } catch (IOException | RuntimeException e) {
-      return null;
+      return Option.empty();
     }
   }
 
@@ -272,15 +271,8 @@ public final class BlobObjectCopier {
       if (isAccessDenial(cause)) {
         return BlobCopyFailure.Fault.PLATFORM;
       }
-      if (constructionFault == null && cause instanceof UnsupportedFileSystemException) {
-        constructionFault = StorageReferenceRules.isServedScheme(uri.getScheme(), conf) ? BlobCopyFailure.Fault.PLATFORM : BlobCopyFailure.Fault.CONTENT;
-      }
-      if (constructionFault == null && (cause instanceof ClassNotFoundException || cause instanceof NoClassDefFoundError)) {
-        // the scheme's configured implementation is not on the classpath (a connector jar absent): the platform's fault
-        constructionFault = BlobCopyFailure.Fault.PLATFORM;
-      }
-      if (constructionFault == null && StorageReferenceRules.isInvalidAuthorityFailure(uri, cause)) {
-        constructionFault = BlobCopyFailure.Fault.CONTENT;
+      if (constructionFault == null) {
+        constructionFault = constructionFaultOf(uri, cause, conf);
       }
     }
     // A nested access denial takes priority over a reference failure reported by an outer wrapper.
@@ -291,6 +283,21 @@ public final class BlobObjectCopier {
       return BlobCopyFailure.Fault.CONTENT;
     }
     return BlobCopyFailure.Fault.TRANSIENT;
+  }
+
+  /** The fault {@code cause} gives the construction of a reference to {@code uri}, or null when it tells nothing. */
+  private static BlobCopyFailure.Fault constructionFaultOf(URI uri, Throwable cause, Configuration conf) {
+    if (cause instanceof UnsupportedFileSystemException) {
+      return StorageReferenceRules.isServedScheme(uri.getScheme(), conf) ? BlobCopyFailure.Fault.PLATFORM : BlobCopyFailure.Fault.CONTENT;
+    }
+    if (cause instanceof ClassNotFoundException || cause instanceof NoClassDefFoundError) {
+      // the scheme's configured implementation is not on the classpath (a connector jar absent): the platform's fault
+      return BlobCopyFailure.Fault.PLATFORM;
+    }
+    if (StorageReferenceRules.isInvalidAuthorityFailure(uri, cause)) {
+      return BlobCopyFailure.Fault.CONTENT;
+    }
+    return null;
   }
 
 }

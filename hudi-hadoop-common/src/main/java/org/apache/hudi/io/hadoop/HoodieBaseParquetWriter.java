@@ -231,26 +231,27 @@ public abstract class HoodieBaseParquetWriter<R> implements Closeable {
       if (conf.getKey().startsWith(dictionaryPrefix)) {
         parquetWriterbuilder.withDictionaryEncoding(conf.getKey().substring(dictionaryPrefix.length()),
             Boolean.parseBoolean(conf.getValue()));
-        continue;
+      } else if (conf.getKey().startsWith(statisticsPrefix)) {
+        applyColumnStatistics(parquetWriterbuilder, conf, conf.getKey().substring(statisticsPrefix.length()));
       }
-      if (!conf.getKey().startsWith(statisticsPrefix)) {
-        continue;
+    }
+  }
+
+  /** Applies one {@code parquet.column.statistics.enabled#<column>} key; see {@link #handleColumnSettings}. */
+  private static void applyColumnStatistics(ParquetWriter.Builder parquetWriterbuilder, Map.Entry<String, String> conf, String column) {
+    boolean enabled = Boolean.parseBoolean(conf.getValue());
+    if (!COLUMN_STATISTICS_SWITCH.isPresent()) {
+      if (enabled) {
+        // what an older Parquet does anyway
+        return;
       }
-      String column = conf.getKey().substring(statisticsPrefix.length());
-      boolean enabled = Boolean.parseBoolean(conf.getValue());
-      if (!COLUMN_STATISTICS_SWITCH.isPresent()) {
-        if (enabled) {
-          // what an older Parquet does anyway
-          continue;
-        }
-        throw new HoodieNotSupportedException(conf.getKey() + "=false needs Parquet 1.14 or later, which has per-column "
-            + "statistics; this Parquet has none");
-      }
-      try {
-        COLUMN_STATISTICS_SWITCH.get().invoke(parquetWriterbuilder, column, enabled);
-      } catch (IllegalAccessException | InvocationTargetException e) {
-        throw new HoodieException("Cannot apply " + conf.getKey() + "=" + conf.getValue(), e);
-      }
+      throw new HoodieNotSupportedException(conf.getKey() + "=false needs Parquet 1.14 or later, which has per-column "
+          + "statistics; this Parquet has none");
+    }
+    try {
+      COLUMN_STATISTICS_SWITCH.get().invoke(parquetWriterbuilder, column, enabled);
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new HoodieException("Cannot apply " + conf.getKey() + "=" + conf.getValue(), e);
     }
   }
 

@@ -46,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link ImageHeaderReader}): every stream an {@link ImageSource} opens is closed, closing the seekable blob under it, and every
  * ImageIO reader or writer the code chooses is disposed, on success and on each failure.
  */
-public class TestImagePreparerHandleRelease {
+class TestImagePreparerHandleRelease {
 
   private static final ImagePreprocessingSpec SPEC = new ImagePreprocessingSpec(
       ImagePreprocessingSpec.DEFAULT_LONG_SIDE, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
@@ -57,7 +57,7 @@ public class TestImagePreparerHandleRelease {
   private final AtomicInteger closed = new AtomicInteger();
 
   @Test
-  public void preparedPngClosesBothStreams() throws IOException {
+  void preparedPngClosesBothStreams() throws IOException {
     PreparedImage prepared = new ImagePreparer(SPEC).prepare(source(ImageFixtures.image("png", 600, 300)));
     assertEquals(512, prepared.getWidth());
     assertEquals(2, opened.get(), "the plan and the decode each open the source");
@@ -65,7 +65,7 @@ public class TestImagePreparerHandleRelease {
   }
 
   @Test
-  public void preparedJpegClosesBothStreams() throws IOException {
+  void preparedJpegClosesBothStreams() throws IOException {
     ImagePreprocessingSpec jpeg = new ImagePreprocessingSpec(ImagePreprocessingSpec.DEFAULT_LONG_SIDE,
         ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, ImagePreprocessingSpec.DEFAULT_MAX_PIXELS,
         InProcessImageDecoder.class.getName());
@@ -75,7 +75,7 @@ public class TestImagePreparerHandleRelease {
   }
 
   @Test
-  public void refusalBeforeDecodeClosesTheStream() {
+  void refusalBeforeDecodeClosesTheStream() {
     ImagePreprocessingSpec tiny = new ImagePreprocessingSpec(ImagePreprocessingSpec.DEFAULT_LONG_SIDE,
         ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, 100, InProcessImageDecoder.class.getName());
     assertThrows(ImageRefusedException.class, () -> new ImagePreparer(tiny).prepare(source(ImageFixtures.image("png", 50, 30))));
@@ -84,25 +84,25 @@ public class TestImagePreparerHandleRelease {
   }
 
   @Test
-  public void unreadableHeaderClosesTheStream() {
+  void unreadableHeaderClosesTheStream() {
     assertThrows(ImageHeaderException.class, () -> new ImagePreparer(SPEC).prepare(source(ImageFixtures.garbage())));
     assertAllClosed("after an unreadable header");
   }
 
   @Test
-  public void webpWithoutADecoderClosesTheStream() {
+  void webpWithoutADecoderClosesTheStream() {
     assertThrows(ImageRefusedException.class, () -> new ImagePreparer(SPEC).prepare(source(ImageFixtures.webpHeader(40, 20))));
     assertAllClosed("after a WebP refusal");
   }
 
   @Test
-  public void corruptPixelDataClosesBothStreams() {
+  void corruptPixelDataClosesBothStreams() {
     assertThrows(IOException.class, () -> new ImagePreparer(SPEC).prepare(source(ImageFixtures.truncatedPng())));
     assertAllClosed("after corrupt pixel data");
   }
 
   @Test
-  public void storageFailureMidReadClosesTheStream() {
+  void storageFailureMidReadClosesTheStream() {
     byte[] png = ImageFixtures.image("png", 50, 30);
     ImageSource failing = () -> new SeekableBlobImageInputStream(new CountingBlob(png, 40));
     assertThrows(IOException.class, () -> new ImagePreparer(SPEC).prepare(failing));
@@ -110,7 +110,7 @@ public class TestImagePreparerHandleRelease {
   }
 
   @Test
-  public void openStoredInputClosesTheBlobItOpened() throws IOException {
+  void openStoredInputClosesTheBlobItOpened() throws IOException {
     byte[] png = ImageFixtures.image("png", 50, 30);
     new ImagePreparer(SPEC).prepare(() -> SeekableBlobImageInputStream.openStoredInput(() -> new CountingBlob(png, -1)));
     assertEquals(2, opened.get());
@@ -120,7 +120,7 @@ public class TestImagePreparerHandleRelease {
   // ------------------------------------------------------------------ chosen ImageIO reader / writer
 
   @Test
-  public void chosenReaderIsDisposedWhenALaterProviderFailsInRead() throws IOException {
+  void chosenReaderIsDisposedWhenALaterProviderFailsInRead() throws IOException {
     try (ImageProviderLeakSpies spies = ImageProviderLeakSpies.install();
          MemoryCacheImageInputStream in = new MemoryCacheImageInputStream(new ByteArrayInputStream(ImageProviderLeakSpies.spyContent()))) {
       ImageProviderLeakSpies.runEitherOutcome(() -> ImageHeaderReader.read(in));
@@ -129,7 +129,7 @@ public class TestImagePreparerHandleRelease {
   }
 
   @Test
-  public void chosenReaderIsDisposedWhenALaterProviderFailsInPlan() {
+  void chosenReaderIsDisposedWhenALaterProviderFailsInPlan() {
     try (ImageProviderLeakSpies spies = ImageProviderLeakSpies.install()) {
       ImageProviderLeakSpies.runEitherOutcome(() -> new ImagePreparer(SPEC).plan(source(ImageProviderLeakSpies.spyContent())));
       assertAllClosed("after the provider walk failed in plan");
@@ -138,7 +138,7 @@ public class TestImagePreparerHandleRelease {
   }
 
   @Test
-  public void chosenWriterIsDisposedWhenALaterProviderFails() {
+  void chosenWriterIsDisposedWhenALaterProviderFails() {
     try (ImageProviderLeakSpies spies = ImageProviderLeakSpies.install()) {
       ImageWriter[] returned = new ImageWriter[1];
       ImageProviderLeakSpies.runEitherOutcome(() -> returned[0] = ImageHeaderReader.firstJdkWriter(JdkNamedSpyWriterSpi.FORMAT));
@@ -155,7 +155,7 @@ public class TestImagePreparerHandleRelease {
 
   /** Control for the leak tests above: the spies are classified as JDK providers, so the walk chooses them. */
   @Test
-  public void spyProvidersAreChosenAsJdkProviders() throws IOException {
+  void spyProvidersAreChosenAsJdkProviders() throws IOException {
     try (ImageProviderLeakSpies spies = ImageProviderLeakSpies.installAlone();
          MemoryCacheImageInputStream in = new MemoryCacheImageInputStream(new ByteArrayInputStream(ImageProviderLeakSpies.spyContent()))) {
       ImageReader reader = ImageHeaderReader.firstReader(in);
@@ -181,7 +181,7 @@ public class TestImagePreparerHandleRelease {
   }
 
   @Test
-  public void chosenWriterIsReturnedAndOthersDisposedOnSuccess() {
+  void chosenWriterIsReturnedAndOthersDisposedOnSuccess() {
     // control for the writer walk: a foreign writer of the format ordered first is skipped and disposed, the JDK one comes back
     try (ImageProviderLeakSpies spies = ImageProviderLeakSpies.installBehindAForeignWriter()) {
       ImageWriter writer = ImageHeaderReader.firstJdkWriter(JdkNamedSpyWriterSpi.FORMAT);
@@ -201,7 +201,7 @@ public class TestImagePreparerHandleRelease {
   }
 
   @Test
-  public void firstJdkWriterReturnsTheJdkPngWriter() {
+  void firstJdkWriterReturnsTheJdkPngWriter() {
     ImageWriter writer = ImageHeaderReader.firstJdkWriter("png");
     try {
       assertNotNull(writer);

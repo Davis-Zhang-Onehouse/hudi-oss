@@ -54,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link BlobBytesSource#withReadahead with a read-ahead} sets it on every stream it opens; bytes read ahead are served as the
  * storage blob serves them.
  */
-public class TestBlobBytesSourceKnownLength {
+class TestBlobBytesSourceKnownLength {
 
   private static final StructType BLOB = (StructType) BlobType.dataType();
   private static final StructType REFERENCE = (StructType) BLOB.apply(HoodieSchema.Blob.EXTERNAL_REFERENCE).dataType();
@@ -63,14 +63,14 @@ public class TestBlobBytesSourceKnownLength {
   Path temp;
 
   @AfterEach
-  public void clear() {
+  void clear() {
     CountingObjectFileSystem.clear();
     SourceOpenHooks.clear();
   }
 
   /** The length-less open asks for the object's status (a HEAD on an object store); the known-length open does not. */
   @Test
-  public void knownLengthSendsNoStatusRequest() throws IOException {
+  void knownLengthSendsNoStatusRequest() throws IOException {
     byte[] file = sequence(70_000);
     String path = object("whole.bin", file);
     BlobBytesSource source = source();
@@ -96,7 +96,7 @@ public class TestBlobBytesSourceKnownLength {
 
   /** A ranged reference reads its range: the listed length is the object's, not the range's, and is not used. */
   @Test
-  public void rangedReferenceReadsItsRange() throws IOException {
+  void rangedReferenceReadsItsRange() throws IOException {
     byte[] file = sequence(300);
     String path = object("ranged.bin", file);
     try (SeekableBlob seekable = source().openSeekable(outOfLine(path, 10L, 100L), file.length)) {
@@ -111,7 +111,7 @@ public class TestBlobBytesSourceKnownLength {
 
   /** An INLINE blob is its data, whatever length is passed. */
   @Test
-  public void anInlineBlobIsItsData() throws IOException {
+  void anInlineBlobIsItsData() throws IOException {
     byte[] data = sequence(50);
     Row inline = new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.INLINE, data, null}, BLOB);
     try (SeekableBlob seekable = source().openSeekable(inline, 999L)) {
@@ -122,25 +122,17 @@ public class TestBlobBytesSourceKnownLength {
 
   /** A missing object is the file's own failure with or without a listed length. */
   @Test
-  public void missingObjectIsAContentFailure() {
+  void missingObjectIsAContentFailure() {
     String path = CountingObjectFileSystem.path("bucket", "gone.bin");
-    Exception seekable = assertThrows(Exception.class, () -> {
-      try (SeekableBlob blob = source().openSeekable(outOfLine(path, null, null), 10L)) {
-        readAll(blob);
-      }
-    });
+    Exception seekable = assertThrows(Exception.class, () -> readSeekable(path));
     assertTrue(SourceFailures.isContentFailure(seekable), seekable.toString());
-    Exception stream = assertThrows(Exception.class, () -> {
-      try (InputStream in = source().open(outOfLine(path, null, null), 10L)) {
-        readAll(in);
-      }
-    });
+    Exception stream = assertThrows(Exception.class, () -> readStream(path));
     assertTrue(SourceFailures.isContentFailure(stream), stream.toString());
   }
 
   /** An object shorter than its listed length is short, as a ranged reference shorter than its range is. */
   @Test
-  public void anObjectShorterThanItsListedLengthIsTruncated() throws IOException {
+  void anObjectShorterThanItsListedLengthIsTruncated() throws IOException {
     String path = object("short.bin", sequence(40));
     try (SeekableBlob seekable = source().openSeekable(outOfLine(path, null, null), 100L)) {
       BlobTruncatedException truncated = assertThrows(BlobTruncatedException.class, () -> readAll(seekable));
@@ -150,7 +142,7 @@ public class TestBlobBytesSourceKnownLength {
 
   /** A transient failure of a known-length open is retried as the length-less open's is. */
   @Test
-  public void transientOpenFailureIsRetried() throws IOException {
+  void transientOpenFailureIsRetried() throws IOException {
     byte[] file = sequence(64);
     String path = object("retried.bin", file);
     int[] attempts = {0};
@@ -168,7 +160,7 @@ public class TestBlobBytesSourceKnownLength {
 
   /** A source with a read-ahead sets it on every stream it opens; the default source leaves the file system's own. */
   @Test
-  public void theReadaheadIsSetOnEveryOpenedStream() throws IOException {
+  void theReadaheadIsSetOnEveryOpenedStream() throws IOException {
     byte[] file = sequence(5_000);
     String path = object("readahead.bin", file);
     try (SeekableBlob seekable = source().openSeekable(outOfLine(path, null, null), file.length)) {
@@ -186,12 +178,13 @@ public class TestBlobBytesSourceKnownLength {
       assertArrayEquals(Arrays.copyOf(file, 100), readAll(in));
     }
     assertEquals(1024L * 1024, CountingObjectFileSystem.counts(path).readahead.get(), "the stream open too");
-    assertThrows(IllegalArgumentException.class, () -> source().withReadahead(-1L));
+    BlobBytesSource source = source();
+    assertThrows(IllegalArgumentException.class, () -> source.withReadahead(-1L));
   }
 
   /** A stream that takes no read-ahead (a local file) reads as before. */
   @Test
-  public void streamWithoutReadaheadReadsAsBefore() throws IOException {
+  void streamWithoutReadaheadReadsAsBefore() throws IOException {
     byte[] file = sequence(3_000);
     String path = Files.write(temp.resolve("local.bin"), file).toUri().toString();
     BlobBytesSource prep = new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration()))
@@ -203,7 +196,7 @@ public class TestBlobBytesSourceKnownLength {
 
   /** Bytes read ahead are the storage blob's: same length, bytes, seeks and refusals, with no storage access. */
   @Test
-  public void bytesReadAheadAreServedAsTheStorageBlobServesThem() throws IOException {
+  void bytesReadAheadAreServedAsTheStorageBlobServesThem() throws IOException {
     byte[] file = sequence(1_000);
     String path = object("ahead.bin", file);
     Row row = outOfLine(path, null, null);
@@ -222,18 +215,21 @@ public class TestBlobBytesSourceKnownLength {
     }
     assertEquals(1, CountingObjectFileSystem.counts(path).opens.get(), "only the storage blob opened the object");
     Row inline = new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.INLINE, file, null}, BLOB);
-    assertThrows(IllegalArgumentException.class, () -> source().openSeekable(inline, file));
-    assertThrows(IllegalArgumentException.class, () -> source().openSeekable(outOfLine(path, 0L, 10L), file));
-    assertThrows(BlobReferenceException.class, () -> source().openSeekable(outOfLine("", null, null), file));
+    BlobBytesSource source = source();
+    assertThrows(IllegalArgumentException.class, () -> source.openSeekable(inline, file));
+    Row ranged = outOfLine(path, 0L, 10L);
+    assertThrows(IllegalArgumentException.class, () -> source.openSeekable(ranged, file));
+    Row unnamed = outOfLine("", null, null);
+    assertThrows(BlobReferenceException.class, () -> source.openSeekable(unnamed, file));
   }
 
   /** Only S3A is opened with a file status; any other file system, and this Hadoop without openFile, opens as before. */
   @Test
-  public void onlyS3aIsOpenedWithAFileStatus() throws IOException {
+  void onlyS3aIsOpenedWithAFileStatus() throws IOException {
     assertFalse(SourceObjectOpener.isS3A(LocalFileSystem.class));
     assertFalse(SourceObjectOpener.isS3A(CountingObjectFileSystem.class));
     Configuration conf = new Configuration();
-    CountingObjectFileSystem.install(conf, temp.resolve("buckets"));
+    CountingObjectFileSystem.installCounting(conf, temp.resolve("buckets"));
     String path = object("plain.bin", sequence(10));
     org.apache.hadoop.fs.Path hadoopPath = new org.apache.hadoop.fs.Path(path);
     FileSystem fs = hadoopPath.getFileSystem(conf);
@@ -244,9 +240,21 @@ public class TestBlobBytesSourceKnownLength {
     return new BlobBytesSource(storageConf());
   }
 
+  private void readSeekable(String path) throws IOException {
+    try (SeekableBlob blob = source().openSeekable(outOfLine(path, null, null), 10L)) {
+      readAll(blob);
+    }
+  }
+
+  private void readStream(String path) throws IOException {
+    try (InputStream in = source().open(outOfLine(path, null, null), 10L)) {
+      readAll(in);
+    }
+  }
+
   private org.apache.hudi.storage.StorageConfiguration<?> storageConf() {
     Configuration conf = new Configuration();
-    CountingObjectFileSystem.install(conf, temp.resolve("buckets"));
+    CountingObjectFileSystem.installCounting(conf, temp.resolve("buckets"));
     return HadoopFSUtils.getStorageConf(conf);
   }
 

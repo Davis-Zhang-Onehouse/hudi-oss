@@ -97,8 +97,9 @@ public class TestHoodieBaseParquetWriterPageBounds {
         writer.writeAvro("0", row(avro, 0, 16, false));
       }
     } else {
-      assertThrows(HoodieNotSupportedException.class, () -> new HoodieAvroParquetWriter(offPath,
-          writerConfig(avro, off, FILE_TARGET), "001", new LocalTaskContextSupplier(), false));
+      HoodieParquetConfig<HoodieAvroWriteSupport> offConfig = writerConfig(avro, off, FILE_TARGET);
+      LocalTaskContextSupplier supplier = new LocalTaskContextSupplier();
+      assertThrows(HoodieNotSupportedException.class, () -> new HoodieAvroParquetWriter(offPath, offConfig, "001", supplier, false));
     }
     Configuration on = new Configuration();
     on.setBoolean("parquet.column.statistics.enabled#blob.data", true);

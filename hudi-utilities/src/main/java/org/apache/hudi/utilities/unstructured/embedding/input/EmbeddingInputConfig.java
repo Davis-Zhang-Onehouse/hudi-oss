@@ -83,7 +83,7 @@ public final class EmbeddingInputConfig {
   public static final double DEFAULT_INLINE_MAX_HEAP_FRACTION = 1.0 / 64;
 
   /** Largest threshold a byte array (and so an inline value) can hold. */
-  private static final long MAX_INLINE_MAX_BYTES = Integer.MAX_VALUE - 8;
+  private static final long MAX_INLINE_MAX_BYTES = Integer.MAX_VALUE - 8L;
 
   private EmbeddingInputConfig() {
   }

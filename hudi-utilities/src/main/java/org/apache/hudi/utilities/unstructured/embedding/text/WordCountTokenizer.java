@@ -24,7 +24,7 @@ package org.apache.hudi.utilities.unstructured.embedding.text;
 public class WordCountTokenizer implements Tokenizer {
 
   /** Identity of this tokenizer, also its {@code hoodie.unstructured.chunk.tokenizer.type}. */
-  public static final String ID = "word-count";
+  public static final String TOKENIZER_ID = "word-count";
 
   @Override
   public int countTokens(String text) {
@@ -42,7 +42,7 @@ public class WordCountTokenizer implements Tokenizer {
 
   @Override
   public String id() {
-    return ID;
+    return TOKENIZER_ID;
   }
 
   @Override

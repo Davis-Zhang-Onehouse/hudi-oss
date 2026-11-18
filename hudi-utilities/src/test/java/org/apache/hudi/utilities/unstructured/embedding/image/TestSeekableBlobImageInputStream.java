@@ -41,10 +41,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link BlobReadException} that survives the reader's wrapping, a short stored file is the data's fault, and the header cap bounds
  * the bytes read wherever they lie.
  */
-public class TestSeekableBlobImageInputStream {
+class TestSeekableBlobImageInputStream {
 
   @Test
-  public void primitiveReadsCompleteAcrossPartialBlobReads() throws IOException {
+  void primitiveReadsCompleteAcrossPartialBlobReads() throws IOException {
     byte[] bytes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(bytes, 2))) {
       assertEquals(0x00010203, in.readInt());
@@ -56,7 +56,7 @@ public class TestSeekableBlobImageInputStream {
   }
 
   @Test
-  public void seeksMoveTheBlobAndInvalidRangesReadNothing() throws IOException {
+  void seeksMoveTheBlobAndInvalidRangesReadNothing() throws IOException {
     byte[] bytes = {0, 1, 2, 3, 4, 5, 6, 7};
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(bytes, Integer.MAX_VALUE))) {
       assertEquals(8, in.length());
@@ -73,7 +73,7 @@ public class TestSeekableBlobImageInputStream {
   }
 
   @Test
-  public void storageFailureOfAReadOrSeekIsABlobReadException() throws IOException {
+  void storageFailureOfAReadOrSeekIsABlobReadException() throws IOException {
     IOException reset = new IOException("connection reset by peer");
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(new byte[10], Integer.MAX_VALUE) {
       @Override
@@ -95,7 +95,7 @@ public class TestSeekableBlobImageInputStream {
 
   /** A bare EOFException of the storage client (Hadoop's report of a dropped connection) is a storage failure. */
   @Test
-  public void bareStorageEndOfFileIsAStorageFailure() throws IOException {
+  void bareStorageEndOfFileIsAStorageFailure() throws IOException {
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(new byte[10], Integer.MAX_VALUE) {
       @Override
       public int read(byte[] buffer, int offset, int len) throws IOException {
@@ -108,7 +108,7 @@ public class TestSeekableBlobImageInputStream {
 
   /** A stored file shorter than its recorded range repeats on every read: the data's fault, passed through. */
   @Test
-  public void truncatedBlobIsTheDataNotTheStorage() throws IOException {
+  void truncatedBlobIsTheDataNotTheStorage() throws IOException {
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(new byte[10], Integer.MAX_VALUE) {
       @Override
       public int read(byte[] buffer, int offset, int len) throws IOException {
@@ -126,7 +126,7 @@ public class TestSeekableBlobImageInputStream {
    * the cap; a primitive read the cap would cut (it needs all its bytes in one call) fails with the cap's exception.
    */
   @Test
-  public void theByteCapBoundsTheBytesRead() throws IOException {
+  void theByteCapBoundsTheBytesRead() throws IOException {
     try (SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(new byte[100], Integer.MAX_VALUE), 12)) {
       assertEquals(4, in.read(new byte[4], 0, 4));
       in.seek(0);
@@ -149,7 +149,7 @@ public class TestSeekableBlobImageInputStream {
    * content failure of the stored input and a programming error pass through.
    */
   @Test
-  public void openStoredInputClassifiesTheOpen() throws IOException {
+  void openStoredInputClassifiesTheOpen() throws IOException {
     assertThrows(BlobReadException.class,
         () -> SeekableBlobImageInputStream.openStoredInput(() -> {
           throw new IOException("503 Slow Down");
@@ -172,7 +172,7 @@ public class TestSeekableBlobImageInputStream {
   }
 
   @Test
-  public void closingTheStreamClosesTheBlob() throws IOException {
+  void closingTheStreamClosesTheBlob() throws IOException {
     AtomicInteger closes = new AtomicInteger();
     SeekableBlobImageInputStream in = new SeekableBlobImageInputStream(new BytesBlob(new byte[4], 4) {
       @Override
@@ -223,6 +223,7 @@ public class TestSeekableBlobImageInputStream {
 
     @Override
     public void close() {
+      // nothing to release: the bytes are held in memory
     }
   }
 }

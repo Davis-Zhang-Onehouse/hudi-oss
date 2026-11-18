@@ -22,6 +22,11 @@ import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.sources.blob.BlobObjectCopier;
 
 import java.io.FileNotFoundException;
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.Set;
 
 /**
  * Tells a storage failure that is a file's own fault from one a later run may not see: a
@@ -36,6 +41,32 @@ import java.io.FileNotFoundException;
 public final class SourceFailures {
 
   private SourceFailures() {
+  }
+
+  /**
+   * A speculative read may fall back after ordinary I/O, but never after a JVM failure in its cause or suppressed graph.
+   * Rethrows that original failure; a stack overflow keeps its existing input-content treatment.
+   */
+  public static void rethrowJvmFailure(Throwable failure) {
+    if (failure == null) {
+      return;
+    }
+    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    Deque<Throwable> pending = new ArrayDeque<>();
+    pending.add(failure);
+    while (!pending.isEmpty()) {
+      Throwable current = pending.removeFirst();
+      if (!visited.add(current)) {
+        continue;
+      }
+      if ((current instanceof VirtualMachineError && !(current instanceof StackOverflowError)) || current instanceof LinkageError) {
+        throw (Error) current;
+      }
+      if (current.getCause() != null) {
+        pending.addLast(current.getCause());
+      }
+      Collections.addAll(pending, current.getSuppressed());
+    }
   }
 
   /**

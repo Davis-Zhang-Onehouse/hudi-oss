@@ -30,30 +30,30 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** The streaming closest-keyframe-every-X rule. */
-public class TestKeyframeSchedule {
+class TestKeyframeSchedule {
 
   @Test
-  public void keyframesOnTheGridAreEachChosenOnce() {
+  void keyframesOnTheGridAreEachChosenOnce() {
     // keyframes every 2 s, targets every 1 s: every keyframe is chosen, the odd targets tie and go to the earlier keyframe
     assertEquals(Arrays.asList(0L, 2000L, 4000L, 6000L), run(1000, new long[] {0, 2000, 4000, 6000}, 6500));
   }
 
   @Test
-  public void sparseTargetsSkipKeyframes() {
+  void sparseTargetsSkipKeyframes() {
     // targets every 3 s over keyframes every 1 s: 0, 3, 6, 9
     assertEquals(Arrays.asList(0L, 3000L, 6000L, 9000L),
         run(3000, new long[] {0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000}, 10500));
   }
 
   @Test
-  public void tieGoesToTheEarlierKeyframe() {
+  void tieGoesToTheEarlierKeyframe() {
     // target 3000 is 1000 from both 2000 and 4000; target 1000 is 1000 from both 0 and 2000
     assertEquals(Arrays.asList(0L, 2000L), run(3000, new long[] {0, 2000, 4000}, 4000));
     assertEquals(Arrays.asList(0L, 2000L), run(1000, new long[] {0, 2000}, 2000));
   }
 
   @Test
-  public void oneCallCanChooseThePreviousKeyframeAndThisOne() {
+  void oneCallCanChooseThePreviousKeyframeAndThisOne() {
     // keyframes 0, 3, 10 with targets every 4: target 4 is closest to 3 (decided when 10 arrives), target 8 to 10
     KeyframeSchedule schedule = new KeyframeSchedule(4);
     assertEquals(Collections.singletonList(0L), schedule.onKeyframe(0));
@@ -63,7 +63,7 @@ public class TestKeyframeSchedule {
   }
 
   @Test
-  public void targetsAfterTheLastKeyframeChooseIt() {
+  void targetsAfterTheLastKeyframeChooseIt() {
     // keyframes 0 and 1000, last frame at 9000, targets every 5000: target 5000 (and nothing else) picks 1000 at the end
     assertEquals(Arrays.asList(0L, 1000L), run(5000, new long[] {0, 1000}, 9000));
     // a last keyframe past every target is never chosen
@@ -71,12 +71,12 @@ public class TestKeyframeSchedule {
   }
 
   @Test
-  public void singleKeyframeIsChosenOnce() {
+  void singleKeyframeIsChosenOnce() {
     assertEquals(Collections.singletonList(0L), run(1000, new long[] {0}, 30000));
   }
 
   @Test
-  public void keyframeNotAfterThePreviousIsIgnored() {
+  void keyframeNotAfterThePreviousIsIgnored() {
     KeyframeSchedule schedule = new KeyframeSchedule(1000);
     assertEquals(Collections.singletonList(0L), schedule.onKeyframe(0));
     assertEquals(Collections.emptyList(), schedule.onKeyframe(0));
@@ -85,7 +85,7 @@ public class TestKeyframeSchedule {
   }
 
   @Test
-  public void matchesTheBruteForceRuleOnRandomStreams() {
+  void matchesTheBruteForceRuleOnRandomStreams() {
     Random random = new Random(42);
     for (int trial = 0; trial < 500; trial++) {
       int count = 1 + random.nextInt(40);
@@ -103,7 +103,7 @@ public class TestKeyframeSchedule {
   }
 
   @Test
-  public void refusesANonPositiveIntervalAndUseAfterTheEnd() {
+  void refusesANonPositiveIntervalAndUseAfterTheEnd() {
     assertThrows(IllegalArgumentException.class, () -> new KeyframeSchedule(0));
     KeyframeSchedule schedule = new KeyframeSchedule(1000);
     schedule.onEnd(0);

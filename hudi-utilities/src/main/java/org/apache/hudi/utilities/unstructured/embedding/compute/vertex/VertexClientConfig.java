@@ -65,13 +65,15 @@ import java.util.List;
     description = "Per-model endpoint, project, location and credentials for Vertex embedding requests.")
 public final class VertexClientConfig {
 
+  private static final String SINCE_VERSION = "1.3.0";
+
   public static final String ENDPOINT_SUFFIX = ".endpoint";
 
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.endpoint family. */
   public static final ConfigProperty<String> ENDPOINT_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.endpoint")
       .noDefaultValue("<derived from project/location/model>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Endpoint. Replace <alias> with the declared model alias. otherwise explicit URL; project required when URL "
           + "absent. Default: <derived from project/location/model>.");
   public static final String PROJECT_SUFFIX = ".vertex.project";
@@ -80,15 +82,16 @@ public final class VertexClientConfig {
   public static final ConfigProperty<String> PROJECT_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.vertex.project")
       .noDefaultValue("<unset>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Project. Replace <alias> with the declared model alias. required when endpoint absent. Default: <unset>.");
   public static final String LOCATION_SUFFIX = ".vertex.location";
 
+  public static final String DEFAULT_LOCATION = "us-central1";
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.vertex.location family. */
   public static final ConfigProperty<String> LOCATION_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.vertex.location")
-      .defaultValue("us-central1")
-      .sinceVersion("1.3.0")
+      .defaultValue(DEFAULT_LOCATION)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Location. Replace <alias> with the declared model alias. used only when endpoint derived.");
   public static final String CREDENTIAL_FILE_SUFFIX = ".credential.file";
 
@@ -96,31 +99,30 @@ public final class VertexClientConfig {
   public static final ConfigProperty<String> CREDENTIAL_FILE_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.credential.file")
       .noDefaultValue("<unset>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Credential file. Replace <alias> with the declared model alias. Default: <unset>.");
   public static final String CREDENTIAL_ENV_SUFFIX = ".credential.env";
 
+  public static final String DEFAULT_CREDENTIAL_ENV = "GOOGLE_OAUTH_ACCESS_TOKEN";
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.credential.env family. */
   public static final ConfigProperty<String> CREDENTIAL_ENV_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.credential.env")
-      .defaultValue("GOOGLE_OAUTH_ACCESS_TOKEN")
-      .sinceVersion("1.3.0")
+      .defaultValue(DEFAULT_CREDENTIAL_ENV)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Credential env. Replace <alias> with the declared model alias. token source only; forbidden for google "
           + "source.");
   public static final String CREDENTIAL_SOURCE_SUFFIX = ".credential.source";
 
+  public static final String CREDENTIAL_SOURCE_TOKEN = "token";
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.credential.source family. */
   public static final ConfigProperty<String> CREDENTIAL_SOURCE_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.credential.source")
-      .defaultValue("token")
-      .sinceVersion("1.3.0")
+      .defaultValue(CREDENTIAL_SOURCE_TOKEN)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Credential source. Replace <alias> with the declared model alias.");
-  public static final String CREDENTIAL_SOURCE_TOKEN = "token";
   public static final String CREDENTIAL_SOURCE_GOOGLE = "google";
   public static final List<String> CREDENTIAL_SOURCES =
       Collections.unmodifiableList(Arrays.asList(CREDENTIAL_SOURCE_TOKEN, CREDENTIAL_SOURCE_GOOGLE));
-  public static final String DEFAULT_LOCATION = "us-central1";
-  public static final String DEFAULT_CREDENTIAL_ENV = "GOOGLE_OAUTH_ACCESS_TOKEN";
   /** {@code parameters.dimension} values multimodalembedding@001 accepts. */
   public static final List<Integer> ALLOWED_DIMENSIONS = Collections.unmodifiableList(Arrays.asList(128, 256, 512, 1408));
 

@@ -47,8 +47,8 @@ import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Duration;
 import java.util.Base64;
-import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 /**
  * {@value VertexClientConfig#CREDENTIAL_SOURCE_GOOGLE}: a Google credential that mints its own access tokens and mints a new
@@ -80,7 +80,9 @@ final class GoogleAccessTokens extends VertexAccessTokens {
   static final String APPLICATION_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS";
   static final String METADATA_HOST_ENV = "GCE_METADATA_HOST";
   static final String DEFAULT_METADATA_HOST = "metadata.google.internal";
+  // by design: the GCE metadata server's documented token path; its host is configurable (GCE_METADATA_HOST)
   static final String METADATA_TOKEN_PATH = "/computeMetadata/v1/instance/service-accounts/default/token";
+  // by design: Google's documented default OAuth endpoint, used only when the service-account key has no token_uri
   static final String DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token";
   static final String JWT_BEARER_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer";
   static final long REFRESH_MARGIN_MILLIS = 225_000L;
@@ -115,13 +117,13 @@ final class GoogleAccessTokens extends VertexAccessTokens {
    * @throws EmbeddingClientConfigException for a key file that cannot be read or is not a usable service-account key
    */
   GoogleAccessTokens(VertexClientConfig config, LongSupplier clock, RequestRateLimiter.Sleeper sleeper,
-                     Function<String, String> environment) {
+                     UnaryOperator<String> environment) {
     this(config, clock, sleeper, environment, HTTP_TRANSPORT);
   }
 
   /** Test seam: also the transport of the token requests. */
   GoogleAccessTokens(VertexClientConfig config, LongSupplier clock, RequestRateLimiter.Sleeper sleeper,
-                     Function<String, String> environment, Transport transport) {
+                     UnaryOperator<String> environment, Transport transport) {
     this.timeout = Duration.ofMillis(config.requestTimeoutMs());
     this.clock = clock;
     this.sleeper = sleeper;

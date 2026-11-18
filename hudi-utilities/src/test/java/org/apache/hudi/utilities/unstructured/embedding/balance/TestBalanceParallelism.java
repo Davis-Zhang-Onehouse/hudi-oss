@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Plans for the configured capacity even before autoscaled executors register. */
-public class TestBalanceParallelism {
+class TestBalanceParallelism {
 
   private static final String CLUSTER = "k8s://https://kubernetes.default.svc";
 
@@ -39,7 +39,7 @@ public class TestBalanceParallelism {
   }
 
   @Test
-  public void parallelismFromMinPartitions() {
+  void parallelismFromMinPartitions() {
     TypedProperties props = new TypedProperties();
     props.setProperty("hoodie.unstructured.embedding.prep.balance.min.partitions", "7");
     BalanceParallelism.Resolved p = resolve(props, new SparkConf(false).set("spark.executor.instances", "50"), CLUSTER, 100, 2);
@@ -48,7 +48,7 @@ public class TestBalanceParallelism {
   }
 
   @Test
-  public void sizeAwareFloorUsesItsOwnKey() {
+  void sizeAwareFloorUsesItsOwnKey() {
     TypedProperties props = new TypedProperties();
     props.setProperty("hoodie.unstructured.embedding.prep.balance.min.partitions", "7");
     props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "19");
@@ -57,12 +57,13 @@ public class TestBalanceParallelism {
   }
 
   @Test
-  public void hashPartitionCountDoesNotSetSizeAwareFloor() {
+  void hashPartitionCountDoesNotSetSizeAwareFloor() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "19");
     assertEquals(2, resolve(props, new SparkConf(false), "local[2]", 0, 2).parallelism());
     props.setProperty("hoodie.unstructured.embedding.prep.balance.min.partitions", "0");
-    assertThrows(IllegalArgumentException.class, () -> resolve(props, new SparkConf(false), "local[2]", 0, 2));
+    SparkConf local = new SparkConf(false);
+    assertThrows(IllegalArgumentException.class, () -> resolve(props, local, "local[2]", 0, 2));
   }
 
   @Test
@@ -81,7 +82,7 @@ public class TestBalanceParallelism {
   }
 
   @Test
-  public void parallelismFromExecutorInstances() {
+  void parallelismFromExecutorInstances() {
     SparkConf conf = new SparkConf(false).set("spark.executor.instances", "3");
     BalanceParallelism.Resolved p = resolve(new TypedProperties(), conf, CLUSTER, 0, 2);
     assertEquals(3, p.parallelism());
@@ -89,13 +90,13 @@ public class TestBalanceParallelism {
   }
 
   @Test
-  public void registeredCoresAboveTheConfiguredMax() {
+  void registeredCoresAboveTheConfiguredMax() {
     SparkConf conf = new SparkConf(false).set("spark.executor.instances", "3").set("spark.executor.cores", "4");
     assertEquals(64, resolve(new TypedProperties(), conf, CLUSTER, 64, 2).parallelism());
   }
 
   @Test
-  public void parallelismInLocalMode() {
+  void parallelismInLocalMode() {
     assertEquals(6, resolve(new TypedProperties(), new SparkConf(false), "local[6]", 0, 2).parallelism());
     assertEquals(Runtime.getRuntime().availableProcessors(),
         resolve(new TypedProperties(), new SparkConf(false), "local[*]", 0, 2).parallelism());
@@ -104,31 +105,32 @@ public class TestBalanceParallelism {
   }
 
   @Test
-  public void malformedExecutorConfNamesTheKey() {
+  void malformedExecutorConfNamesTheKey() {
     SparkConf conf = new SparkConf(false).set("spark.executor.instances", "3").set("spark.executor.cores", "four");
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-        () -> resolve(new TypedProperties(), conf, CLUSTER, 0, 2));
+    TypedProperties none = new TypedProperties();
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> resolve(none, conf, CLUSTER, 0, 2));
     assertTrue(e.getMessage().contains("spark.executor.cores"), e.getMessage());
   }
 
   @Test
-  public void parallelismFallsBackToDefaultParallelism() {
+  void parallelismFallsBackToDefaultParallelism() {
     BalanceParallelism.Resolved p = resolve(new TypedProperties(), new SparkConf(false), CLUSTER, 0, 2);
     assertEquals(2, p.parallelism());
     assertEquals("spark.default.parallelism", p.source());
   }
 
   @Test
-  public void explicitParallelismWinsAndMustBePositive() {
+  void explicitParallelismWinsAndMustBePositive() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), "7");
     assertEquals(7, BalanceParallelism.resolve(props, new SparkConf(false), "local[2]", 30, 9).parallelism());
     props.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), "0");
-    assertThrows(IllegalArgumentException.class, () -> BalanceParallelism.resolve(props, new SparkConf(false), "local[2]", 0, 1));
+    SparkConf local = new SparkConf(false);
+    assertThrows(IllegalArgumentException.class, () -> BalanceParallelism.resolve(props, local, "local[2]", 0, 1));
   }
 
   @Test
-  public void fallbackClampsAndOverflowDoesNotWrap() {
+  void fallbackClampsAndOverflowDoesNotWrap() {
     assertEquals(9, resolve(new SparkConf(false), "yarn", 0, 9));
     assertEquals(1, resolve(new SparkConf(false), null, 0, 0));
     SparkConf conf = new SparkConf(false).set(BalanceParallelism.EXECUTOR_INSTANCES, String.valueOf(Integer.MAX_VALUE))

@@ -26,12 +26,13 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Malformed CMaps are tokenized as CMapParser tokenizes them, so their bfrange codes are counted. */
-public class TestCMapRangeTokens {
+class TestCMapRangeTokens {
 
   /** One code more than the cap: 0x000000 to 0x040000. */
   private static final String OVER_CAP_RANGE = "<000000> <040000> <0041> endbfrange";
@@ -48,7 +49,7 @@ public class TestCMapRangeTokens {
       "endcodespacerange1beginbfrange ",         // an operator ends at the first digit
       "2 beginbfrange <00> <01> (x) "            // a string destination is skipped and the next range read
   })
-  public void malformedCMapLayoutsStillCountTheRangeCodes(String prefix) throws Exception {
+  void malformedCMapLayoutsStillCountTheRangeCodes(String prefix) throws Exception {
     String cmap = prefix + OVER_CAP_RANGE;
     assertNotNull(parseWithFontbox(cmap).toUnicode(LAST_CODE, 3), "fontbox expands the range of: " + cmap);
     StreamStructureScanner.Refusal failure =
@@ -64,10 +65,10 @@ public class TestCMapRangeTokens {
       "1beginbfrange ",
       "2 beginbfrange <00> <01> (x) "
   })
-  public void malformedCMapLayoutsAtTheCapPass(String prefix) throws Exception {
+  void malformedCMapLayoutsAtTheCapPass(String prefix) {
     // 0x000003 to 0x040000 is two codes under the cap; the leading range of the last layout adds those two.
     String cmap = prefix + "<000003> <040000> <0041> endbfrange";
-    scan(cmap);
+    assertDoesNotThrow(() -> scan(cmap), cmap);
   }
 
   private static CMap parseWithFontbox(String cmap) throws Exception {

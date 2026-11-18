@@ -66,7 +66,7 @@ import static org.mockito.Mockito.when;
  * a failure thrown at the task's next submit and at its barrier, the bytes held for pending writes bounded, and the threads
  * stopped only after the writes they started end.
  */
-public class TestPayloadWriterInBackground {
+class TestPayloadWriterInBackground {
 
   private static final String INSTANT = "20261110120000000";
   private static final String ROW = "source_path_sha=s modality=image chunk_id=";
@@ -83,7 +83,7 @@ public class TestPayloadWriterInBackground {
       String path = invocation.getArgument(0) + "/" + invocation.getArgument(1);
       assertFalse(Files.exists(Paths.get(new StoragePath(base, path).toUri())), "the marker comes before its file: " + path);
       if (markerMillis > 0) {
-        // a marker request waits for the timeline server's next batch
+        // by design: simulates a marker request waiting for the timeline server's next batch; not a wait for a condition
         Thread.sleep(markerMillis);
       }
       marked.add(path);
@@ -103,7 +103,7 @@ public class TestPayloadWriterInBackground {
   }
 
   @Test
-  public void backgroundWritesLeaveTheFilesAWriteOnTheTaskThreadLeaves() throws IOException {
+  void backgroundWritesLeaveTheFilesAWriteOnTheTaskThreadLeaves() throws IOException {
     String base = temp.toUri().toString();
     OutOfLineWriter writer = writer(storage(base), base, 0);
     List<String> paths = new ArrayList<>();
@@ -130,13 +130,13 @@ public class TestPayloadWriterInBackground {
     List<String> expected = new ArrayList<>(paths);
     expected.add(onTaskThread);
     List<String> markedSorted = new ArrayList<>(marked);
-    Collections.sort(markedSorted);
-    Collections.sort(expected);
+    markedSorted.sort(null);
+    expected.sort(null);
     assertEquals(expected, markedSorted, "one marker per file");
   }
 
   @Test
-  public void failedWriteIsThrownAtTheNextSubmitAndAtTheBarrier() throws IOException {
+  void failedWriteIsThrownAtTheNextSubmitAndAtTheBarrier() throws IOException {
     String base = temp.toUri().toString();
     HoodieStorage storage = storage(base);
     OutOfLineWriter writer = writer(storage, base, 0);
@@ -150,28 +150,30 @@ public class TestPayloadWriterInBackground {
       EmbeddingPayloadWriteException atBarrier = assertThrows(EmbeddingPayloadWriteException.class, pool::awaitAll);
       assertSame(refused, atBarrier.getCause(), "the storage failure, as a write on the task thread reports it");
       assertTrue(atBarrier.getMessage().contains(ROW + 0), atBarrier.getMessage());
+      PayloadWriter.Payload second = new PayloadWriter.Payload(ROW + 1, "p", bytes.length);
       EmbeddingPayloadWriteException atSubmit = assertThrows(EmbeddingPayloadWriteException.class,
-          () -> PayloadWriter.write(writer, pool, new PayloadWriter.Payload(ROW + 1, "p", bytes.length), bytes));
+          () -> PayloadWriter.write(writer, pool, second, bytes));
       assertSame(atBarrier, atSubmit);
     }
   }
 
   /** A payload handed to a closed pool is a write failure of the round, never a failure of the row's content. */
   @Test
-  public void writeAfterTheTaskClosedItsPoolIsAWriteFailure() {
+  void writeAfterTheTaskClosedItsPoolIsAWriteFailure() {
     String base = temp.toUri().toString();
     OutOfLineWriter writer = writer(storage(base), base, 0);
     OutOfLineWritePool pool = new OutOfLineWritePool();
     pool.close();
     byte[] bytes = payload(10, 2);
+    PayloadWriter.Payload target = new PayloadWriter.Payload(ROW + 9, "p", bytes.length);
     EmbeddingPayloadWriteException refused = assertThrows(EmbeddingPayloadWriteException.class,
-        () -> PayloadWriter.write(writer, pool, new PayloadWriter.Payload(ROW + 9, "p", bytes.length), bytes));
+        () -> PayloadWriter.write(writer, pool, target, bytes));
     assertTrue(refused.getMessage().contains("closed"), refused.getMessage());
     assertTrue(marked.isEmpty(), "nothing marked");
   }
 
   @Test
-  public void pendingBytesAreBoundedAndCloseWaitsForStartedWrites() throws Exception {
+  void pendingBytesAreBoundedAndCloseWaitsForStartedWrites() throws Exception {
     CountDownLatch release = new CountDownLatch(1);
     CountDownLatch lastRunning = new CountDownLatch(1);
     AtomicBoolean finished = new AtomicBoolean();
@@ -187,6 +189,7 @@ public class TestPayloadWriterInBackground {
           long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200);
           while (System.nanoTime() < until) {
             try {
+              // by design: simulates a write that ignores interrupts for 200 ms; not a wait
               Thread.sleep(10);
             } catch (InterruptedException ignored) {
               // keeps going
@@ -218,7 +221,7 @@ public class TestPayloadWriterInBackground {
    * default batch interval), on the task thread and in the background. Runs with {@code -Dout.of.line.bench.out=<file>}.
    */
   @Test
-  public void benchmarkOutOfLineFrameWrites() throws IOException {
+  void benchmarkOutOfLineFrameWrites() throws IOException {
     String out = System.getProperty("out.of.line.bench.out");
     org.junit.jupiter.api.Assumptions.assumeTrue(out != null && !out.isEmpty(), "set -Dout.of.line.bench.out to run");
     int frames = 64;
