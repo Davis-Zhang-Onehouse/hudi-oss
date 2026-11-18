@@ -31,6 +31,15 @@ public class WordCountTokenizer implements Tokenizer {
     return text == null ? 0 : TokenBudget.words(text);
   }
 
+  /**
+   * True: a word never spans a space, so the words of {@code a + b} are those of {@code a} plus those of {@code b}. A
+   * subclass may count differently, so it adds up only when it says so itself.
+   */
+  @Override
+  public boolean addsUpAtWordSpaces() {
+    return getClass() == WordCountTokenizer.class;
+  }
+
   @Override
   public String id() {
     return ID;

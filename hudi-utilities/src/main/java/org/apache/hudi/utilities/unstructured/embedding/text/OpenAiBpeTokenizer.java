@@ -34,7 +34,8 @@ import java.util.stream.Collectors;
  * <p>Only jtokkit's ORDINARY methods are used: text that spells a special token ({@code <|endoftext|>}) is counted as
  * text instead of failing the file. A lone UTF-16 surrogate, which jtokkit and tiktoken count differently, is replaced
  * by U+FFFD first ({@link #normalise}). BPE counts are not monotone in prefix length: a longer prefix can have FEWER
- * tokens, so callers never derive a count of {@code a + b} from the counts of {@code a} and {@code b}.
+ * tokens, so a count of {@code a + b} is derived from the counts of {@code a} and {@code b} only where {@code b} starts
+ * at a word space ({@link #addsUpAtWordSpaces}).
  */
 public class OpenAiBpeTokenizer implements Tokenizer {
 
@@ -135,6 +136,19 @@ public class OpenAiBpeTokenizer implements Tokenizer {
       }
     }
     return normalised == null ? text : normalised.toString();
+  }
+
+  /**
+   * True: every jtokkit encoding splits the text into pieces before the byte-pair merges, which never cross a piece, and
+   * no piece holds a U+0020 after a non-whitespace char (cl100k_base's parser and the o200k, p50k and r50k patterns start
+   * a piece there), so the count of {@code a + b} is the count of {@code a} plus that of {@code b} at such a space. The
+   * surrogate replacement of {@link #normalise} is decided per char pair and never pairs across that space. A subclass may
+   * count differently, so it adds up only when it says so itself. TestIncrementalTokenCounting pins this against every
+   * encoding; a jtokkit upgrade must keep it green.
+   */
+  @Override
+  public boolean addsUpAtWordSpaces() {
+    return getClass() == OpenAiBpeTokenizer.class;
   }
 
   @Override

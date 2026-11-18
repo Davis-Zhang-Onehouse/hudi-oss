@@ -36,6 +36,12 @@ import java.util.Objects;
  * code points. In the PDF mode every chunk is an exact slice of the stream; in the declared-boundary
  * mode a chunk is the caller's prefix plus such a slice. Every chunk is re-counted after the cut.
  *
+ * <p>The fit tests, the paragraph preference and the overlap choice count each growing candidate by its new part
+ * ({@link TokenBudget#prefixes}, {@link TokenBudget#suffixes}) when the tokenizer adds up at word spaces, so a chunk costs
+ * work in its length rather than in its length times its words. Those counts equal full counts exactly
+ * ({@link Tokenizer#addsUpAtWordSpaces}), so the chunks are those of full counting; a tokenizer that does not add up
+ * is counted in full.
+ *
  * <p>Stream boundaries are the boundaries one {@link BreakIterator} sentence instance returns over the pending text,
  * and a paragraph ends where a sentence end follows {@code \n\n}; the boundaries inside a chunk are recorded
  * when it is cut and are the only overlap starts considered.
@@ -367,14 +373,19 @@ public final class ChunkPacker {
     return scanBoundaries;
   }
 
-  /** The longest run of whole sentences that fits after {@code ov}; 0 when not even the first does. */
+  /**
+   * The longest run of whole sentences that fits after {@code ov}; 0 when not even the first does. The candidates share
+   * one {@link TokenBudget.Prefixes}, so each is counted by its new part.
+   */
   private int greedy(String text, int[] ends, String ov) {
+    TokenBudget.Prefixes candidates =
+        budget.prefixes(ov + text.substring(0, Math.min(text.length(), Math.max(0, window - ov.length()))));
     int cut = 0;
     for (int end : ends) {
       if (ov.length() + end > window) {
         break;
       }
-      if (!budget.fits(ov + text.substring(0, end))) {
+      if (!candidates.fits(ov.length() + end)) {
         break;
       }
       cut = end;
@@ -388,12 +399,13 @@ public final class ChunkPacker {
    */
   private int preferParagraph(String text, int[] ends, int cut) {
     int minNewTokens = (maxTokens - overlapTokens) / 2;
+    TokenBudget.Prefixes heads = budget.prefixes(text.substring(0, cut));
     for (int i = ends.length - 1; i >= 0; i--) {
       int end = ends[i];
       if (end > cut || !endsParagraph(text, end)) {
         continue;
       }
-      if (budget.count(text.substring(0, end)) >= minNewTokens) {
+      if (heads.count(end) >= minNewTokens) {
         return end;
       }
     }
@@ -420,13 +432,14 @@ public final class ChunkPacker {
     }
     int room = window - pre.length();
     int limit = Math.min(Math.min(sentenceEnd, text.length()), room + 1);
+    TokenBudget.Prefixes candidates = budget.prefixes(pre + text.substring(0, Math.min(limit, room)));
     int lastFit = 0;
     int firstWordEnd = -1;
     for (int end = nextWordEnd(text, 0, limit); end > 0; end = nextWordEnd(text, end, limit)) {
       if (firstWordEnd < 0) {
         firstWordEnd = end;
       }
-      if (end > room || !budget.fits(pre + text.substring(0, end))) {
+      if (end > room || !candidates.fits(pre.length() + end)) {
         break;
       }
       lastFit = end;
@@ -538,13 +551,14 @@ public final class ChunkPacker {
   private void chooseOverlap(String chunk, int[] boundaries, int[][] chunkMarks, boolean startsMidWord) {
     int n = chunk.length();
     int minStart = Math.max(0, n - window / 2);
+    TokenBudget.Suffixes suffixes = budget.suffixes(chunk, minStart);
     int chosen = -1;
     boolean aligned = false;
     for (int b : boundaries) {
       if (b < minStart || b >= n) {
         continue;
       }
-      if (qualifiesAsOverlap(chunk.substring(b))) {
+      if (qualifiesAsOverlap(suffixes, b)) {
         chosen = b;
         aligned = true;
         break;
@@ -556,7 +570,7 @@ public final class ChunkPacker {
       for (int p = minStart; p < n; p++) {
         boolean wordStart = !Character.isWhitespace(chunk.charAt(p))
             && (p == 0 ? !startsMidWord : Character.isWhitespace(chunk.charAt(p - 1)));
-        if (wordStart && qualifiesAsOverlap(chunk.substring(p))) {
+        if (wordStart && qualifiesAsOverlap(suffixes, p)) {
           chosen = p;
           break;
         }
@@ -590,8 +604,8 @@ public final class ChunkPacker {
     }
   }
 
-  private boolean qualifiesAsOverlap(String suffix) {
-    return TokenBudget.words(suffix) <= maxWords / 2 && budget.count(suffix) <= overlapTokens;
+  private boolean qualifiesAsOverlap(TokenBudget.Suffixes suffixes, int start) {
+    return suffixes.words(start) <= maxWords / 2 && suffixes.count(start) <= overlapTokens;
   }
 
   private void clearOverlap() {
