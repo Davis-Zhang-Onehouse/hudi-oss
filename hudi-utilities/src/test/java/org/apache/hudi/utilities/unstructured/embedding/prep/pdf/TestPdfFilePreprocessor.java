@@ -25,6 +25,7 @@ import org.apache.hudi.utilities.unstructured.embedding.prep.Chunk;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessingException;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
 import org.apache.hudi.utilities.unstructured.embedding.prep.SourceKind;
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
 import org.apache.hudi.utilities.unstructured.embedding.source.PreprocessorConfigurationException;
 import org.apache.hudi.utilities.unstructured.embedding.text.OpenAiBpeTokenizer;
@@ -52,16 +53,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The FilePreprocessor adapter and the versioned implementation identity. */
-public class TestPdfFilePreprocessor {
+class TestPdfFilePreprocessor {
 
   private static final Tokenizer BPE = new OpenAiBpeTokenizer();
 
   @BeforeAll
-  public static void fontCache(@TempDir Path cache) {
+  static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
   }
 
-  private static List<Chunk> run(PdfFilePreprocessor preprocessor, byte[] pdf, TypedProperties props) throws IOException {
+  private static List<Chunk> run(PdfFilePreprocessor preprocessor, byte[] pdf, TypedProperties props) {
     List<Chunk> chunks = new ArrayList<>();
     try (ClosableIterator<Chunk> iterator = preprocessor.open(() -> new ByteArrayInputStream(pdf),
         new FileMeta("fid-a", "pdf", pdf.length), BPE, props)) {
@@ -73,7 +74,7 @@ public class TestPdfFilePreprocessor {
   }
 
   @Test
-  public void okChunksCarryTextTokensAndPageAux() throws IOException {
+  void okChunksCarryTextTokensAndPageAux() throws IOException {
     byte[] pdf = PdfFixtures.text(TestPdfBoxChunker.pageText(1, 40, new Random(1)), TestPdfBoxChunker.pageText(2, 40,
         new Random(2)));
     List<Chunk> chunks = run(new PdfFilePreprocessor(), pdf, new TypedProperties());
@@ -93,7 +94,7 @@ public class TestPdfFilePreprocessor {
   }
 
   @Test
-  public void lossSummaryRidesOnTheLastChunkAux() throws IOException {
+  void lossSummaryRidesOnTheLastChunkAux() throws IOException {
     // page 2 fails PAGE_ERROR: its Type3 font has more CharProcs than the cap
     byte[] pdf = PdfFixtures.type3WithCharProcs(StreamDecodeGuard.MAX_CHAR_PROCS_PER_FONT + 1);
     List<Chunk> chunks = run(new PdfFilePreprocessor(), pdf, new TypedProperties());
@@ -103,14 +104,16 @@ public class TestPdfFilePreprocessor {
   }
 
   @Test
-  public void failedMarkerBecomesAnIsolatedFailure() {
-    PreprocessingException e = assertThrows(PreprocessingException.class,
-        () -> run(new PdfFilePreprocessor(), "garbage, not a pdf".getBytes(StandardCharsets.US_ASCII), new TypedProperties()));
+  void failedMarkerBecomesAnIsolatedFailure() {
+    PdfFilePreprocessor preprocessor = new PdfFilePreprocessor();
+    byte[] garbage = "garbage, not a pdf".getBytes(StandardCharsets.US_ASCII);
+    TypedProperties props = new TypedProperties();
+    PreprocessingException e = assertThrows(PreprocessingException.class, () -> run(preprocessor, garbage, props));
     assertTrue(e.getMessage().startsWith("LOAD_ERROR: "), e.getMessage());
   }
 
   @Test
-  public void noTextMarkerBecomesNoChunks() throws IOException {
+  void noTextMarkerBecomesNoChunks() throws IOException {
     assertTrue(run(new PdfFilePreprocessor(), PdfFixtures.imageOnly(1, 30), new TypedProperties()).isEmpty());
   }
 
@@ -129,24 +132,27 @@ public class TestPdfFilePreprocessor {
     props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "8");
     PdfFilePreprocessor preprocessor = new PdfFilePreprocessor();
     assertThrows(IllegalArgumentException.class, () -> preprocessor.validateConfig(props, BPE));
+    FileMeta file = new FileMeta("f", "pdf", 0);
+    BlobBytesSupplier empty = () -> new ByteArrayInputStream(new byte[0]);
     PreprocessorConfigurationException refused = assertThrows(PreprocessorConfigurationException.class,
-        () -> preprocessor.open(() -> new ByteArrayInputStream(new byte[0]), new FileMeta("f", "pdf", 0), BPE, props));
+        () -> preprocessor.open(empty, file, BPE, props));
     assertInstanceOf(IllegalArgumentException.class, refused.getCause());
   }
 
   @Test
-  public void registryDefaultsPdfToTheRealChunker() {
+  void registryDefaultsPdfToTheRealChunker() {
     PreprocessorRegistry registry = new PreprocessorRegistry(new TypedProperties());
     assertTrue(registry.forExtension("pdf").get() instanceof PdfFilePreprocessor);
     assertTrue(registry.forExtension("PDF").get() instanceof PdfFilePreprocessor);
     TypedProperties bad = new TypedProperties();
     bad.setProperty(EmbeddingTableConfig.PDF_MAX_PAGES.key(), "0");
-    assertThrows(IllegalArgumentException.class, () -> new PreprocessorRegistry(bad).validateConfig(bad, BPE));
+    PreprocessorRegistry badRegistry = new PreprocessorRegistry(bad);
+    assertThrows(IllegalArgumentException.class, () -> badRegistry.validateConfig(bad, BPE));
   }
 
   @Test
-  public void nameCarriesImplementationVersion() {
-    assertEquals("pdf-chunker/5;pdfbox=3.0.8", new PdfFilePreprocessor().name());
+  void nameCarriesImplementationVersion() {
+    assertEquals("pdf-chunker/5;pdf-text-extraction-v1", new PdfFilePreprocessor().name(), "the extraction logic, never the PDFBox jar version");
     assertEquals(new PdfFilePreprocessor().name(), new PreprocessorRegistry(new TypedProperties()).forExtension("pdf").get().name(),
         "the identity the registry's pdf preprocessor carries");
   }
@@ -157,7 +163,7 @@ public class TestPdfFilePreprocessor {
    * implementations apart) and re-pin the digest.
    */
   @Test
-  public void goldenRecordsPinned() throws Exception {
+  void goldenRecordsPinned() throws Exception {
     byte[] pdf = PdfFixtures.text(TestPdfBoxChunker.pageText(1, 30, new Random(7)), TestPdfBoxChunker.pageText(2, 30,
         new Random(8)), "");
     MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -176,17 +182,19 @@ public class TestPdfFilePreprocessor {
   static final String GOLDEN = "c896163ea171edf7c1312d5819d65759f0ab32809e019082044ebbf212d4cd1f";
 
   @Test
-  public void invalidPdfPropsAtOpenAreAConfigurationError() {
+  void invalidPdfPropsAtOpenAreAConfigurationError() throws IOException {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.CHUNK_NORMALIZE_DEHYPHENATE.key(), "true");
+    PdfFilePreprocessor preprocessor = new PdfFilePreprocessor();
+    byte[] pdf = PdfFixtures.imageOnly(1, 30);
     PreprocessorConfigurationException refused = assertThrows(PreprocessorConfigurationException.class,
-        () -> run(new PdfFilePreprocessor(), PdfFixtures.imageOnly(1, 30), props));
+        () -> run(preprocessor, pdf, props));
     assertInstanceOf(IllegalArgumentException.class, refused.getCause());
     assertTrue(refused.getMessage().contains(EmbeddingTableConfig.CHUNK_NORMALIZE_DEHYPHENATE.key()), refused.getMessage());
   }
 
   @Test
-  public void sourceKindIsADocumentWithTextMarkers() {
+  void sourceKindIsADocumentWithTextMarkers() {
     assertEquals(SourceKind.DOCUMENT, new PdfFilePreprocessor().sourceKind());
     assertEquals("text", new PdfFilePreprocessor().sourceKind().markerModality());
   }

@@ -60,6 +60,8 @@ public class WhisperSegmentTranscriber implements SegmentTranscriber, AutoClosea
 
   /** Bump whenever the same whisper utterances map to different transcript records. */
   public static final String IMPLEMENTATION_VERSION = "whisper-transcriber-v1";
+  /** The whisper-jni transcription logic of the engine under this transcriber; see {@code NativeWhisperEngine.LOGIC_VERSION}. */
+  public static final String ENGINE_LOGIC_VERSION = NativeWhisperEngine.LOGIC_VERSION;
 
 
   /** Shortest input handed to whisper, 1.2 s at 16 kHz: whisper 1.7.1 returns no utterance for less than about 1.1 s. */
@@ -166,12 +168,9 @@ public class WhisperSegmentTranscriber implements SegmentTranscriber, AutoClosea
     long previousStart = segmentStartMs;
     for (WhisperEngine.RawUtterance utterance : raw) {
       String text = utterance.text() == null ? "" : utterance.text().trim();
-      if (text.isEmpty() || TAG_ONLY.matcher(text).matches()) {
-        continue;
-      }
       long rawStart = segmentStartMs + utterance.startCentis() * MS_PER_CENTI;
-      if (rawStart >= segmentEndMs) {
-        // timed in the trailing silence padding (or past the span): not speech of this segment
+      // no text, a tag alone, or timed in the trailing silence padding (or past the span): not speech of this segment
+      if (text.isEmpty() || TAG_ONLY.matcher(text).matches() || rawStart >= segmentEndMs) {
         continue;
       }
       long start = Math.max(Math.max(rawStart, segmentStartMs), previousStart);
@@ -191,6 +190,7 @@ public class WhisperSegmentTranscriber implements SegmentTranscriber, AutoClosea
     return new ClosableIterator<TranscriptSegment>() {
       @Override
       public void close() {
+        // the utterances are a list in memory: nothing to release
       }
 
       @Override

@@ -51,8 +51,11 @@ import java.util.Set;
 public interface FilePreprocessor {
 
   /**
-   * Stable implementation name + version, composed into the table-pinned prep logic version and each row's
-   * {@code prep_logic_version} aux value. Bump it whenever emitted records change.
+   * Stable implementation name + version, pinned on the table with the class of every extension it prepares
+   * ({@code hoodie.table.embedding.prep.extension.<ext>}). Bump it whenever emitted records change. The table pins no setting of
+   * a custom implementation: its settings live outside the prep prefixes ({@code hoodie.unstructured.chunk.},
+   * {@code hoodie.unstructured.pdf.}, {@code hoodie.unstructured.embedding.prep.}, where an undeclared key is refused at job
+   * start), and a setting that changes its records must change this name.
    */
   String name();
 

@@ -27,7 +27,11 @@ public interface Tokenizer {
 
   int countTokens(String text);
 
-  /** Stable identity of this tokenizer; recorded in the preprocessing style text as {@code tokenizer=<id>}. */
+  /**
+   * Stable identity of this tokenizer; recorded in the preprocessing style text as {@code tokenizer=<id>} and pinned on the
+   * table, with the class name, as {@code hoodie.table.embedding.prep.tokenizer.id} and {@code ...tokenizer.class}. A custom tokenizer's settings live outside the prep prefixes (an undeclared key
+   * there is refused at job start), and a setting that changes its counts must change this id.
+   */
   String id();
 
   /** What {@link #countTokens} counts. */

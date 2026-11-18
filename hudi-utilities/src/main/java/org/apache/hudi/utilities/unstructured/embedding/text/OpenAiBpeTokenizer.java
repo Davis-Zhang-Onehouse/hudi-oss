@@ -46,6 +46,13 @@ public class OpenAiBpeTokenizer implements Tokenizer {
    * {@code EncodingType.CL100K_BASE} name), so classes inlining it never load jtokkit.
    */
   public static final String DEFAULT_ENCODING = "cl100k_base";
+  /**
+   * The logic of encoding with jtokkit (its ORDINARY methods, the surrogate replacement, the inclusive prefix end), pinned in
+   * the text and audio prep logic versions instead of the jtokkit jar version. Bump only when a dependency upgrade or code change
+   * alters prep output; the golden test below proves it: {@code TestTextPackingPins} pins the chunk streams this tokenizer
+   * packs on a fixed PDF, and {@code TestOpenAiBpeTokenizer} its counts.
+   */
+  public static final String ENCODING_LOGIC_VERSION = "jtokkit-bpe-encoding-v1";
   private static final char REPLACEMENT_CHARACTER = '�'; // U+FFFD, the Unicode replacement character
   /** One registry per JVM: it is thread-safe and loads each vocabulary once, on first use. */
   private static final EncodingRegistry REGISTRY = Encodings.newLazyEncodingRegistry();
@@ -113,26 +120,29 @@ public class OpenAiBpeTokenizer implements Tokenizer {
   /** Replaces every lone UTF-16 surrogate (a high one not followed by a low one, or a low one alone) by U+FFFD. */
   public static String normalise(String text) {
     StringBuilder normalised = null;
-    for (int i = 0; i < text.length(); i++) {
-      char c = text.charAt(i);
-      boolean pairedHigh = Character.isHighSurrogate(c) && i + 1 < text.length()
-          && Character.isLowSurrogate(text.charAt(i + 1));
-      if (pairedHigh) {
-        if (normalised != null) {
-          normalised.append(c).append(text.charAt(i + 1));
-        }
-        i++;
-        continue;
-      }
-      boolean lone = Character.isSurrogate(c);
+    int i = 0;
+    while (i < text.length()) {
+      int units = unitsAt(text, i);
+      boolean lone = units == 1 && Character.isSurrogate(text.charAt(i));
       if (lone && normalised == null) {
         normalised = new StringBuilder(text.length()).append(text, 0, i);
       }
       if (normalised != null) {
-        normalised.append(lone ? REPLACEMENT_CHARACTER : c);
+        if (lone) {
+          normalised.append(REPLACEMENT_CHARACTER);
+        } else {
+          normalised.append(text, i, i + units);
+        }
       }
+      i += units;
     }
     return normalised == null ? text : normalised.toString();
+  }
+
+  /** The number of UTF-16 units of the code point at {@code i}: 2 for a high surrogate followed by a low one, else 1. */
+  private static int unitsAt(String text, int i) {
+    return Character.isHighSurrogate(text.charAt(i)) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))
+        ? 2 : 1;
   }
 
   /**

@@ -27,6 +27,7 @@ import org.apache.hudi.utilities.unstructured.embedding.audio.AudioSegmentSource
 import org.apache.hudi.utilities.unstructured.embedding.prep.FfmpegLibraryVersions;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
+import org.apache.hudi.utilities.unstructured.embedding.source.CloseOnFailure;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobInputStream;
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoDecodeException;
@@ -78,6 +79,11 @@ import java.util.function.Function;
  */
 public class FfmpegAudioSegmentSource implements AudioSegmentSource {
 
+  /**
+   * The segmenting logic, with FFmpeg/JavaCV decoding and resampling, pinned in the audio prep logic version instead of the FFmpeg
+   * and JavaCV versions. Bump only when a dependency upgrade or code change alters prep output; the golden test below proves it:
+   * {@code TestFfmpegAudioSegmentSource} checks the segments of generated clips.
+   */
   public static final String LOGIC_VERSION = "ffmpeg-vad-energy-v1";
   public static final String ENCODING = "pcm_s16le";
   /** Audio decoded before a resume point and dropped, so the decoder (MP3 bit reservoir) and filter have history. */
@@ -88,6 +94,8 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
 
   private static final Logger LOG = LoggerFactory.getLogger(FfmpegAudioSegmentSource.class);
   private static final long MICROS_PER_SECOND = 1_000_000L;
+  /** How every message about a video starts. */
+  private static final String VIDEO_PREFIX = "video ";
   private static final long MICROS_PER_MILLI = 1000L;
   /**
    * After a seek, the first decoded frame must start at least this long before the first input sample the output needs: the frames
@@ -124,10 +132,10 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
     }
     BlobBytesSupplier bytes = audio.bytes();
     if (bytes == null) {
-      throw new VideoDecodeException("video " + describe(audio) + " has no bytes (its blob row is gone)");
+      throw new VideoDecodeException(VIDEO_PREFIX + describe(audio) + " has no bytes (its blob row is gone)");
     }
     if (!(bytes instanceof SeekableBlobBytesSupplier)) {
-      throw new VideoDecodeException("video " + describe(audio) + " bytes are not seekable");
+      throw new VideoDecodeException(VIDEO_PREFIX + describe(audio) + " bytes are not seekable");
     }
     return new Segments(describe(audio), (SeekableBlobBytesSupplier) bytes, startSegment, startMs, config,
         maxSegmentWindows(config), this::newGrabber);
@@ -198,16 +206,11 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       this.windowSamples = config.getWindowSamples();
       this.maxDurationSamples = config.getMaxDurationMs() * config.getSampleRate() / 1000;
       this.pending = new short[2 * windowSamples];
-      try {
+      // any way out of opening, an Error from the natives included, leaves no grabber and no blob stream open; a close failure
+      // is suppressed into the opening's failure
+      try (CloseOnFailure<RuntimeException> guard = new CloseOnFailure<>(this::close)) {
         open(bytes, startSegment, startMs, maxSegmentWindows);
-      } catch (Throwable e) {
-        // any way out of opening, an Error from the natives included, leaves no grabber and no blob stream open
-        try {
-          close();
-        } catch (Throwable closeFailure) {
-          e.addSuppressed(closeFailure);
-        }
-        throw e;
+        guard.succeeded();
       }
     }
 
@@ -221,13 +224,13 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
         return;
       }
       if (grabber.getSampleRate() > MAX_INPUT_SAMPLE_RATE) {
-        throw new VideoDecodeException("video " + video + " declares an audio sample rate of " + grabber.getSampleRate()
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " declares an audio sample rate of " + grabber.getSampleRate()
             + " Hz, above the " + MAX_INPUT_SAMPLE_RATE + " Hz an audio track may declare");
       }
       long durationMicros = grabber.getLengthInTime();
       if (durationMicros > config.getMaxDurationMs() * MICROS_PER_MILLI) {
-        throw new VideoDecodeException("video " + video + " lasts " + durationMicros / MICROS_PER_MILLI + " ms, above the configured "
-            + "maximum (" + AudioConfigKeys.MAX_DURATION_MS.key() + ") of " + config.getMaxDurationMs() + " ms");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " lasts " + durationMicros / MICROS_PER_MILLI + " ms, above "
+            + configuredMaximum());
       }
       long start = grabber.getFormatContext().start_time();
       originMicros = start == avutil.AV_NOPTS_VALUE ? 0 : start;
@@ -241,6 +244,17 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       anchorTolerance = sampleExact ? 0 : inRate * ANCHOR_TOLERANCE_MS / 1000;
       maxDurationInputs = config.getMaxDurationMs() * inRate / 1000;
       resampler = new AnchoredResampler(inRate, config.getSampleRate(), this::accept);
+      positionAt(bytes, startSegment, startMs, sampleExact);
+      segmenter = new EnergyVadSegmenter(this::readWindow, windowSamples, config.getVadThresholdDb(), config.getMinSilenceWindows(),
+          maxSegmentWindows, nextSample / windowSamples);
+    }
+
+    /**
+     * Positions the decode at the start of segment {@code startSegment} (at {@code startMs}): by seeking where that decodes the
+     * samples a run from the start does, else by decoding from the start and skipping the segments before it.
+     */
+    private void positionAt(SeekableBlobBytesSupplier bytes, long startSegment, long startMs, boolean sampleExact)
+        throws IOException {
       long seekMs = Math.max(0, startMs - PRE_ROLL_MS);
       // only MP3 is known to decode the same samples after a seek as from the start (AAC does not): any other codec resumes by
       // decoding from the start, so a resumed payload is the one a run from the start gives
@@ -265,8 +279,6 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       } else {
         resumeBySkipping(startSegment);
       }
-      segmenter = new EnergyVadSegmenter(this::readWindow, windowSamples, config.getVadThresholdDb(), config.getMinSilenceWindows(),
-          maxSegmentWindows, nextSample / windowSamples);
     }
 
     private void startGrabber(SeekableBlobBytesSupplier bytes) throws IOException {
@@ -399,8 +411,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
         throw failure("produced output sample " + index + " after " + (queuedIndex - 1), null);
       }
       if (index >= maxDurationSamples) {
-        throw failure("has audio past the configured maximum (" + AudioConfigKeys.MAX_DURATION_MS.key() + ") of "
-            + config.getMaxDurationMs() + " ms", null);
+        throw failure("has audio past " + configuredMaximum(), null);
       }
       if (pendingCount == pending.length) {
         // one input can complete several outputs (up-sampling) and the end flushes the filter's tail: a few samples past a window
@@ -411,10 +422,8 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
 
     /** Pushes input samples until a window's worth of output is queued or the frame is used up; false at the end. */
     private boolean decodeMore() {
-      if (gapInputs == 0 && (frameSamples == null || !frameSamples.hasRemaining())) {
-        if (!grabFrame()) {
-          return false;
-        }
+      if (gapInputs == 0 && (frameSamples == null || !frameSamples.hasRemaining()) && !grabFrame()) {
+        return false;
       }
       while (gapInputs > 0 && pendingCount < windowSamples) {
         resampler.push(0f);
@@ -432,38 +441,51 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
 
     private boolean grabFrame() {
       while (true) {
-        Frame frame;
-        try {
-          frame = decodedToEnd ? null : grabber.grabSamples();
-        } catch (FrameGrabber.Exception | RuntimeException e) {
-          throw failure("cannot be decoded", e);
-        }
+        Frame frame = decodeFrame();
         if (frame == null) {
           decodedToEnd = true;
           checkStorage("could not be read to its end");
           return false;
         }
-        if (frame.samples == null || frame.samples.length == 0 || !(frame.samples[0] instanceof FloatBuffer)) {
-          continue;
-        }
-        if (frame.audioChannels != channels || frame.sampleRate != inRate) {
-          // a mid-stream format change: the timeline and filter assume one rate and channel count per video
-          throw failure("changes its audio format mid-stream (" + inRate + " Hz x" + channels + " -> " + frame.sampleRate + " Hz x"
-              + frame.audioChannels + ")", null);
-        }
-        FloatBuffer samples = (FloatBuffer) frame.samples[0];
-        if (samples.remaining() < channels) {
-          continue;
-        }
-        anchor(frame.timestamp, samples);
-        if (seekOvershot) {
-          return false;
-        }
-        frameSamples = samples;
-        if (gapInputs > 0 || samples.remaining() >= channels) {
-          return true;
+        FloatBuffer samples = samplesOf(frame);
+        if (samples != null) {
+          anchor(frame.timestamp, samples);
+          if (seekOvershot) {
+            return false;
+          }
+          frameSamples = samples;
+          if (gapInputs > 0 || samples.remaining() >= channels) {
+            return true;
+          }
         }
       }
+    }
+
+    /** The next decoded frame, or null at the end of the stream. */
+    private Frame decodeFrame() {
+      try {
+        return decodedToEnd ? null : grabber.grabSamples();
+      } catch (FrameGrabber.Exception | RuntimeException e) {
+        throw failure("cannot be decoded", e);
+      }
+    }
+
+    /**
+     * The frame's interleaved samples, or null when it holds no whole sample (it is passed over).
+     *
+     * @throws RuntimeException the video's failure, when the frame changes the audio format mid-stream
+     */
+    private FloatBuffer samplesOf(Frame frame) {
+      if (frame.samples == null || frame.samples.length == 0 || !(frame.samples[0] instanceof FloatBuffer)) {
+        return null;
+      }
+      if (frame.audioChannels != channels || frame.sampleRate != inRate) {
+        // a mid-stream format change: the timeline and filter assume one rate and channel count per video
+        throw failure("changes its audio format mid-stream (" + inRate + " Hz x" + channels + " -> " + frame.sampleRate + " Hz x"
+            + frame.audioChannels + ")", null);
+      }
+      FloatBuffer samples = (FloatBuffer) frame.samples[0];
+      return samples.remaining() < channels ? null : samples;
     }
 
     /**
@@ -477,8 +499,8 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
     private void anchor(long timestampMicros, FloatBuffer samples) {
       long expected = Math.round((timestampMicros - originMicros) * (double) inRate / MICROS_PER_SECOND);
       if (expected >= maxDurationInputs) {
-        throw failure("has audio at " + (timestampMicros - originMicros) / MICROS_PER_MILLI + " ms, past the configured maximum ("
-            + AudioConfigKeys.MAX_DURATION_MS.key() + ") of " + config.getMaxDurationMs() + " ms", null);
+        throw failure("has audio at " + (timestampMicros - originMicros) / MICROS_PER_MILLI + " ms, past " + configuredMaximum(),
+            null);
       }
       if (!anchored) {
         long needed = Math.floorDiv(nextSample * inRate, config.getSampleRate()) - resampler.halfWidth() - 1;
@@ -506,6 +528,11 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       }
     }
 
+    /** "the configured maximum (key) of N ms", the duration cap as a refusal names it. */
+    private String configuredMaximum() {
+      return "the configured maximum (" + AudioConfigKeys.MAX_DURATION_MS.key() + ") of " + config.getMaxDurationMs() + " ms";
+    }
+
     private void checkStorage(String what) {
       IOException storage = stream == null ? null : stream.storageFailure();
       if (storage != null) {
@@ -519,7 +546,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       if (storage != null) {
         return storageFailure(what, storage, cause);
       }
-      return new VideoDecodeException("video " + video + " " + what, cause);
+      return new VideoDecodeException(VIDEO_PREFIX + video + " " + what, cause);
     }
 
     private UncheckedIOException storageFailure(String what, IOException storage, Exception cause) {
@@ -527,7 +554,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       if (cause != null) {
         retryable.addSuppressed(cause);
       }
-      return new UncheckedIOException("video " + video + " " + what + ": storage failure", retryable);
+      return new UncheckedIOException(VIDEO_PREFIX + video + " " + what + ": storage failure", retryable);
     }
 
     @Override
@@ -685,7 +712,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
   }
 
   /**
-   * Once per JVM, before the first grabber: the FFmpeg jars must be the versions the prep logic version names (else the task
+   * Once per JVM, before the first grabber: the FFmpeg jars must be the versions this build declares (else the task
    * fails, {@link FfmpegLibraryVersions#requireDeclared}), and FFmpeg's own logging is quiet (errors only).
    */
   private static final class Natives {

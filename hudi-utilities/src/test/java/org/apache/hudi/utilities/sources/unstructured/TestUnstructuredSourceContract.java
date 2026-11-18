@@ -68,6 +68,11 @@ class TestUnstructuredSourceContract {
     return props;
   }
 
+  /** Builds the contract of {@code props} and prepares the job with it: a refusal of either step is thrown. */
+  private static void prepareJob(TypedProperties props) {
+    new UnstructuredSourceContract(props).prepareJob(props);
+  }
+
   private static UnstructuredSourceContract contract(String mode) {
     return new UnstructuredSourceContract(mode(mode));
   }
@@ -78,11 +83,13 @@ class TestUnstructuredSourceContract {
     Map<String, String> added = asMap(contract.prepareJob(job));
     added.keySet().removeAll(job.stringPropertyNames());
     for (String kind : new String[] {"text", "image", "video", "audio"}) {
-      String version = added.remove("hoodie.table.embedding.prep." + kind + ".logic.version");
+      String version = added.get("hoodie.table.embedding.prep." + kind + ".logic.version");
       if (contract.mode() == UnstructuredMode.EMBEDDING) {
-        assertTrue(version.matches("prep-logic-v1;sha256=[0-9a-f]{64}"), kind);
+        assertTrue(version.startsWith("prep-logic-v3;") && version.contains(";source-version-check=mtime-size-v1"), kind);
       }
     }
+    // the embedding prep contract is its own family of table properties (TestPrepLogicVersions)
+    added.keySet().removeIf(key -> key.startsWith("hoodie.table.embedding.prep."));
     return added;
   }
 
@@ -120,8 +127,8 @@ class TestUnstructuredSourceContract {
     HoodieTableConfig table = new HoodieTableConfig();
     table.setValue(HoodieTableConfig.RECORDKEY_FIELDS, BLOB_KEY);
     table.getProps().setProperty("hoodie.table.blob.layout.version", "99");
-    assertThrows(IllegalArgumentException.class,
-        () -> contract("blob").requiredTableProperties().checkTable("file:/tables/blob", table));
+    UnstructuredTableProperties required = contract("blob").requiredTableProperties();
+    assertThrows(IllegalArgumentException.class, () -> required.checkTable("file:/tables/blob", table));
   }
 
   @Test
@@ -141,6 +148,23 @@ class TestUnstructuredSourceContract {
       assertThrows(IllegalArgumentException.class,
           () -> settings.checkTable("file:/tables/embedding", table), key);
     }
+  }
+
+  /** The embedding contract is checked key by key: a setting an older table does not store compares as its default. */
+  @Test
+  void embeddingTableWithoutANewerSettingKeepsItsDefault() {
+    UnstructuredTableProperties settings = contract("embedding").requiredTableProperties();
+    HoodieTableConfig table = new HoodieTableConfig();
+    table.getProps().putAll(settings.tableProperties());
+    table.setValue(HoodieTableConfig.RECORDKEY_FIELDS, EMBEDDING_KEY);
+    table.getProps().remove("hoodie.table.embedding.prep.chunk.max.words");
+    settings.checkTable("file:/tables/embedding", table);
+    table.getProps().setProperty("hoodie.table.embedding.prep.chunk.max.tokens", "128");
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+        () -> settings.checkTable("file:/tables/embedding", table));
+    assertTrue(refused.getMessage().contains("hoodie.table.embedding.prep.chunk.max.tokens=256 (set by hoodie.unstructured.chunk.max.tokens;"
+        + " the table stores 128)"), refused.getMessage());
+    assertTrue(refused.getMessage().endsWith("write this job to a new table"), refused.getMessage());
   }
 
   @Test
@@ -273,14 +297,13 @@ class TestUnstructuredSourceContract {
     for (String[] c : cases) {
       TypedProperties props = mode("blob");
       props.setProperty(c[0], c[1]);
-      Exception refused = assertThrows(RuntimeException.class, () -> new UnstructuredSourceContract(props).prepareJob(props), c[0]);
+      Exception refused = assertThrows(RuntimeException.class, () -> prepareJob(props), c[0]);
       assertTrue(refused.getMessage().contains(c[2]), refused.getMessage());
     }
     TypedProperties gcsWithS3Prefix = mode("blob");
     gcsWithS3Prefix.setProperty(UnstructuredSourceConfig.CLOUD.key(), "gcs");
     gcsWithS3Prefix.setProperty("hoodie.streamer.source.s3incr.fs.prefix", "s3a");
-    assertTrue(assertThrows(IllegalArgumentException.class, () -> new UnstructuredSourceContract(gcsWithS3Prefix)
-        .prepareJob(gcsWithS3Prefix)).getMessage()
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> prepareJob(gcsWithS3Prefix)).getMessage()
         .startsWith("UnstructuredDataSource (mode blob) refuses hoodie.streamer.source.s3incr.fs.prefix"));
   }
 
@@ -298,15 +321,19 @@ class TestUnstructuredSourceContract {
 
     HoodieTableConfig blobTable = new HoodieTableConfig();
     blobTable.setValue(HoodieTableConfig.RECORDKEY_FIELDS, BLOB_KEY);
+    UnstructuredMode embeddingMode = contract("embedding").mode();
     IllegalArgumentException table = assertThrows(IllegalArgumentException.class,
-        () -> UnstructuredDataSource.validate(contract("embedding").mode(), "file:/tables/blob", blobTable));
+        () -> UnstructuredDataSource.validate(embeddingMode, "file:/tables/blob", blobTable));
     assertEquals("UnstructuredDataSource (mode embedding) requires the table's " + HoodieTableConfig.RECORDKEY_FIELDS.key() + "="
         + EMBEDDING_KEY + ": the table at file:/tables/blob stores " + BLOB_KEY + "; write this job to a new table", table.getMessage());
 
     // the contract is built from the mode alone: an unset or unknown mode is refused as the contract is built
-    assertTrue(assertThrows(IllegalArgumentException.class, () -> new UnstructuredSourceContract(new TypedProperties())).getMessage()
+    TypedProperties noMode = new TypedProperties();
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> new UnstructuredSourceContract(noMode)).getMessage()
         .startsWith("UnstructuredDataSource requires " + UnstructuredSourceConfig.MODE.key() + ", one of: "));
-    assertThrows(IllegalArgumentException.class, () -> SourceContracts.of(UnstructuredDataSource.class.getName(), mode("video")),
+    String sourceClass = UnstructuredDataSource.class.getName();
+    TypedProperties videoMode = mode("video");
+    assertThrows(IllegalArgumentException.class, () -> SourceContracts.of(sourceClass, videoMode),
         "the contract constructor's refusal reaches the caller as thrown");
   }
 

@@ -25,7 +25,8 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 
 /**
  * Audio configuration: runtime implementation keys ({@link #RUNTIME_PREFIX}) and output-changing style values
- * ({@link #STYLE_PREFIX}). The prep logic version persists resolved implementation identities and effective style values.
+ * ({@link #STYLE_PREFIX}). The audio prep logic version persists the resolved implementations' logic, and each style value is
+ * pinned on the table at its effective value.
  * Implementations fold output-changing runtime settings into their logicVersion/id; model locations and thread counts
  * do not become style by raw value. Disabled audio does not instantiate its implementations.
  */

@@ -448,15 +448,16 @@ public class EmbeddingTableConfig implements Serializable {
   /**
    * X of the video frame source's "closest keyframe every X" ({@code video.FfmpegKeyframeVideoFrameSource}), in milliseconds;
    * default {@link #DEFAULT_PREP_VIDEO_KEYFRAME_INTERVAL_MS}. A frame-extraction parameter, so part of the preprocessing style
-   * when set. The table pins its effective value in the prep logic version; a change requires a new table.
+   * when set. The table pins its effective value as {@code hoodie.table.embedding.prep.video.keyframe.interval.ms}; a change
+   * requires a new table.
    */
   public static final ConfigProperty<Long> PREP_VIDEO_KEYFRAME_INTERVAL_MS = ConfigProperty
       .key(PREP_PREFIX + "video.keyframe.interval.ms")
       .defaultValue(1000L)
       .sinceVersion("1.3.0")
       .withDocumentation("X of the video frame source's \"closest keyframe every X\" (the FFmpeg keyframe source), in milliseconds; "
-          + "default 1000. A frame-extraction parameter, so part of the preprocessing style when set. The prep logic version pins its effective value; "
-          + "a change requires a new table.");
+          + "default 1000. A frame-extraction parameter, so part of the preprocessing style when set. The table pins its effective value "
+          + "(hoodie.table.embedding.prep.video.keyframe.interval.ms); a change requires a new table.");
   public static final long DEFAULT_PREP_VIDEO_KEYFRAME_INTERVAL_MS = 1000L;
   /**
    * How the video frame source drops a frame that repeats the last kept one: {@code dhash} (64-bit difference hash within

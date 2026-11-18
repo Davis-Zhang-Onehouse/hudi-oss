@@ -28,7 +28,9 @@ import org.apache.hudi.utilities.unstructured.embedding.prep.video.ExtractedFram
 import org.apache.hudi.utilities.unstructured.embedding.prep.video.FrameExtractionStrategy;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
+import org.apache.hudi.utilities.unstructured.embedding.source.CloseOnFailure;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
+import org.apache.hudi.utilities.unstructured.embedding.source.Release;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlob;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobInputStream;
@@ -104,6 +106,11 @@ import java.util.function.Function;
  */
 public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
+  /**
+   * The keyframe logic, with FFmpeg/JavaCV decoding, pinned in the video prep logic version instead of the FFmpeg and JavaCV
+   * versions. Bump only when a dependency upgrade or code change alters prep output; the golden test below proves it:
+   * {@code TestFfmpegKeyframeVideoFrameSource} pins the frames kept (the dedup golden).
+   */
   public static final String LOGIC_VERSION = "video-keyframe-v3";
   /** JPEG quality of an encoded frame, the {@link FrameJpegEncoder}'s. */
   public static final int JPEG_QUALITY = FrameJpegEncoder.JPEG_QUALITY;
@@ -117,6 +124,8 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
   static final long TRUNCATION_TOLERANCE_MICROS = 250_000L;
   /** Channels of a BGR24 frame, the pixel format the grabber converts every decoded frame to. */
   private static final int BGR_CHANNELS = 3;
+  /** How every message about a video starts. */
+  private static final String VIDEO_PREFIX = "video ";
 
   @Override
   public String name() {
@@ -136,7 +145,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
   public ClosableIterator<ExtractedFrame> frames(BlobBytesSupplier video, FileMeta file, TypedProperties props) throws IOException {
     VideoFrameConfig config = VideoFrameConfig.from(props);
     if (!(video instanceof SeekableBlobBytesSupplier)) {
-      throw new VideoDecodeException("video " + file + " bytes are not seekable");
+      throw new VideoDecodeException(VIDEO_PREFIX + file + " bytes are not seekable");
     }
     return new KeyframeFrames(file, (SeekableBlobBytesSupplier) video, config);
   }
@@ -168,21 +177,29 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
    */
   static FFmpegFrameGrabber startOrRelease(FFmpegFrameGrabber grabber, SeekableBlobInputStream stream, FileMeta video,
                                            Function<Exception, RuntimeException> classify) {
+    boolean started = false;
+    RuntimeException failure = null;
     try {
       grabber.start();
+      started = true;
     } catch (Exception e) {
-      RuntimeException failure = classify.apply(e);
-      KeyframeFrames.closeQuietly(grabber, stream, video);
+      failure = classify.apply(e);
+    } finally {
+      if (!started) {
+        // an Error from the release propagates in place of the start's failure
+        KeyframeFrames.closeQuietly(grabber, stream, video);
+      }
+    }
+    if (failure != null) {
       throw failure;
-    } catch (Error e) {
-      KeyframeFrames.closeQuietly(grabber, stream, video);
-      throw e;
     }
     return grabber;
   }
 
   /** The kept frames of one video, decoded and encoded on demand. */
   private static final class KeyframeFrames implements ClosableIterator<ExtractedFrame> {
+    /** {@link #nextChosen()} at the end: no keyframe left. */
+    private static final long[] NO_KEYFRAME = new long[0];
     private final FileMeta video;
     private final KeyframeSchedule schedule;
     private final FrameDedup dedup;
@@ -229,32 +246,21 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       this.schedule = new KeyframeSchedule(config.getIntervalMs() * MICROS_PER_MILLI);
       this.dedup = new FrameDedup(config.getDedupMethod(), config.getMaxDistance());
       this.maxPixels = config.getMaxPixels();
-      try {
+      // any way out of opening, an Error from the natives included, leaves no grabber and no blob stream open; a close failure
+      // is suppressed into the opening's failure
+      try (CloseOnFailure<RuntimeException> guard = new CloseOnFailure<>(this::close)) {
         open(bytes, config);
-      } catch (Throwable e) {
-        // any way out of opening, an Error from the natives included, leaves no grabber and no blob stream open
-        try {
-          close();
-        } catch (Throwable closeFailure) {
-          e.addSuppressed(closeFailure);
-        }
-        throw e;
+        guard.succeeded();
       }
     }
 
     private void open(SeekableBlobBytesSupplier bytes, VideoFrameConfig config) throws IOException {
       Natives.init();
       SeekableBlob source = bytes.openSeekable();
-      try {
+      // not wrapped yet, so close() would not reach it
+      try (CloseOnFailure<IOException> guard = new CloseOnFailure<>(source::close)) {
         blob = new BlockBufferedBlob(source);
-      } catch (Throwable e) {
-        // not wrapped yet, so close() would not reach it
-        try {
-          source.close();
-        } catch (Throwable closeFailure) {
-          e.addSuppressed(closeFailure);
-        }
-        throw e;
+        guard.succeeded();
       }
       stream = new SeekableBlobInputStream(blob);
       grabber = start(new FFmpegFrameGrabber(stream), stream, config);
@@ -266,7 +272,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       if (riff) {
         String cut = RiffExtent.truncation(bytes, video);
         if (cut != null) {
-          throw new VideoDecodeException("video " + video + " " + cut + ": the file is truncated");
+          throw new VideoDecodeException(VIDEO_PREFIX + video + " " + cut + ": the file is truncated");
         }
       }
       int streams = grabber.getFormatContext().nb_streams();
@@ -285,21 +291,21 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       Arrays.fill(smallestStepMicros, Long.MAX_VALUE);
       videoStream = grabber.getVideoStream();
       if (videoStream < 0) {
-        throw new VideoDecodeException("video " + video + " has no video stream");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " has no video stream");
       }
       long pixels = (long) grabber.getImageWidth() * grabber.getImageHeight();
       if (grabber.getImageWidth() <= 0 || grabber.getImageHeight() <= 0) {
-        throw new VideoDecodeException("video " + video + " declares no frame size");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " declares no frame size");
       }
       if (pixels > config.getMaxPixels()) {
-        throw new UncheckedIOException(new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + "video " + video
+        throw new UncheckedIOException(new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + VIDEO_PREFIX + video
             + " declares " + grabber.getImageWidth() + "x" + grabber.getImageHeight() + " = " + pixels
             + " pixels per frame, above the configured maximum (" + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") of "
             + config.getMaxPixels()));
       }
-      AVStream stream = grabber.getFormatContext().streams(videoStream);
-      timeBase = stream.time_base();
-      streamStartMicros = stream.start_time() == avutil.AV_NOPTS_VALUE ? 0 : toMicros(stream.start_time(), timeBase);
+      AVStream videoAvStream = grabber.getFormatContext().streams(videoStream);
+      timeBase = videoAvStream.time_base();
+      streamStartMicros = videoAvStream.start_time() == avutil.AV_NOPTS_VALUE ? 0 : toMicros(videoAvStream.start_time(), timeBase);
       long containerStart = grabber.getFormatContext().start_time();
       originMicros = containerStart == avutil.AV_NOPTS_VALUE ? 0 : containerStart;
       encoder = new FrameJpegEncoder();
@@ -319,7 +325,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
     public boolean hasNext() {
       while (next == null && !closed) {
         long[] keyframe = nextChosen();
-        if (keyframe == null) {
+        if (keyframe.length == 0) {
           return false;
         }
         next = frameAt(keyframe[0], keyframe[1]);
@@ -338,8 +344,8 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
     }
 
     /**
-     * The next chosen keyframe ({relative, as reported}), scanning the whole file first; null at the end. A scan that failed
-     * throws its failure once every keyframe chosen before it was handed out.
+     * The next chosen keyframe ({relative, as reported}), scanning the whole file first; {@link #NO_KEYFRAME} at the end. A scan
+     * that failed throws its failure once every keyframe chosen before it was handed out.
      */
     private long[] nextChosen() {
       if (!scanned) {
@@ -354,7 +360,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       if (scanFailure != null) {
         throw scanFailure;
       }
-      return null;
+      return NO_KEYFRAME;
     }
 
     /** Reads every packet, choosing keyframes as they come; how it ended, when not at the end of a whole file, is {@link #scanFailure}. */
@@ -368,51 +374,68 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
           return;
         }
         if (packet == null) {
-          if (stream.storageFailure() != null) {
-            // the scan stopped on a storage failure, not at the video's end: the remaining targets are not decidable
-            scanFailure = failure("could not be read to its end", null, true);
-            return;
-          }
-          try {
-            checkNotCutShort();
-          } catch (VideoDecodeException cut) {
-            scanFailure = cut;
-            return;
-          }
-          if (previousRelativeMicros >= 0) {
-            choose(schedule.onEnd(lastFrameMicros), -1, -1);
-          }
+          endScan();
           return;
         }
         try {
           trackPacketEnd(packet);
-          // a packet the demuxer flags DISCARD lies before the edit list's start: it is never presented, so never chosen
-          if (packet.stream_index() == videoStream && packet.pts() != avutil.AV_NOPTS_VALUE
-              && (packet.flags() & avcodec.AV_PKT_FLAG_DISCARD) == 0) {
-            long ptsMicros = toMicros(packet.pts(), timeBase);
-            long relativeMicros = Math.max(0, ptsMicros - originMicros);
-            lastFrameMicros = Math.max(lastFrameMicros, relativeMicros);
-            if ((packet.flags() & avcodec.AV_PKT_FLAG_KEY) != 0 && relativeMicros > previousRelativeMicros) {
-              if (javacvTimestampOverflows(packet.pts(), timeBase)) {
-                // JavaCV cannot seek to it or time it, so it and every later keyframe cannot be extracted: the video would be
-                // incomplete, which is a failure of the whole video, before any of its frames
-                chosen.close();
-                scanFailure = new VideoDecodeException("video " + video + " has a keyframe at pts " + packet.pts()
-                    + " (time base " + timeBase.num() + "/" + timeBase.den() + ") past the timestamps FFmpegFrameGrabber can "
-                    + "represent (1000000 x pts x time base numerator overflows a long): its keyframes from there on cannot be "
-                    + "extracted, so the video is refused as incomplete");
-                return;
-              } else {
-                choose(schedule.onKeyframe(relativeMicros), relativeMicros, ptsMicros);
-                previousRelativeMicros = relativeMicros;
-                previousKeyframeMicros = ptsMicros;
-              }
-            }
+          if (!chooseFrom(packet)) {
+            return;
           }
         } finally {
           avcodec.av_packet_unref(packet);
         }
       }
+    }
+
+    /** At the end of the packets: how the scan ended ({@link #scanFailure}), else the schedule's choice at the end. */
+    private void endScan() {
+      if (stream.storageFailure() != null) {
+        // the scan stopped on a storage failure, not at the video's end: the remaining targets are not decidable
+        scanFailure = failure("could not be read to its end", null, true);
+        return;
+      }
+      try {
+        checkNotCutShort();
+      } catch (VideoDecodeException cut) {
+        scanFailure = cut;
+        return;
+      }
+      if (previousRelativeMicros >= 0) {
+        choose(schedule.onEnd(lastFrameMicros), -1, -1);
+      }
+    }
+
+    /**
+     * Chooses from {@code packet} when it is a timed, presented video keyframe later than the previous one; false when the scan
+     * must stop ({@link #scanFailure} set).
+     */
+    private boolean chooseFrom(AVPacket packet) {
+      // a packet the demuxer flags DISCARD lies before the edit list's start: it is never presented, so never chosen
+      if (packet.stream_index() != videoStream || packet.pts() == avutil.AV_NOPTS_VALUE
+          || (packet.flags() & avcodec.AV_PKT_FLAG_DISCARD) != 0) {
+        return true;
+      }
+      long ptsMicros = toMicros(packet.pts(), timeBase);
+      long relativeMicros = Math.max(0, ptsMicros - originMicros);
+      lastFrameMicros = Math.max(lastFrameMicros, relativeMicros);
+      if ((packet.flags() & avcodec.AV_PKT_FLAG_KEY) == 0 || relativeMicros <= previousRelativeMicros) {
+        return true;
+      }
+      if (javacvTimestampOverflows(packet.pts(), timeBase)) {
+        // JavaCV cannot seek to it or time it, so it and every later keyframe cannot be extracted: the video would be
+        // incomplete, which is a failure of the whole video, before any of its frames
+        chosen.close();
+        scanFailure = new VideoDecodeException(VIDEO_PREFIX + video + " has a keyframe at pts " + packet.pts()
+            + " (time base " + timeBase.num() + "/" + timeBase.den() + ") past the timestamps FFmpegFrameGrabber can "
+            + "represent (1000000 x pts x time base numerator overflows a long): its keyframes from there on cannot be "
+            + "extracted, so the video is refused as incomplete");
+        return false;
+      }
+      choose(schedule.onKeyframe(relativeMicros), relativeMicros, ptsMicros);
+      previousRelativeMicros = relativeMicros;
+      previousKeyframeMicros = ptsMicros;
+      return true;
     }
 
     /**
@@ -465,7 +488,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       }
       long tolerance = Math.max(TRUNCATION_TOLERANCE_MICROS, 2 * interval);
       if (declaredEndMicros - packetsEndMicros > tolerance) {
-        throw new VideoDecodeException("video " + video + " ends at " + Math.max(0, packetsEndMicros - originMicros) / MICROS_PER_MILLI
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " ends at " + Math.max(0, packetsEndMicros - originMicros) / MICROS_PER_MILLI
             + " ms, before its declared end at " + (declaredEndMicros - originMicros) / MICROS_PER_MILLI + " ms: the file is truncated");
       }
     }
@@ -520,7 +543,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       }
       if ((long) frame.imageWidth * frame.imageHeight > maxPixels) {
         // the declared size passed the guard, this frame does not (a mid-stream resolution change): refused before any more work
-        throw new UncheckedIOException(new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + "video " + video
+        throw new UncheckedIOException(new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + VIDEO_PREFIX + video
             + " has a " + frame.imageWidth + "x" + frame.imageHeight + " frame at " + keyframeMicros + "us, above the configured "
             + "maximum (" + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") of " + maxPixels + " pixels"));
       }
@@ -548,9 +571,9 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
         if (cause != null) {
           read.addSuppressed(cause);
         }
-        return new UncheckedIOException("video " + video + " " + what + ": storage failure", read);
+        return new UncheckedIOException(VIDEO_PREFIX + video + " " + what + ": storage failure", read);
       }
-      return new VideoDecodeException("video " + video + " " + what, cause);
+      return new VideoDecodeException(VIDEO_PREFIX + video + " " + what, cause);
     }
 
     @Override
@@ -560,33 +583,19 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       }
       closed = true;
       next = null;
-      // each handle is released whatever the one before it threw, a JVM Error included; the first failure propagates once all
-      // ran, the later ones suppressed into it
-      Throwable failure = release(chosen::close, null);
-      failure = release(() -> closeQuietly(grabber, stream, video), failure);
-      failure = release(converter::close, failure);
-      if (encoder != null) {
-        failure = release(encoder::close, failure);
-      }
-      if (failure instanceof Error) {
-        throw (Error) failure;
-      }
-      if (failure != null) {
-        throw (RuntimeException) failure;
+      // Resources close in reverse declaration order, preserving every close even when a prior close fails.
+      try (Release<RuntimeException> encoderClose = this::closeEncoder;
+           Release<RuntimeException> converterClose = converter::close;
+           Release<RuntimeException> grabberClose = () -> closeQuietly(grabber, stream, video)) {
+        chosen.close();
       }
     }
 
-    /** Runs {@code close}; what it throws is the first failure, or suppressed into the earlier {@code failure}. */
-    private static Throwable release(Runnable close, Throwable failure) {
-      try {
-        close.run();
-      } catch (Throwable t) {
-        if (failure == null) {
-          return t;
-        }
-        failure.addSuppressed(t);
+    /** Closes the JPEG encoder, when opening got that far. */
+    private void closeEncoder() {
+      if (encoder != null) {
+        encoder.close();
       }
-      return failure;
     }
 
     private static void closeQuietly(FFmpegFrameGrabber grabber, SeekableBlobInputStream stream, FileMeta video) {
@@ -620,7 +629,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
   }
 
   /**
-   * Once per JVM, before the first grabber: the FFmpeg jars must be the versions the prep logic version names (else the task
+   * Once per JVM, before the first grabber: the FFmpeg jars must be the versions this build declares (else the task
    * fails, {@link FfmpegLibraryVersions#requireDeclared}), and FFmpeg's own logging is quiet (errors only).
    */
   private static final class Natives {

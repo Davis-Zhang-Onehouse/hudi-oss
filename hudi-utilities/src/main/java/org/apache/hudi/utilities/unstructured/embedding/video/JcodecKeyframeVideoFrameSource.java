@@ -29,8 +29,10 @@ import org.apache.hudi.utilities.unstructured.embedding.prep.video.ExtractedFram
 import org.apache.hudi.utilities.unstructured.embedding.prep.video.FrameExtractionStrategy;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
+import org.apache.hudi.utilities.unstructured.embedding.source.CloseOnFailure;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
 import org.apache.hudi.utilities.unstructured.embedding.source.PreprocessorConfigurationException;
+import org.apache.hudi.utilities.unstructured.embedding.source.Release;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobBytesSupplier;
 
 import org.jcodec.codecs.h264.H264Decoder;
@@ -60,7 +62,8 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.lang.reflect.Field;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
@@ -108,6 +111,13 @@ import java.util.concurrent.ExecutorService;
 public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
   public static final String LOGIC_VERSION = "video-keyframe-h264mp4-v2";
+  /**
+   * The logic of decoding with JCodec (jcodec's {@link H264Decoder} and jcodec-javase's {@link AWTUtil} conversion to RGB),
+   * pinned in the video prep logic version instead of the two jars' versions. Bump only when a dependency upgrade or code change
+   * alters prep output; the golden test below proves it: {@code TestJcodecKeyframeVideoFrameSource} checks which frames are
+   * kept and their timestamps. It pins no pixel digest, so a JCodec upgrade also compares the frame JPEG bytes before and after.
+   */
+  public static final String DECODE_LOGIC_VERSION = "jcodec-decode-v1";
   /** The one extension this strategy prepares. */
   public static final String EXTENSION = "mp4";
   /**
@@ -135,6 +145,12 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
   /** Every table type the pre-check reads, by its four bytes as a big-endian int. */
   private static final Map<Integer, String> TABLE_TYPES;
   private static final int NAL_SPS = 7;
+  /** How every message about a video starts. */
+  private static final String VIDEO_PREFIX = "video ";
+  /** The frame-size ceiling, as a refusal names it after "above the ". */
+  private static final String CEILING = MAX_PIXELS + " (1920x1080) " + LOGIC_VERSION + " decodes";
+  /** How a message about a file cut short ends. */
+  private static final String TRUNCATED = ": the file is truncated";
 
   static {
     Map<String, Long> entryBytes = new HashMap<>();
@@ -183,11 +199,11 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     VideoFrameConfig config = VideoFrameConfig.from(props);
     String extension = file.getFileExtension() == null ? "" : file.getFileExtension().toLowerCase(Locale.ROOT);
     if (!EXTENSION.equals(extension)) {
-      throw new VideoDecodeException("video " + file + " has extension '" + extension + "'; " + LOGIC_VERSION
+      throw new VideoDecodeException(VIDEO_PREFIX + file + " has extension '" + extension + "'; " + LOGIC_VERSION
           + " prepares H.264 in MP4 (.mp4) only" + wayOut(extension));
     }
     if (!(video instanceof SeekableBlobBytesSupplier)) {
-      throw new VideoDecodeException("video " + file + " bytes are not seekable");
+      throw new VideoDecodeException(VIDEO_PREFIX + file + " bytes are not seekable");
     }
     return new KeyframeFrames(file, (SeekableBlobBytesSupplier) video, config);
   }
@@ -228,8 +244,8 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
    * path holds another JCodec fails its decode with a {@link PreprocessorConfigurationException} (class P), never the video.
    */
   static final class SingleThreadedDecoders {
-    private static final Field POOL;
-    private static final Field THREADED;
+    private static final VarHandle POOL;
+    private static final VarHandle THREADED;
     /**
      * Why the fields cannot be used (another JCodec on the class path), or null: kept, never thrown from class initialisation,
      * where it would be an Error that ends a Spark executor.
@@ -237,14 +253,13 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private static final IllegalStateException UNAVAILABLE;
 
     static {
-      Field pool = null;
-      Field threaded = null;
+      VarHandle pool = null;
+      VarHandle threaded = null;
       IllegalStateException unavailable = null;
       try {
-        pool = H264Decoder.class.getDeclaredField("tp");
-        threaded = H264Decoder.class.getDeclaredField("threaded");
-        pool.setAccessible(true);
-        threaded.setAccessible(true);
+        MethodHandles.Lookup decoderFields = MethodHandles.privateLookupIn(H264Decoder.class, MethodHandles.lookup());
+        pool = decoderFields.findVarHandle(H264Decoder.class, "tp", ExecutorService.class);
+        threaded = decoderFields.findVarHandle(H264Decoder.class, "threaded", boolean.class);
       } catch (ReflectiveOperationException | RuntimeException e) {
         unavailable = new IllegalStateException("JCodec's H264Decoder has no usable 'tp'/'threaded' fields: "
             + LOGIC_VERSION + " needs org.jcodec:jcodec:0.2.5 on the class path", e);
@@ -284,8 +299,8 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
         if (pool != null) {
           pool.shutdownNow();
         }
-        THREADED.setBoolean(decoder, false);
-      } catch (IllegalAccessException | RuntimeException e) {
+        THREADED.set(decoder, false);
+      } catch (RuntimeException e) {
         throw new PreprocessorConfigurationException(LOGIC_VERSION + ": JCodec's H264Decoder threading cannot be turned off", e);
       }
       return decoder;
@@ -307,8 +322,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     long width = (sps.picWidthInMbsMinus1 + 1L) * MACROBLOCK;
     long height = (sps.picHeightInMapUnitsMinus1 + 1L) * MACROBLOCK;
     if (sps.picWidthInMbsMinus1 < 0 || sps.picHeightInMapUnitsMinus1 < 0 || width * height > MAX_CODED_PIXELS) {
-      return "codes " + width + "x" + height + " pixels per frame, above the " + MAX_PIXELS + " (1920x1080) " + LOGIC_VERSION
-          + " decodes";
+      return "codes " + width + "x" + height + " pixels per frame, above the " + CEILING;
     }
     if (sps.log2MaxFrameNumMinus4 < 0 || sps.log2MaxFrameNumMinus4 > 12 || sps.numRefFrames < 0 || sps.numRefFrames > 16) {
       return "has an H.264 parameter set out of range (log2_max_frame_num_minus4 " + sps.log2MaxFrameNumMinus4
@@ -319,6 +333,8 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
   /** The kept frames of one video, decoded and encoded on demand. */
   private static final class KeyframeFrames implements ClosableIterator<ExtractedFrame> {
+    /** {@link #tableLayout} of a table too short to hold its fixed part: nothing is parsed from it. */
+    private static final long[] NO_TABLE = new long[0];
     private final FileMeta video;
     private final String extension;
     private final KeyframeSchedule schedule;
@@ -327,6 +343,8 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     /** Chosen keyframes not yet decoded, as {time from the origin in microseconds, sample number}: at most two. */
     private final Deque<long[]> chosen = new ArrayDeque<>(2);
     private BlobByteChannel channel;
+    /** Reads {@link #channel}; closing it closes the channel. */
+    private MP4Demuxer demuxer;
     private AbstractMP4DemuxerTrack track;
     private ByteBuffer codecPrivate;
     private SampleSizesBox sampleSizes;
@@ -362,38 +380,35 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
       this.schedule = new KeyframeSchedule(config.getIntervalMs() * MICROS_PER_MILLI);
       this.dedup = new FrameDedup(config.getDedupMethod(), config.getMaxDistance());
       this.maxPixels = config.getMaxPixels();
-      try {
-        open(bytes);
-      } catch (IOException | Error e) {
-        closeAfterOpenFailure(e);
-        throw e;
-      } catch (RuntimeException e) {
-        RuntimeException thrown = e instanceof VideoDecodeException || e instanceof UncheckedIOException ? e
-            : failure("cannot be opened", e);
-        closeAfterOpenFailure(thrown);
-        throw thrown;
+      // whatever way opening fails, an Error included, what it opened is closed; a close failure is suppressed into the
+      // opening's failure, which stays the one thrown
+      try (CloseOnFailure<RuntimeException> guard = new CloseOnFailure<>(this::close)) {
+        openOrRefuse(bytes);
+        guard.succeeded();
       }
     }
 
-    /** Closes what opening opened; a close failure is suppressed into {@code openFailure}, which stays the one thrown. */
-    private void closeAfterOpenFailure(Throwable openFailure) {
+    /** {@link #open}, anything JCodec throws while opening refused as the video's data. */
+    private void openOrRefuse(SeekableBlobBytesSupplier bytes) throws IOException {
       try {
-        close();
-      } catch (RuntimeException | Error closeFailure) {
-        openFailure.addSuppressed(closeFailure);
+        open(bytes);
+      } catch (VideoDecodeException | UncheckedIOException e) {
+        throw e;
+      } catch (RuntimeException e) {
+        throw failure("cannot be opened", e);
       }
     }
 
     private void open(SeekableBlobBytesSupplier bytes) throws IOException {
       channel = new BlobByteChannel(bytes.openSeekable());
       checkBoxes();
-      MP4Demuxer demuxer = MP4Demuxer.createMP4Demuxer(channel);
+      demuxer = MP4Demuxer.createMP4Demuxer(channel);
       if (NodeBox.findFirst(demuxer.getMovie(), Box.class, "mvex") != null) {
         throw refused("is a fragmented MP4");
       }
       List<DemuxerTrack> videoTracks = demuxer.getVideoTracks();
       if (videoTracks.isEmpty()) {
-        throw new VideoDecodeException("video " + video + " has no video stream");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " has no video stream");
       }
       track = (AbstractMP4DemuxerTrack) videoTracks.get(0);
       String fourcc = track.getFourcc();
@@ -423,7 +438,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
       }
       timescale = track.getTimescale();
       if (timescale <= 0) {
-        throw new VideoDecodeException("video " + video + " declares a video timescale of " + timescale);
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " declares a video timescale of " + timescale);
       }
       codecPrivate = track.getMeta().getCodecPrivate();
       encoder = new FrameJpegEncoder();
@@ -440,11 +455,11 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
         // an entry is an unsigned 32-bit sample number, read by JCodec into an int
         long entry = syncSamples[i] & 0xffffffffL;
         if (entry < 1 || entry > sampleCount) {
-          throw new VideoDecodeException("video " + video + " has a corrupt sync-sample table (stss): entry " + (i + 1) + " ("
+          throw new VideoDecodeException(VIDEO_PREFIX + video + " has a corrupt sync-sample table (stss): entry " + (i + 1) + " ("
               + entry + ") is outside [1, " + sampleCount + "]");
         }
         if (entry <= previous) {
-          throw new VideoDecodeException("video " + video + " has a corrupt sync-sample table (stss): it is not strictly "
+          throw new VideoDecodeException(VIDEO_PREFIX + video + " has a corrupt sync-sample table (stss): it is not strictly "
               + "increasing, entry " + (i + 1) + " (" + entry + ") is not above the one before it (" + previous + ")");
         }
         previous = entry;
@@ -463,7 +478,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
         covered += entry.getCount() & 0xffffffffL;
       }
       if (covered < sampleCount) {
-        throw new VideoDecodeException("video " + video + " has a corrupt composition-offset table (ctts): it covers " + covered
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " has a corrupt composition-offset table (ctts): it covers " + covered
             + " of the track's " + sampleCount + " samples");
       }
     }
@@ -495,7 +510,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
         offset += box[0];
       }
       if (!index) {
-        throw new VideoDecodeException("video " + video + " has no index (moov box): truncated or not an MP4");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " has no index (moov box): truncated or not an MP4");
       }
     }
 
@@ -512,7 +527,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private void checkIndex(long start, long length) throws IOException {
       ByteBuffer index = readAt(start, (int) length);
       if (index.remaining() < length) {
-        throw new VideoDecodeException("video " + video + " ends inside its index: the file is truncated");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " ends inside its index: the file is truncated");
       }
       for (int type = 4; type + 4 <= index.limit(); type++) {
         byte first = index.get(type);
@@ -554,47 +569,13 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
         // JCodec parses no box whose body does not fit where it sits (text that spells a table's name reads as one)
         return;
       }
-      // a full box: version and flags (4 bytes) first
-      long fixedBytes;
-      long count;
-      long entryBytes;
-      switch (fourcc) {
-        case "stsz":
-          fixedBytes = 12;
-          if (body < fixedBytes) {
-            return;
-          }
-          count = index.getInt(bodyStart + 8) & 0xFFFFFFFFL;
-          // a constant sample size: JCodec keeps no per-sample array
-          entryBytes = index.getInt(bodyStart + 4) == 0 ? 4 : 0;
-          break;
-        case "chan":
-          fixedBytes = 16;
-          if (body < fixedBytes) {
-            return;
-          }
-          count = index.getInt(bodyStart + 12) & 0xFFFFFFFFL;
-          entryBytes = 20;
-          break;
-        case "trun":
-          fixedBytes = 8;
-          if (body < fixedBytes) {
-            return;
-          }
-          int flags = index.getInt(bodyStart) & 0xFFFFFF;
-          count = index.getInt(bodyStart + 4) & 0xFFFFFFFFL;
-          fixedBytes += ((flags & 0x1) != 0 ? 4 : 0) + ((flags & 0x4) != 0 ? 4 : 0);
-          // one int per sample for each of duration, size, flags and composition offset present
-          entryBytes = 4L * Integer.bitCount(flags & 0xF00);
-          break;
-        default:
-          fixedBytes = 8;
-          if (body < fixedBytes) {
-            return;
-          }
-          count = index.getInt(bodyStart + 4) & 0xFFFFFFFFL;
-          entryBytes = TABLE_ENTRY_BYTES.get(fourcc);
+      long[] layout = tableLayout(fourcc, index, bodyStart, body);
+      if (layout.length == 0) {
+        return;
       }
+      long fixedBytes = layout[0];
+      long count = layout[1];
+      long entryBytes = layout[2];
       if (entryBytes == 0) {
         return;
       }
@@ -603,8 +584,42 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
             + LOGIC_VERSION + " reads");
       }
       if (fixedBytes + count * entryBytes > body) {
-        throw new VideoDecodeException("video " + video + " has a '" + fourcc + "' table declaring " + count + " entries in "
+        throw new VideoDecodeException(VIDEO_PREFIX + video + hasA(fourcc) + "table declaring " + count + " entries in "
             + body + " bytes: corrupt index");
+      }
+    }
+
+    /**
+     * The declared layout of a {@code fourcc} table whose body ({@code body} bytes) starts at {@code bodyStart} of {@code index}:
+     * {fixed bytes, entry count, bytes per entry}, or {@link #NO_TABLE} when the body is too short to hold the fixed part. Every
+     * such table is a full box, whose body starts with its version and flags (4 bytes).
+     */
+    private static long[] tableLayout(String fourcc, ByteBuffer index, int bodyStart, long body) {
+      switch (fourcc) {
+        case "stsz":
+          if (body < 12) {
+            return NO_TABLE;
+          }
+          // a constant sample size: JCodec keeps no per-sample array
+          return new long[] {12, index.getInt(bodyStart + 8) & 0xFFFFFFFFL, index.getInt(bodyStart + 4) == 0 ? 4 : 0};
+        case "chan":
+          if (body < 16) {
+            return NO_TABLE;
+          }
+          return new long[] {16, index.getInt(bodyStart + 12) & 0xFFFFFFFFL, 20};
+        case "trun":
+          if (body < 8) {
+            return NO_TABLE;
+          }
+          int flags = index.getInt(bodyStart) & 0xFFFFFF;
+          long fixedBytes = 8L + ((flags & 0x1) == 0 ? 0 : 4) + ((flags & 0x4) == 0 ? 0 : 4);
+          // one int per sample for each of duration, size, flags and composition offset present
+          return new long[] {fixedBytes, index.getInt(bodyStart + 4) & 0xFFFFFFFFL, 4L * Integer.bitCount(flags & 0xF00)};
+        default:
+          if (body < 8) {
+            return NO_TABLE;
+          }
+          return new long[] {8, index.getInt(bodyStart + 4) & 0xFFFFFFFFL, TABLE_ENTRY_BYTES.get(fourcc)};
       }
     }
 
@@ -615,7 +630,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private long[] boxAt(long offset, long end, String within) throws IOException {
       ByteBuffer header = readAt(offset, (int) Math.min(16, end - offset));
       if (header.remaining() < 8) {
-        throw new VideoDecodeException("video " + video + " ends inside a box header at byte " + offset + ": the file is truncated");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " ends inside a box header at byte " + offset + TRUNCATED);
       }
       long boxSize = header.getInt() & 0xFFFFFFFFL;
       int type = header.getInt();
@@ -623,7 +638,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
       long headerSize = 8;
       if (boxSize == 1) {
         if (header.remaining() < 8) {
-          throw new VideoDecodeException("video " + video + " ends inside the header of box '" + fourcc + "': the file is truncated");
+          throw new VideoDecodeException(VIDEO_PREFIX + video + " ends inside the header of box '" + fourcc + "': the file is truncated");
         }
         boxSize = header.getLong();
         headerSize = 16;
@@ -632,13 +647,18 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
             + " does not read");
       }
       if (boxSize < headerSize) {
-        throw new VideoDecodeException("video " + video + " has a '" + fourcc + "' box of " + boxSize + " bytes at byte " + offset);
+        throw new VideoDecodeException(VIDEO_PREFIX + video + hasA(fourcc) + "box of " + boxSize + " bytes at byte " + offset);
       }
       if (boxSize > end - offset) {
-        throw new VideoDecodeException("video " + video + " has a '" + fourcc + "' box of " + boxSize + " bytes at byte " + offset
-            + ", past the end of " + within + " at byte " + end + ": the file is truncated");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + hasA(fourcc) + "box of " + boxSize + " bytes at byte " + offset
+            + ", past the end of " + within + " at byte " + end + TRUNCATED);
       }
       return new long[] {boxSize, headerSize, type};
+    }
+
+    /** " has a '{@code fourcc}' ", the middle of a message about one of the video's boxes. */
+    private static String hasA(String fourcc) {
+      return " has a '" + fourcc + "' ";
     }
 
     private static String fourcc(long[] box) {
@@ -667,12 +687,12 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
       long width = entry.getWidth();
       long height = entry.getHeight();
       if (width <= 0 || height <= 0) {
-        throw new VideoDecodeException("video " + video + " declares no frame size");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " declares no frame size");
       }
       checkPixels(width, height, "declares");
       AvcCBox avcC = H264Utils.parseAVCC(entry);
       if (avcC == null || avcC.getSpsList().isEmpty()) {
-        throw new VideoDecodeException("video " + video + " has no H.264 parameter sets (avcC)");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " has no H.264 parameter sets (avcC)");
       }
       for (ByteBuffer each : avcC.getSpsList()) {
         SeqParameterSet sps = H264Utils.readSPS(each);
@@ -691,7 +711,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
       codedHeight = Math.max(codedHeight, (sps.picHeightInMapUnitsMinus1 + 1) * MACROBLOCK);
       if ((long) codedWidth * codedHeight > MAX_CODED_PIXELS) {
         throw refused("codes pictures up to " + codedWidth + "x" + codedHeight + " across its parameter sets, above the "
-            + MAX_PIXELS + " (1920x1080) " + LOGIC_VERSION + " decodes");
+            + CEILING);
       }
     }
 
@@ -733,13 +753,12 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private void checkPixels(long width, long height, String what) {
       long pixels = width * height;
       if (pixels > maxPixels) {
-        throw new UncheckedIOException(new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + "video " + video
+        throw new UncheckedIOException(new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + VIDEO_PREFIX + video
             + " " + what + " " + width + "x" + height + " = " + pixels + " pixels per frame, above the configured maximum ("
             + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") of " + maxPixels));
       }
       if (pixels > MAX_PIXELS) {
-        throw refused(what + " " + width + "x" + height + " = " + pixels + " pixels per frame, above the " + MAX_PIXELS
-            + " (1920x1080) " + LOGIC_VERSION + " decodes");
+        throw refused(what + " " + width + "x" + height + " = " + pixels + " pixels per frame, above the " + CEILING);
       }
     }
 
@@ -799,18 +818,26 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
         long micros = toMicros(Math.max(0, presentation));
         lastFrameMicros = Math.max(lastFrameMicros, micros);
         if (isSync(sample)) {
-          if (presentation < 0) {
-            throw refused("has a keyframe (sample " + sample + ") before the start of its edit list; " + LOGIC_VERSION
-                + " does not trim");
-          }
-          if (micros > previousKeyframeMicros) {
-            choose(schedule.onKeyframe(micros), micros, sample);
-            previousKeyframeMicros = micros;
-            previousKeyframeSample = sample;
-          }
+          acceptKeyframe(sample, presentation, micros);
         }
       }
       return chosen.isEmpty() ? null : chosen.removeFirst();
+    }
+
+    /**
+     * A sync sample at {@code presentation} (track timescale, from the origin), {@code micros} as the schedule sees it: refused
+     * before the edit list's start, else offered to the schedule when later than the previous keyframe.
+     */
+    private void acceptKeyframe(long sample, long presentation, long micros) {
+      if (presentation < 0) {
+        throw refused("has a keyframe (sample " + sample + ") before the start of its edit list; " + LOGIC_VERSION
+            + " does not trim");
+      }
+      if (micros > previousKeyframeMicros) {
+        choose(schedule.onKeyframe(micros), micros, sample);
+        previousKeyframeMicros = micros;
+        previousKeyframeSample = sample;
+      }
     }
 
     /** The decode duration of the current sample (stts), moving the cursor to the next sample. */
@@ -820,7 +847,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
         deltaUsed = 0;
       }
       if (deltaEntry >= decodeDeltas.length) {
-        throw new VideoDecodeException("video " + video + " has more samples than its time-to-sample table (stts) covers");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " has more samples than its time-to-sample table (stts) covers");
       }
       deltaUsed++;
       return decodeDeltas[deltaEntry].getSampleDuration();
@@ -879,29 +906,17 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     }
 
     private BufferedImage decodeKeyframe(long sample) {
-      long declaredBytes = sampleSizes.getDefaultSize() != 0 ? sampleSizes.getDefaultSize() : sampleSizes.getSizes()[(int) sample];
+      long declaredBytes = sampleSizes.getDefaultSize() == 0 ? sampleSizes.getSizes()[(int) sample] : sampleSizes.getDefaultSize();
       if (declaredBytes < 0 || declaredBytes > Math.min(channel.size(), MAX_SAMPLE_BYTES)) {
-        throw new VideoDecodeException("video " + video + " declares " + (declaredBytes & 0xFFFFFFFFL) + " bytes for keyframe sample "
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " declares " + (declaredBytes & 0xFFFFFFFFL) + " bytes for keyframe sample "
             + sample + ", more than the file holds or a " + MAX_PIXELS + "-pixel keyframe needs");
       }
-      MP4Packet packet;
-      try {
-        if (!track.gotoFrame(sample)) {
-          throw new VideoDecodeException("video " + video + " has no sample " + sample);
-        }
-        packet = (MP4Packet) track.nextFrame();
-      } catch (IOException e) {
-        throw failure("cannot be read at sample " + sample, e);
-      } catch (VideoDecodeException e) {
-        throw e;
-      } catch (RuntimeException e) {
-        throw failure("cannot be read at sample " + sample, e);
-      }
+      MP4Packet packet = readSample(sample);
       if (packet == null || packet.getData() == null) {
-        throw new VideoDecodeException("video " + video + " ends inside sample " + sample + ": the file is truncated");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " ends inside sample " + sample + TRUNCATED);
       }
       if (!packet.isKeyFrame()) {
-        throw new VideoDecodeException("video " + video + " sample " + sample + " is listed as a keyframe but is not one");
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " sample " + sample + " is listed as a keyframe but is not one");
       }
       checkInBandSps(packet.getData(), sample);
       Picture picture;
@@ -916,7 +931,7 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
         throw failure("cannot be decoded at sample " + sample, e);
       }
       if (picture == null) {
-        throw new VideoDecodeException("video " + video + " keyframe at sample " + sample + " decodes to no picture" + wayOut(extension));
+        throw new VideoDecodeException(VIDEO_PREFIX + video + " keyframe at sample " + sample + " decodes to no picture" + wayOut(extension));
       }
       long width = picture.getCroppedWidth();
       long height = picture.getCroppedHeight();
@@ -931,13 +946,27 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
       }
     }
 
+    /** Sample {@code sample} (from 0), read through the demuxer's track. */
+    private MP4Packet readSample(long sample) {
+      try {
+        if (!track.gotoFrame(sample)) {
+          throw new VideoDecodeException(VIDEO_PREFIX + video + " has no sample " + sample);
+        }
+        return (MP4Packet) track.nextFrame();
+      } catch (VideoDecodeException e) {
+        throw e;
+      } catch (IOException | RuntimeException e) {
+        throw failure("cannot be read at sample " + sample, e);
+      }
+    }
+
     private long toMicros(long ticks) {
       return ticks / timescale * MICROS_PER_SECOND + ticks % timescale * MICROS_PER_SECOND / timescale;
     }
 
     /** A refusal of this video's type: the reason and the way out. */
     private VideoDecodeException refused(String reason) {
-      return new VideoDecodeException("video " + video + " " + reason + wayOut(extension));
+      return new VideoDecodeException(VIDEO_PREFIX + video + " " + reason + wayOut(extension));
     }
 
     /**
@@ -947,10 +976,10 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private RuntimeException failure(String what, Exception cause) {
       for (Throwable each : ExceptionUtil.getCauses(cause)) {
         if (each instanceof BlobReadException) {
-          return new UncheckedIOException("video " + video + " " + what + ": storage failure", (BlobReadException) each);
+          return new UncheckedIOException(VIDEO_PREFIX + video + " " + what + ": storage failure", (BlobReadException) each);
         }
       }
-      return new VideoDecodeException("video " + video + " " + what + " by JCodec (" + cause + ")" + wayOut(extension), cause);
+      return new VideoDecodeException(VIDEO_PREFIX + video + " " + what + " by JCodec (" + cause + ")" + wayOut(extension), cause);
     }
 
     @Override
@@ -960,32 +989,39 @@ public class JcodecKeyframeVideoFrameSource implements FrameExtractionStrategy {
       }
       closed = true;
       next = null;
-      try {
+      // the demuxer and blob channel are closed whatever the encoder's close threw; the encoder's failure stays the one thrown,
+      // an input failure suppressed into it
+      try (Release<RuntimeException> inputClose = this::closeInput) {
         if (encoder != null) {
           encoder.close();
         }
-      } catch (RuntimeException | Error e) {
-        // the blob channel is closed whatever the encoder's close threw; the encoder's failure stays the one thrown
-        closeChannel(e);
-        throw e;
       }
-      closeChannel(null);
     }
 
-    /** Closes the blob channel; an unchecked close failure is suppressed into {@code primary} when there is one. */
-    private void closeChannel(Throwable primary) {
+    /**
+     * Closes the demuxer, which closes the blob channel it reads, then the channel itself (a no-op once the demuxer closed it; the
+     * close when opening failed before the demuxer, or when the demuxer's close failed); an unchecked close failure propagates.
+     */
+    private void closeInput() {
+      try {
+        if (demuxer != null) {
+          demuxer.close();
+        }
+      } catch (IOException e) {
+        // a close failure changes no outcome, but a stream left open (a pooled connection) must leave a trace
+        LOG.warn("The demuxer of video {} failed to close", video, e);
+      } finally {
+        closeChannel();
+      }
+    }
+
+    private void closeChannel() {
       try {
         if (channel != null) {
           channel.close();
         }
       } catch (IOException e) {
-        // a close failure changes no outcome, but a stream left open (a pooled connection) must leave a trace
         LOG.warn("The blob channel of video {} failed to close", video, e);
-      } catch (RuntimeException | Error e) {
-        if (primary == null) {
-          throw e;
-        }
-        primary.addSuppressed(e);
       }
     }
   }

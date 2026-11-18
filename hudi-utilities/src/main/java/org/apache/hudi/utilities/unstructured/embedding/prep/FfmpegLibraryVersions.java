@@ -35,9 +35,9 @@ import java.util.jar.JarFile;
 /**
  * The FFmpeg libraries (JavaCV and its FFmpeg preset) this Hudi build compiles and tests against: the {@code javacv.version} and
  * {@code javacv.ffmpeg.version} of the build. They are provided, never bundled, and a deployment adds them to the executors only,
- * so the driver that pins the prep logic version usually has none of them. The video and audio prep logic versions therefore
- * name these declared versions, never what a class path holds, and an executor about to decode with FFmpeg checks that the jars
- * it loaded are these versions ({@link #requireDeclared}).
+ * so the driver that pins the prep logic version usually has none of them. The video and audio prep logic versions pin the FFmpeg
+ * keyframe and audio logic constants, never a library version; an executor about to decode with FFmpeg checks that the jars it
+ * loaded are these declared versions, the ones those constants were verified with ({@link #requireDeclared}).
  */
 public final class FfmpegLibraryVersions {
 
@@ -54,7 +54,7 @@ public final class FfmpegLibraryVersions {
 
   /**
    * Refuses FFmpeg jars that are not the declared versions, before the first video or audio track is decoded with them: what
-   * they would prepare is not what the prep logic version pinned on the table says.
+   * they would prepare is not what the FFmpeg logic constants pinned on the table were verified with.
    *
    * @param loader the class loader the FFmpeg classes are resolved through
    * @throws PreprocessorConfigurationException naming each expected and found version; the task fails and nothing is prepared
@@ -69,7 +69,7 @@ public final class FfmpegLibraryVersions {
     }
     if (!mismatches.isEmpty()) {
       throw new PreprocessorConfigurationException("The FFmpeg libraries on this executor are not the versions this Hudi build"
-          + " declares and its prep logic version names (" + String.join("; ", mismatches) + "); add the declared versions'"
+          + " declares and its prep logic was verified with (" + String.join("; ", mismatches) + "); add the declared versions'"
           + " jars to the job; nothing was prepared with FFmpeg", null);
     }
   }
