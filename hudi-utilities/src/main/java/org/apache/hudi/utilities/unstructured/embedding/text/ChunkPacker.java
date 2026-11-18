@@ -23,19 +23,75 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Locale;
+import java.util.Objects;
 
-/** Streams normalized PDF text into bounded chunks using sentence and paragraph boundaries, word splits and overlap. */
+/**
+ * Cuts the normalized text stream of one file into chunks, holding only bounded state.
+ *
+ * <p>The caller appends normalized pages while {@link #needsMoreText()} holds and pages remain, then calls
+ * {@link #cut(boolean)}. A chunk starts with the overlap carried from the previous chunk and appends whole
+ * sentences while the result {@link TokenBudget#fits fits}; when the next sentence does not fit it is cut at
+ * the last paragraph boundary that leaves at least {@code (maxTokens - overlapTokens) / 2} tokens of new text, else before
+ * that sentence. A sentence that does not fit even alone (overlap dropped) is split at words, and a word at
+ * code points. In the PDF mode every chunk is an exact slice of the stream; in the declared-boundary
+ * mode a chunk is the caller's prefix plus such a slice. Every chunk is re-counted after the cut.
+ *
+ * <p>Stream boundaries are the boundaries one {@link BreakIterator} sentence instance returns over the pending text,
+ * and a paragraph ends where a sentence end follows {@code \n\n}; the boundaries inside a chunk are recorded
+ * when it is cut and are the only overlap starts considered.
+ *
+ * <p>Two modes. The PDF chunker's ({@link #ChunkPacker(TokenBudget, int, Locale)}): pages appended with
+ * {@link #appendPage}, boundaries from the {@link BreakIterator}, no chunk prefix, failures of type {@code PdfFileFailure}; every
+ * chunk is an exact slice of the stream. The DECLARED-boundary mode ({@link #withDeclaredBoundaries}), for text whose units
+ * the caller knows (the transcript packer: an utterance end is a sentence boundary, a speaker turn a paragraph boundary):
+ * pieces appended with {@link #appendSegment} name the boundary after them, which replaces the {@link BreakIterator} and
+ * the {@code \n\n} test; a {@link ChunkPrefix} may put a prefix before each chunk (counted in every fit test, the forced
+ * split and the re-count, never part of the overlap). Both modes run the same pull, cut, split and overlap rules.
+ *
+ * <p>Marks: every appended piece carries an int mark, which the PDF mode names a page (hence {@code pageAt}, {@code lastPage},
+ * {@link #pageMarkers()}) and the transcript packer an utterance number; {@link #appendSegment} appends one piece (for the
+ * transcript packer, one utterance with its separator), not an audio segment.
+ */
 public final class ChunkPacker {
 
   private static final int[] NONE = new int[0];
+
+  /** The boundary after a piece of declared-boundary text. */
+  public enum Boundary {
+    /** No boundary: the next piece continues the sentence. */
+    NONE,
+    /** A sentence ends after the piece. */
+    SENTENCE,
+    /** A sentence and a paragraph end after the piece. */
+    PARAGRAPH
+  }
+
+  /** The prefix put before a chunk in declared-boundary mode. */
+  @FunctionalInterface
+  public interface ChunkPrefix {
+
+    /**
+     * The text to put before the chunk whose first stream char was appended under {@code firstMark} and whose stream text
+     * starts with {@code start} (its overlap, else at least its first sentence); empty for none. Called before every cut.
+     */
+    String prefixFor(int firstMark, String start);
+  }
 
   private final TokenBudget budget;
   private final int maxTokens;
   private final int overlapTokens;
   private final int maxWords;
   private final int window;
-  /** The locale's sentence boundaries. */
+  /** The PDF mode's sentence boundaries; null in declared-boundary mode. */
   private final BreakIterator sentences;
+  /** The declared-boundary mode's chunk prefix; null in the PDF mode. */
+  private final ChunkPrefix prefix;
+  /**
+   * Declared-boundary mode: the boundary at the end of the pending text (after the last appended piece), as a
+   * {@link Boundary} ordinal. A boundary inside the pending text is kept on the mark of the piece that starts there (its
+   * third element), so it needs no container of its own and leaves with that mark.
+   */
+  private int endBoundary;
   /** The sentence cursor over the scanned text, created on first use. */
   private SentenceCursor cursor;
 
@@ -64,12 +120,50 @@ public final class ChunkPacker {
 
   /** The PDF chunker's packer: {@link BreakIterator} sentences of {@code locale}, no chunk prefix. */
   public ChunkPacker(TokenBudget budget, int overlapTokens, Locale locale) {
+    this(budget, overlapTokens, BreakIterator.getSentenceInstance(locale), null);
+  }
+
+  private ChunkPacker(TokenBudget budget, int overlapTokens, BreakIterator sentences, ChunkPrefix prefix) {
     this.budget = budget;
     this.maxTokens = budget.maxTokens();
     this.overlapTokens = overlapTokens;
     this.maxWords = budget.maxWords();
     this.window = budget.windowChars();
-    this.sentences = BreakIterator.getSentenceInstance(locale);
+    this.sentences = sentences;
+    this.prefix = prefix;
+  }
+
+  /**
+   * A packer of text appended with {@link #appendSegment}, whose sentence and paragraph boundaries the caller declares, and
+   * whose chunks start with {@code prefix}'s text.
+   *
+   * @param budget        the chunk limits; its failures are this packer's
+   * @param overlapTokens tokens of overlap at most
+   * @param prefix        the chunk prefix
+   */
+  public static ChunkPacker withDeclaredBoundaries(TokenBudget budget, int overlapTokens, ChunkPrefix prefix) {
+    return new ChunkPacker(budget, overlapTokens, null, Objects.requireNonNull(prefix, "prefix"));
+  }
+
+  /**
+   * Appends one non-empty piece of normalized text under {@code mark} (declared-boundary mode); pieces join with nothing,
+   * so the caller supplies the separators, and {@code after} names the boundary at the piece's end.
+   *
+   * @throws IllegalStateException in the PDF mode
+   * @throws IllegalArgumentException for an empty piece
+   */
+  public void appendSegment(String text, int mark, Boundary after) {
+    if (sentences != null) {
+      throw new IllegalStateException("appendSegment is the declared-boundary mode's; the PDF mode appends pages");
+    }
+    if (text.isEmpty()) {
+      throw new IllegalArgumentException("an appended piece must not be empty (mark " + mark + ")");
+    }
+    marks.addLast(new int[] {pending.length(), mark, pending.length() == 0 ? 0 : endBoundary});
+    pending.append(text);
+    streamHasText = true;
+    lastPage = mark;
+    endBoundary = after.ordinal();
   }
 
   /**
@@ -79,6 +173,9 @@ public final class ChunkPacker {
    * belongs to the overlap: a cut that drops the overlap drops that space too.
    */
   public void appendPage(String normalizedText, int page) {
+    if (sentences == null) {
+      throw new IllegalStateException("appendPage is the PDF mode's; the declared-boundary mode appends segments");
+    }
     if (normalizedText.isEmpty()) {
       return;
     }
@@ -130,11 +227,10 @@ public final class ChunkPacker {
     String text = pending.substring(0, Math.min(len, 2 * window + 1));
     int[] ends = usableEnds(text, len, endOfInput);
     String ov = overlap;
-    String pre = "";
+    String pre = prefixFor(ov, text);
     int cutPos = greedy(text, ends, pre + ov);
     if (cutPos == 0 && !ov.isEmpty()) {
       ov = "";                                        // the overlap is "at max", drop it for this chunk
-      pre = "";
       if (pendingStartsWithOverlapJoin) {
         // the join space and its page mark belong to the dropped overlap: the chunk starts with the next page's own text
         consume(1);
@@ -143,6 +239,7 @@ public final class ChunkPacker {
         text = pending.substring(0, Math.min(len, 2 * window + 1));
         ends = usableEnds(text, len, endOfInput);
       }
+      pre = prefixFor(ov, text);
       cutPos = greedy(text, ends, pre);
     }
     boolean forced = cutPos == 0;
@@ -199,11 +296,31 @@ public final class ChunkPacker {
     return marks.size() + overlapMarkOffsets.length;
   }
 
+  /**
+   * The smallest mark the next chunk can carry: its overlap's first mark, else the pending text's first mark; -1 when nothing
+   * is held. A caller keeping per-mark data may drop every mark below it.
+   */
+  public int firstHeldMark() {
+    if (!overlap.isEmpty()) {
+      return overlapMarkPages[0];
+    }
+    return pending.length() > 0 ? pageAt(0) : -1;
+  }
+
   // ------------------------------------------------------------------ sentences
+
+  /** The chunk prefix for a chunk starting with {@code ov} (else with {@code text}); empty in the PDF mode. */
+  private String prefixFor(String ov, String text) {
+    if (prefix == null) {
+      return "";
+    }
+    String result = prefix.prefixFor(ov.isEmpty() ? pageAt(0) : overlapMarkPages[0], ov.isEmpty() ? text : ov);
+    return result == null ? "" : result;
+  }
 
   private SentenceCursor cursor() {
     if (cursor == null) {
-      cursor = new BreakIteratorCursor(sentences);
+      cursor = sentences != null ? new BreakIteratorCursor(sentences) : new DeclaredCursor();
     }
     return cursor;
   }
@@ -285,7 +402,10 @@ public final class ChunkPacker {
 
   /** Whether the sentence end {@code end} of the scanned {@code text} also ends a paragraph. */
   private boolean endsParagraph(String text, int end) {
-    return end >= 2 && text.charAt(end - 1) == '\n' && text.charAt(end - 2) == '\n';
+    if (sentences != null) {
+      return end >= 2 && text.charAt(end - 1) == '\n' && text.charAt(end - 2) == '\n';
+    }
+    return declaredAt(end) == Boundary.PARAGRAPH.ordinal();
   }
 
   /**
@@ -517,6 +637,22 @@ public final class ChunkPacker {
     return count < array.length ? array : Arrays.copyOf(array, array.length * 2);
   }
 
+  /** Declared-boundary mode: the {@link Boundary} ordinal declared at {@code offset} of the pending text (0 for none). */
+  private int declaredAt(int offset) {
+    if (offset == pending.length()) {
+      return endBoundary;
+    }
+    for (int[] mark : marks) {
+      if (mark[0] == offset) {
+        return mark.length > 2 ? mark[2] : 0;
+      }
+      if (mark[0] > offset) {
+        break;
+      }
+    }
+    return 0;
+  }
+
   /** The part of {@link BreakIterator} the packer uses, over the scanned prefix of the pending text. */
   private interface SentenceCursor {
     void setText(CharSequence text);
@@ -564,4 +700,61 @@ public final class ChunkPacker {
     }
   }
 
+  /**
+   * The declared-boundary mode, with a {@link BreakIterator}'s contract over the scanned text: 0, the declared boundaries
+   * inside it, and its end (which, as for a {@link BreakIterator}, is returned even when no boundary was declared there; the
+   * cut's finished rule decides whether it is usable).
+   */
+  private final class DeclaredCursor implements SentenceCursor {
+    private int[] boundaries = NONE;
+    private int position;
+
+    @Override
+    public void setText(CharSequence text) {
+      int len = text.length();
+      int[] found = new int[marks.size() + 2];
+      int count = 0;
+      found[count++] = 0;
+      for (int[] mark : marks) {
+        if (mark[0] > 0 && mark[0] < len && mark.length > 2 && mark[2] != 0) {
+          found[count++] = mark[0];
+        }
+      }
+      if (len > 0) {
+        found[count++] = len;
+      }
+      boundaries = Arrays.copyOf(found, count);
+      position = 0;
+    }
+
+    @Override
+    public int first() {
+      position = 0;
+      return boundaries[0];
+    }
+
+    @Override
+    public int next() {
+      if (position + 1 >= boundaries.length) {
+        position = boundaries.length;
+        return BreakIterator.DONE;
+      }
+      return boundaries[++position];
+    }
+
+    @Override
+    public int last() {
+      position = boundaries.length - 1;
+      return boundaries[position];
+    }
+
+    @Override
+    public int previous() {
+      if (position <= 0) {
+        position = 0;
+        return BreakIterator.DONE;
+      }
+      return boundaries[--position];
+    }
+  }
 }
