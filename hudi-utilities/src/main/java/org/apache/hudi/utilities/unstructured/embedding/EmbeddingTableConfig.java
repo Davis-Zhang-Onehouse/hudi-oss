@@ -461,6 +461,20 @@ public class EmbeddingTableConfig implements Serializable {
           + "Preprocessing style when set.");
   public static final long DEFAULT_PREP_VIDEO_MAX_PIXELS = 3840L * 2160;
   /**
+   * The per-executor heap a job that preps video leaves outside its task slots (Spark's own structures, per-JVM caches) in the
+   * frame-heap start check ({@code prep.VideoFrameHeapCheck}); default {@link #DEFAULT_PREP_VIDEO_HEAP_FIXED_BYTES} (64 MiB, an
+   * estimate). Not part of the preprocessing style.
+   */
+  public static final ConfigProperty<Long> PREP_VIDEO_HEAP_FIXED_BYTES = ConfigProperty
+      .key(PREP_PREFIX + "video.heap.fixed.bytes")
+      .defaultValue(67108864L)
+      .markAdvanced()
+      .sinceVersion("1.3.0")
+      .withDocumentation("The per-executor heap a job that preps video leaves outside its task slots (Spark's own structures, "
+          + "per-JVM caches) in the frame-heap start check (the video frame heap check); default 67108864 (64 MiB, an estimate). "
+          + "Not part of the preprocessing style.");
+  public static final long DEFAULT_PREP_VIDEO_HEAP_FIXED_BYTES = 64L * 1024 * 1024;
+  /**
    * FFmpeg decoder threads per video ({@code thread_count}); default {@link #DEFAULT_VIDEO_FFMPEG_THREADS}, at most
    * {@link #MAX_VIDEO_FFMPEG_THREADS}. Set explicitly because FFmpeg's own default (0) starts one thread per core the executor
    * may use; parallelism comes from Spark tasks, one video per task at a time. Changes no output: not style.
@@ -1047,6 +1061,15 @@ public class EmbeddingTableConfig implements Serializable {
       return Collections.emptyList();
     }
     return Arrays.stream(value.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
+  }
+
+  /** {@link #PREP_VIDEO_HEAP_FIXED_BYTES}, at least 0. */
+  public long videoHeapFixedBytes() {
+    long fixed = longValue(PREP_VIDEO_HEAP_FIXED_BYTES, DEFAULT_PREP_VIDEO_HEAP_FIXED_BYTES);
+    if (fixed < 0) {
+      throw new IllegalArgumentException("Config " + PREP_VIDEO_HEAP_FIXED_BYTES.key() + " must be >= 0 but is " + fixed);
+    }
+    return fixed;
   }
 
   private int intValue(ConfigProperty<?> property, int defaultValue) {
