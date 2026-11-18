@@ -38,18 +38,55 @@ import java.util.Set;
  */
 public final class SourceFailures {
 
+  /** The simple name of the HTTP response exception the GCS connector's refused requests are caused by. */
+  private static final String GCS_HTTP_RESPONSE_EXCEPTION = "HttpResponseException";
+  /** The HTTP status of a refused request. */
+  private static final int HTTP_FORBIDDEN = 403;
+  /**
+   * The reasons of a GCS 403 that refuses a request for its rate, not its access: the JSON error names one of them
+   * ({@code "reason": "rateLimitExceeded"}), and a later attempt may pass.
+   */
+  private static final String[] GCS_RATE_LIMIT_REASONS = {"\"rateLimitExceeded\"", "\"userRateLimitExceeded\""};
+
   private SourceFailures() {
   }
 
-  /** Whether this throwable is a storage access denial. */
+  /**
+   * Whether {@code cause} itself is an access denial: {@link AccessDeniedException} (how S3A reports a 403 or a KMS denial),
+   * Hadoop's {@link AccessControlException} (an HDFS permission check), or the GCS connector's HTTP 403 response unless it
+   * names a rate-limit reason ({@code rateLimitExceeded}, {@code userRateLimitExceeded}): such a 403 is a quota a later attempt
+   * may pass, so it takes the retry path. The GCS connector raises an IOException caused by its JSON error response, whose
+   * class is relocated under the connector's own package in the shaded connector jar, so it is recognized by its class's
+   * simple name in the hierarchy ({@code HttpResponseException}) and its message, which starts with the status code and
+   * carries the JSON error with its reason.
+   */
   public static boolean isAccessDenial(Throwable cause) {
-    return cause instanceof AccessDeniedException || cause instanceof AccessControlException;
+    if (cause instanceof AccessDeniedException || cause instanceof AccessControlException) {
+      return true;
+    }
+    for (Class<?> type = cause.getClass(); type != null; type = type.getSuperclass()) {
+      if (GCS_HTTP_RESPONSE_EXCEPTION.equals(type.getSimpleName())) {
+        String message = cause.getMessage();
+        return message != null && message.startsWith(HTTP_FORBIDDEN + " ") && !namesRateLimit(message);
+      }
+    }
+    return false;
+  }
+
+  private static boolean namesRateLimit(String message) {
+    for (String reason : GCS_RATE_LIMIT_REASONS) {
+      if (message.contains(reason)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
    * Whether {@code failure}'s cause chain says the file itself is at fault: its source is gone or short, or its row malformed. An
-   * access denial anywhere in the chain (java.nio.file.AccessDeniedException: a 403, a KMS denial, a file there but unreadable;
-   * Hadoop's AccessControlException) is never the file's fault, even when it carries the storage's FileNotFoundException.
+   * access denial anywhere in the chain ({@link #isAccessDenial}: java.nio.file.AccessDeniedException, which is
+   * a 403, a KMS denial or a file there but unreadable; Hadoop's AccessControlException; the GCS connector's 403 response,
+   * unless it names a rate-limit reason) is never the file's fault, even when it carries the storage's FileNotFoundException.
    */
   public static boolean isContentFailure(Throwable failure) {
     boolean content = false;
