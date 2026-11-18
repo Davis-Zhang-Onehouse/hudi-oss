@@ -18,12 +18,10 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.source;
 
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.sources.blob.BlobObjectCopier;
 
 import java.io.FileNotFoundException;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.Set;
 
 /**
  * Tells a storage failure that is a file's own fault from one a later run may not see: a
@@ -48,13 +46,12 @@ public final class SourceFailures {
    */
   public static boolean isContentFailure(Throwable failure) {
     boolean content = false;
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (BlobObjectCopier.isAccessDenial(cause)) {
         return false;
       }
       content |= cause instanceof FileNotFoundException || cause instanceof BlobTruncatedException
-          || cause instanceof BlobReferenceException;
+          || cause instanceof BlobReferenceException || cause instanceof BlobSourceChangedException;
     }
     return content;
   }

@@ -25,13 +25,14 @@ import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.schema.internal.HoodieSchemaException;
 import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.common.util.Option;
-import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.config.HoodieErrorTableConfig;
+import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.utilities.config.CloudSourceConfig;
 import org.apache.hudi.utilities.sources.blob.BlobTableSchema;
+import org.apache.hudi.utilities.transform.ChainedTransformer;
 import org.apache.hudi.utilities.transform.Transformer;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
-import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingTableTransformer;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.SparkSession;
@@ -45,13 +46,12 @@ import org.apache.spark.sql.types.StructType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * The columns an unstructured table must have (its contract), and the checks of a schema against them: a user's target schema,
@@ -76,7 +76,7 @@ public final class UnstructuredSchemaContract {
    * The columns {@code mode} writes:
    * <ul>
    *   <li>blob: {@link BlobTableSchema#schema()} with the path partition columns the source adds;</li>
-   *   <li>embedding: the columns the round writes ({@link EmbeddingTableTransformer#roundSchema}): those of the configuration on a
+   *   <li>embedding: the columns the round writes ({@link EmbeddingTableSchema#roundSchema}): those of the configuration on a
    *   new table, those of the existing table ({@code tableSchema}, without meta columns) with the active model's VECTOR otherwise.</li>
    * </ul>
    */
@@ -91,7 +91,7 @@ public final class UnstructuredSchemaContract {
         }
         return blob;
       case EMBEDDING:
-        return EmbeddingTableTransformer.roundSchema(EmbeddingTableConfig.from(props), tableSchema);
+        return EmbeddingTableSchema.roundSchema(EmbeddingTableConfig.from(props), tableSchema);
       default:
         throw new UnsupportedOperationException("Unknown unstructured mode " + mode);
     }
@@ -230,6 +230,26 @@ public final class UnstructuredSchemaContract {
       }
       schema = unresolved;
     }
+    List<String> partitions = Arrays.stream(ConfigUtils.getStringWithAltKeys(props, KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME, "")
+        .split(",")).map(String::trim).filter(column -> !column.isEmpty()).collect(Collectors.toList());
+    if (partitions.stream().anyMatch(column -> field(fixed, column) == null)) {
+      StructType produced = fixed;
+      if (errorTable) {
+        produced = produced.add(DataTypes.createStructField(CORRUPT_RECORD, DataTypes.StringType, true));
+      }
+      for (String entry : chain.subList(requiredIndex + 1, chain.size())) {
+        if (!UnstructuredTransformerChain.names(entry, closing)) {
+          produced = plan(mode, entry, ids, produced, jsc, spark, props);
+        }
+      }
+      for (String column : partitions) {
+        if (field(produced, column) == null) {
+          throw new HoodieSchemaException(source + " refuses partition column " + column + " in "
+              + KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key() + ": this job no longer produces it; configure "
+              + CloudSourceConfig.PATH_BASED_PARTITION_FIELDS.key() + " or a transformer that produces it. Nothing was written");
+        }
+      }
+    }
     schema = lastWins(mode, fixed, schema, "the transformer chain");
     StructType contract = contract(mode, props, tableSchema);
     checkOutput(mode, contract, fixed, schema, "the output of the transformer chain", errorTable);
@@ -260,9 +280,9 @@ public final class UnstructuredSchemaContract {
   private static StructType plan(UnstructuredMode mode, String entry, Set<String> ids, StructType incoming, JavaSparkContext jsc,
                                  SparkSession spark, TypedProperties props) {
     String trimmed = entry.trim();
-    int delimiter = trimmed.indexOf(':');
-    Transformer transformer = ReflectionUtils.loadClass(trimmed.substring(delimiter + 1).trim());
-    TypedProperties transformerProps = delimiter < 0 ? props : propertiesOf(trimmed.substring(0, delimiter).trim(), ids, props);
+    ChainedTransformer.TransformerInfo info = ChainedTransformer.TransformerInfo.from(entry);
+    Transformer transformer = info.getTransformer();
+    TypedProperties transformerProps = info.getProperties(props, ids);
     try {
       return transformer.transformedSchema(jsc, spark, incoming, transformerProps).asNullable();
     } catch (HoodieSchemaException e) {
@@ -273,34 +293,10 @@ public final class UnstructuredSchemaContract {
     }
   }
 
-  /** The properties of the transformer with id {@code id}, as the stock chain derives them for each of its id-form entries. */
-  private static TypedProperties propertiesOf(String id, Set<String> ids, TypedProperties props) {
-    TypedProperties transformerProps = TypedProperties.copy(props);
-    Map<String, Object> overrides = new HashMap<>();
-    for (Map.Entry<Object, Object> entry : props.entrySet()) {
-      String key = (String) entry.getKey();
-      String keyId = key.replaceAll(".*\\.", "");
-      if (keyId.equals(id)) {
-        overrides.put(key.substring(0, key.length() - (id.length() + 1)), entry.getValue());
-      }
-      if (ids.contains(keyId)) {
-        transformerProps.remove(key);
-      }
-    }
-    transformerProps.putAll(overrides);
-    return transformerProps;
-  }
-
   /** The ids of the chain's {@code <id>:<class>} entries. */
   private static Set<String> ids(List<String> chain) {
-    Set<String> ids = new HashSet<>();
-    for (String entry : chain) {
-      int delimiter = entry.trim().indexOf(':');
-      if (delimiter >= 0) {
-        ids.add(entry.trim().substring(0, delimiter).trim());
-      }
-    }
-    return ids;
+    return chain.stream().map(ChainedTransformer::splitTransformer).map(name -> name.getLeft().orElse(null))
+        .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
   }
 
   /**

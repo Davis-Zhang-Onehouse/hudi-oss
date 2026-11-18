@@ -38,8 +38,8 @@ import scala.Tuple2;
  * partition assignment. {@link #balance} is fixed: it trusts the assignment to name every input version exactly once with a
  * non-null INT partition in [0, numPartitions), a contract each subclass's tests hold it to. The assignment is persisted
  * at the configured tagged-record level ({@link EmbeddingTableConfig#persistLevel}) and computed into that cache before the join
- * is planned, so the strategy runs once, a recomputed join reads the same assignment, and the join is planned on the
- * assignment's real size. The assignment is joined back to the full rows, and the rows are shuffled once with an
+ * is planned, so the join is planned on the assignment's real size. Persistence saves computation cost; an executor loss
+ * can recompute the assignment, so {@link RowBalancingStrategy}'s determinism contract keeps retries consistent. The assignment is joined back to the full rows, and the rows are shuffled once with an
  * {@link ExactPartitioner}, so Spark partition k holds exactly the rows assigned to k, the way
  * {@code HoodieSparkEngineContext#mapGroupsByKey} keys values by their target group and partitions on it. The join carries no
  * hint: the persisted assignment is broadcast automatically when it is small (under {@code spark.sql.autoBroadcastJoinThreshold}),
@@ -106,7 +106,7 @@ public abstract class AssignmentBalancingStrategy implements RowBalancingStrateg
       matches = matches.and(source.col(column).eqNullSafe(assigned.col(column)));
     }
     // source columns keep their original layout
-    return source.join(assigned, matches).select(source.col("*"), assigned.col(BalancingAssignment.PARTITION));
+    return source.join(assigned, matches, "left").select(source.col("*"), assigned.col(BalancingAssignment.PARTITION));
   }
 
   private static Row dropLast(Row row, StructType schema) {

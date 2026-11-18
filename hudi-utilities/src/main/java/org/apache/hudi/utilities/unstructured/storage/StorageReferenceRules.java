@@ -18,18 +18,18 @@
 
 package org.apache.hudi.utilities.unstructured.storage;
 
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
-import org.apache.hudi.storage.StorageSchemes;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 
+import java.io.IOException;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.Locale;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -74,10 +74,9 @@ public final class StorageReferenceRules {
   }
 
   /**
-   * Whether {@code scheme} is one this deployment legitimately serves: a scheme Hudi supports
-   * ({@link StorageSchemes#isSchemeSupported}), or any scheme with an {@code fs.<scheme>.impl} in the job's Hadoop configuration.
-   * A file system missing for such a scheme is a platform failure (a connector absent on the executor); for any other scheme the
-   * reference is malformed. An unreadable job configuration counts as served: it is not proof that the scheme is foreign.
+   * Whether Hadoop can resolve {@code scheme}'s file system class in this job, through its configuration or service providers.
+   * A recognized Hudi scheme without its connector is not served. A connector that resolves but cannot initialize is a platform
+   * failure. An unreadable job configuration counts as served: it is not proof that the scheme is foreign.
    */
   public static boolean isServedScheme(String scheme, Configuration conf) {
     return isServedScheme(scheme, () -> conf);
@@ -130,8 +129,7 @@ public final class StorageReferenceRules {
   }
 
   private static boolean hasArgumentFailure(Throwable failure) {
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (cause instanceof IllegalArgumentException) {
         return true;
       }
@@ -144,14 +142,18 @@ public final class StorageReferenceRules {
       return false;
     }
     String lower = scheme.toLowerCase(Locale.ROOT);
-    if (StorageSchemes.isSchemeSupported(lower)) {
-      return true;
-    }
     try {
-      return conf.get().get("fs." + lower + ".impl") != null;
-    } catch (RuntimeException configurationFailure) {
-      // an unreadable job configuration is a platform failure, not proof that the scheme is foreign
+      Configuration configuration = conf.get();
+      if (configuration == null) {
+        return true;
+      }
+      FileSystem.getFileSystemClass(lower, configuration);
       return true;
+    } catch (IOException missingConnector) {
+      return false;
+    } catch (RuntimeException configurationFailure) {
+      // A configured class that cannot be loaded is unresolvable; an unavailable configuration is still a platform failure.
+      return !ExceptionUtil.isCausedBy(configurationFailure, ClassNotFoundException.class);
     }
   }
 

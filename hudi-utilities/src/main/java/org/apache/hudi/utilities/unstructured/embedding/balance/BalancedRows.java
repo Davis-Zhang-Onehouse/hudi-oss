@@ -27,8 +27,9 @@ import org.apache.spark.sql.Row;
 /**
  * Output of {@link RowBalancingStrategy#balance}: the balanced blob rows, plus, for an {@link AssignmentBalancingStrategy}, the
  * persisted assignment they are joined from. The rows read the assignment when they are computed (and again if a lost shuffle
- * output is recomputed), so the assignment stays persisted until {@link #close()}: every read applies the same
- * assignment, even for a strategy whose output would differ if recomputed. Close it once the rows have been consumed.
+ * output is recomputed), so the assignment stays persisted until {@link #close()} to save computation cost. Executor loss
+ * may recompute the assignment from lineage; {@link RowBalancingStrategy}'s determinism rule keeps retries consistent.
+ * Close it once the rows have been consumed.
  */
 public final class BalancedRows implements AutoCloseable {
 

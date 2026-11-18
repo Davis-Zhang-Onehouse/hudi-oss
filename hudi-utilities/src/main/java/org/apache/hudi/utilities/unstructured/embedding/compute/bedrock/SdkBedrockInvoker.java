@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.compute.bedrock;
 
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientConfigException;
 
 import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
@@ -174,7 +175,7 @@ public final class SdkBedrockInvoker implements BedrockInvoker {
    * that is throttling, retryable or 5xx (STS under IRSA). Each failing link of the chain is a cause or a suppressed exception.
    */
   private static boolean isTransient(Throwable failure) {
-    for (Throwable cause = failure; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (cause instanceof IOException || cause instanceof ApiCallTimeoutException
           || cause instanceof ApiCallAttemptTimeoutException) {
         return true;

@@ -39,10 +39,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.file.AccessDeniedException;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.Properties;
-import java.util.Set;
 
 /** Streams current source bytes into fresh managed files; inline and unmanaged values retain their content. */
 public final class BlobObjectCopier {
@@ -171,8 +168,7 @@ public final class BlobObjectCopier {
 
   /** Whether {@code failure} or any of its causes is an access denial ({@link #isAccessDenial}). */
   static boolean isCausedByAccessDenial(Throwable failure) {
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (isAccessDenial(cause)) {
         return true;
       }
@@ -272,8 +268,7 @@ public final class BlobObjectCopier {
   private static BlobCopyFailure.Fault sourceLookupFault(Path source, Configuration conf, Throwable failure) {
     URI uri = source.toUri();
     BlobCopyFailure.Fault constructionFault = null;
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (isAccessDenial(cause)) {
         return BlobCopyFailure.Fault.PLATFORM;
       }

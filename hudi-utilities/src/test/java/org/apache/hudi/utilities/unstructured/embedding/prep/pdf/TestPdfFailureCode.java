@@ -21,12 +21,23 @@ package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** {@link PdfFailureCode#format}. */
 public class TestPdfFailureCode {
+
+  @Test
+  public void cycleInPdfFailureDetailsTerminates() {
+    IOException first = new IOException("first");
+    IOException second = new IOException("second", first);
+    first.initCause(second);
+    assertTimeoutPreemptively(Duration.ofSeconds(1), () -> assertTrue(PdfFailureCode.INTERNAL.format(first).contains("second")));
+  }
 
   private static final String EMOJI = new String(Character.toChars(0x1F600));
 

@@ -25,6 +25,7 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
+import org.apache.hudi.utilities.unstructured.config.NumericConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ProviderClientSettings;
@@ -364,18 +365,7 @@ public final class OpenAiClientConfig implements Serializable {
   }
 
   private long positiveLong(TypedProperties props, String suffix) {
-    String key = key(suffix);
-    String raw = ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(key).noDefaultValue()).trim();
-    long value;
-    try {
-      value = Long.parseLong(raw);
-    } catch (NumberFormatException e) {
-      throw new IllegalArgumentException(key + "=" + raw + " is not a number");
-    }
-    if (value <= 0) {
-      throw new IllegalArgumentException(key + "=" + value + " must be > 0");
-    }
-    return value;
+    return NumericConfig.positiveLong(props, key(suffix));
   }
 
   private String string(TypedProperties props, String suffix, String defaultValue) {

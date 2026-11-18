@@ -687,6 +687,7 @@ public class HoodieStreamer implements Serializable {
      * Delta Sync Config.
      */
     private final HoodieStreamer.Config cfg;
+    private SourceContract sourceContract;
 
     /**
      * Schema provider that supplies the command for reading the input and writing out the target table.
@@ -756,6 +757,7 @@ public class HoodieStreamer implements Serializable {
       this.asyncClusteringService = Option.empty();
       Pair<SourceContract, TypedProperties> prepared = prepareJob(cfg, properties.get());
       this.props = prepared.getRight();
+      this.sourceContract = prepared.getLeft();
       this.postWriteTerminationStrategy = StringUtils.isNullOrEmpty(cfg.postWriteTerminationStrategyClass) ? Option.empty() :
           TerminationStrategyUtils.createPostWriteTerminationStrategy(props, cfg.postWriteTerminationStrategyClass);
       this.configurationHotUpdateStrategyOpt = StringUtils.isNullOrEmpty(cfg.configHotUpdateStrategyClass) ? Option.empty() :
@@ -831,11 +833,14 @@ public class HoodieStreamer implements Serializable {
       if (streamSync != null) {
         streamSync.close();
       }
-      Pair<SourceContract, TypedProperties> prepared = prepareJob(cfg, props);
-      this.props = prepared.getRight();
+      if (!sourceContract.isPreparedJob(props)) {
+        Pair<SourceContract, TypedProperties> prepared = prepareJob(cfg, props);
+        this.props = prepared.getRight();
+        this.sourceContract = prepared.getLeft();
+      }
       streamSync = new StreamSync(cfg, sparkSession, props, hoodieSparkContext,
           (FileSystem) storage.getFileSystem(), hiveConf, this::onInitializingWriteClient,
-          new DefaultStreamContext(schemaProvider, Option.empty()), prepared.getLeft());
+          new DefaultStreamContext(schemaProvider, Option.empty()), sourceContract);
     }
 
     @Override

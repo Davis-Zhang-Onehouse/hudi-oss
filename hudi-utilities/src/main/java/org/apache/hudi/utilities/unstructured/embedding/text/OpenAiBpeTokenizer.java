@@ -103,10 +103,7 @@ public class OpenAiBpeTokenizer implements Tokenizer {
       throw new TokenizerException("Encoding " + encodingName + " failed to encode a text of " + text.length() + " chars", e);
     }
     int end = result.isTruncated() ? Math.min(result.getLastProcessedCharacterIndex() + 1, text.length()) : text.length();
-    if (end > 0 && end < text.length() && Character.isLowSurrogate(text.charAt(end))
-        && Character.isHighSurrogate(text.charAt(end - 1))) {
-      end--;
-    }
+    end = Utf16.floor(text, end);
     while (end > 0 && countTokens(text.substring(0, end)) > maxTokens) {
       end = text.offsetByCodePoints(end, -1);
     }

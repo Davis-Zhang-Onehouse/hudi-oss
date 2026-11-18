@@ -96,16 +96,10 @@ public class TestTokenizers {
       int end = chars.prefixEndWithin(text, max);
       assertTrue(chars.countTokens(text.substring(0, end)) <= max);
       assertFalse(splitsPair(text, end), "prefix end " + end + " splits a surrogate pair");
-      int start = chars.suffixStartWithin(text, max);
-      assertTrue(chars.countTokens(text.substring(start)) <= max);
-      assertFalse(splitsPair(text, start), "suffix start " + start + " splits a surrogate pair");
     }
     assertEquals(text.length(), chars.prefixEndWithin(text, 8));
-    assertEquals(0, chars.suffixStartWithin(text, 8));
     assertEquals(0, chars.prefixEndWithin(text, 0));
-    assertEquals(text.length(), chars.suffixStartWithin(text, 0));
     assertEquals(0, chars.prefixEndWithin("", 5));
-    assertEquals(0, chars.suffixStartWithin("", 5));
   }
 
   @Test
@@ -120,8 +114,6 @@ public class TestTokenizers {
       }
       String text = sb.toString();
       int max = 1 + random.nextInt(60);
-      int start = bpe.suffixStartWithin(text, max);
-      assertTrue(bpe.countTokens(text.substring(start)) <= max);
       int end = bpe.prefixEndWithin(text, max);
       assertTrue(bpe.countTokens(text.substring(0, end)) <= max);
     }

@@ -29,6 +29,11 @@ public interface SourceContract {
   /** Returns the job's settings, rejecting conflicts without changing the caller's properties. */
   TypedProperties prepareJob(TypedProperties props);
 
+  /** Whether these unchanged properties already passed this contract's job preparation. */
+  default boolean isPreparedJob(TypedProperties props) {
+    return false;
+  }
+
   /** Opaque properties to persist when this source creates a new table. */
   default Properties tableProperties() {
     return new Properties();

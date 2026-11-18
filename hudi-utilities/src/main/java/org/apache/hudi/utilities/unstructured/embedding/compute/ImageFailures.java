@@ -18,11 +18,13 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.compute;
 
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageHeaderException;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageRefusedException;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReferenceException;
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobSourceChangedException;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobTruncatedException;
 import org.apache.hudi.utilities.unstructured.embedding.source.SourceFailures;
 
@@ -50,7 +52,7 @@ import java.util.Set;
  *       an operator acts (a larger executor heap, or the file removed), as a file that ends its executor does in prep;</li>
  *   <li>a {@link BlobReferenceException} anywhere in the cause chain, whatever wraps it (the stored-input reference prep wrote
  *       names no readable range: prep's invariant is broken) → {@link EmbeddingComputePlatformException}, no result;</li>
- *   <li>a stored input confirmed missing or shorter than its recorded range ({@link SourceFailures#isContentFailure}) → PERMANENT,
+ *   <li>a stored input confirmed missing, changed or shorter than its recorded range ({@link SourceFailures#isContentFailure}) → PERMANENT,
  *       its text naming the row (its five key columns) and the file, so rows of two files, or of two versions of one file,
  *       never share one text;</li>
  *   <li>else a {@link BlobReadException} anywhere in the cause chain (a storage failure under the reader, a premature EOF of the
@@ -94,6 +96,9 @@ public final class ImageFailures {
       if (content == null) {
         content = find(failure, BlobTruncatedException.class);
       }
+      if (content == null) {
+        content = find(failure, BlobSourceChangedException.class);
+      }
       return EmbeddingResult.permanent("stored input of " + rowOf(input) + " cannot be read: " + content.getClass().getSimpleName()
           + ": " + content.getMessage());
     }
@@ -120,8 +125,7 @@ public final class ImageFailures {
       return false;
     }
     IOException firstIo = null;
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (cause instanceof EOFException) {
         return true;
       }
@@ -161,8 +165,7 @@ public final class ImageFailures {
 
   /** The first cause of {@code failure} (itself included) of {@code type}, or null; a cause chain that loops ends. */
   private static <T extends Throwable> T find(Throwable failure, Class<T> type) {
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (type.isInstance(cause)) {
         return type.cast(cause);
       }
@@ -176,11 +179,10 @@ public final class ImageFailures {
    * it is another throwable with a message the text does not already hold, that root cause is named too.
    */
   private static String describeTransient(Exception failure) {
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (cause instanceof BlobReadException) {
         String text = cause.getMessage();
-        Throwable root = rootCause(cause);
+        Throwable root = ExceptionUtil.getRootCause(cause);
         if (root != cause.getCause() && root.getMessage() != null && !text.contains(root.getMessage())) {
           text = text + " (root cause " + root.getClass().getSimpleName() + ": " + root.getMessage() + ")";
         }
@@ -190,13 +192,4 @@ public final class ImageFailures {
     return failure.getClass().getSimpleName() + ": " + failure.getMessage();
   }
 
-  /** The innermost cause of {@code failure}, or the last one before its cause chain loops. */
-  private static Throwable rootCause(Throwable failure) {
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    Throwable root = failure;
-    while (visited.add(root) && root.getCause() != null && !visited.contains(root.getCause())) {
-      root = root.getCause();
-    }
-    return root;
-  }
 }

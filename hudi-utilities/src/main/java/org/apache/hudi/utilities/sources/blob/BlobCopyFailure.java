@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utilities.sources.blob;
 
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.exception.HoodieIOException;
 
 import java.io.IOException;
@@ -75,7 +76,7 @@ public class BlobCopyFailure extends HoodieIOException {
   static IOException portable(IOException cause) {
     boolean fileSystemException = false;
     StringBuilder chain = new StringBuilder();
-    for (Throwable t = cause; t != null; t = t.getCause() == t ? null : t.getCause()) {
+    for (Throwable t : ExceptionUtil.getCauses(cause)) {
       fileSystemException |= t instanceof FileSystemException;
       chain.append(chain.length() == 0 ? "" : " <- ").append(t.getClass().getName()).append(": ").append(t.getMessage());
     }

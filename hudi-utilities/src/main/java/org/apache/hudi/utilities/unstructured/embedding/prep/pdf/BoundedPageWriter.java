@@ -18,6 +18,8 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
 
+import org.apache.hudi.utilities.unstructured.embedding.text.Utf16;
+
 import java.io.Writer;
 
 /**
@@ -44,10 +46,7 @@ final class BoundedPageWriter extends Writer {
       text.append(buffer, offset, length);
       return;
     }
-    int keep = room;
-    if (keep > 0 && Character.isHighSurrogate(buffer[offset + keep - 1])) {
-      keep--;                                          // never keep half of a surrogate pair
-    }
+    int keep = Utf16.floor(buffer, offset, room);
     text.append(buffer, offset, keep);
     truncated = true;
   }
@@ -62,10 +61,7 @@ final class BoundedPageWriter extends Writer {
       text.append(s, offset, offset + length);
       return;
     }
-    int keep = room;
-    if (keep > 0 && Character.isHighSurrogate(s.charAt(offset + keep - 1))) {
-      keep--;
-    }
+    int keep = room > 0 ? Utf16.floor(s, offset + room, true) - offset : 0;
     text.append(s, offset, offset + keep);
     truncated = true;
   }

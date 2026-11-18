@@ -22,12 +22,14 @@ package org.apache.hudi.exception;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 
 import static org.apache.hudi.exception.ExceptionUtil.throwAsIOExceptionOrRuntimeException;
 import static org.apache.hudi.exception.ExceptionUtil.validateErrorMsg;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TestExceptionUtil {
@@ -56,6 +58,16 @@ class TestExceptionUtil {
     RuntimeException exceptionWithoutMessage = new RuntimeException();
     // Empty string should not be found in any message (including null)
     assertFalse(validateErrorMsg(exceptionWithoutMessage, ""));
+  }
+
+  @Test
+  void causeCycleTerminatesWhenNoExceptionMatches() {
+    IOException first = new IOException("first");
+    IOException second = new IOException("second", first);
+    first.initCause(second);
+    assertTrue(ExceptionUtil.isCausedBy(first, IOException.class));
+    assertTimeoutPreemptively(Duration.ofSeconds(1),
+        () -> assertFalse(ExceptionUtil.isCausedBy(first, IllegalArgumentException.class)));
   }
 
   @Test

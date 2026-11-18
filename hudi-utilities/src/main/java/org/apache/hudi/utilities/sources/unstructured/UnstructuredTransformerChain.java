@@ -19,7 +19,10 @@
 
 package org.apache.hudi.utilities.sources.unstructured;
 
+import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.utilities.exception.HoodieTransformPlanException;
+import org.apache.hudi.utilities.transform.ChainedTransformer;
 import org.apache.hudi.utilities.transform.Transformer;
 
 import java.util.ArrayList;
@@ -44,13 +47,12 @@ final class UnstructuredTransformerChain {
     boolean withIds = false;
     Set<String> ids = new HashSet<>();
     for (String entry : chain) {
-      String trimmed = entry.trim();
-      int delimiter = trimmed.indexOf(ID_DELIMITER);
-      if (delimiter >= 0) {
+      Pair<Option<String>, String> name = ChainedTransformer.splitTransformer(entry);
+      if (name.getLeft().isPresent()) {
         withIds = true;
-        ids.add(trimmed.substring(0, delimiter).trim());
+        ids.add(name.getLeft().get());
       }
-      if (isA(trimmed.substring(delimiter + 1).trim(), closing)) {
+      if (isA(name.getRight(), closing)) {
         throw new HoodieTransformPlanException(sourceName + " runs " + closing.getName() + " last itself: remove it from "
             + "--transformer-class. Transformers configured: " + configured);
       }
@@ -69,8 +71,7 @@ final class UnstructuredTransformerChain {
    * Whether the chain entry {@code entry} ({@code <class>} or {@code <id>:<class>}) names {@code transformer} or a subclass of it.
    */
   public static boolean names(String entry, Class<?> transformer) {
-    String trimmed = entry.trim();
-    return isA(trimmed.substring(trimmed.indexOf(ID_DELIMITER) + 1).trim(), transformer);
+    return isA(ChainedTransformer.splitTransformer(entry).getRight(), transformer);
   }
 
   /** {@link #compose} before its closing transformer: the required transformer joins the job's entries. */
@@ -84,13 +85,12 @@ final class UnstructuredTransformerChain {
     Set<String> ids = new HashSet<>();
     List<String> chain = new ArrayList<>(entries.size() + 1);
     for (String entry : entries) {
-      String trimmed = entry.trim();
-      int delimiter = trimmed.indexOf(ID_DELIMITER);
-      if (delimiter >= 0) {
+      Pair<Option<String>, String> name = ChainedTransformer.splitTransformer(entry);
+      if (name.getLeft().isPresent()) {
         withIds = true;
-        ids.add(trimmed.substring(0, delimiter).trim());
+        ids.add(name.getLeft().get());
       }
-      String className = trimmed.substring(delimiter + 1).trim();
+      String className = name.getRight();
       for (Class<? extends Transformer> excluded : excludedTransformers) {
         if (isA(className, excluded)) {
           throw new HoodieTransformPlanException(sourceName + " does not run with " + excluded.getName() + ": --transformer-class names "

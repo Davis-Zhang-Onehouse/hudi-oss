@@ -114,8 +114,8 @@ public class HoodieStreamerConfig extends HoodieConfig {
       .withAlternatives(DELTA_STREAMER_CONFIG_PREFIX + "transformer.class")
       .markAdvanced()
       .sinceVersion("0.14.0")
-      .withDocumentation("Names of transformer classes to apply. The config is specific to HoodieMultiTableStreamer; the streamer "
-          + "also hands its own --transformer-class list to the source under this key.");
+      .withDocumentation("Names of transformer classes to apply. This property is read by HoodieMultiTableStreamer; "
+          + "HoodieStreamer accepts its transformer list through --transformer-class.");
   public static final ConfigProperty<Boolean> SAMPLE_WRITES_ENABLED = ConfigProperty
       .key(STREAMER_CONFIG_PREFIX + "sample.writes.enabled")
       .defaultValue(false)

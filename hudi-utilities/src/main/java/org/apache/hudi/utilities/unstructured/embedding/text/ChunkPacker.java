@@ -448,14 +448,11 @@ public final class ChunkPacker {
       return lastFit;
     }
     // cap at the window on a code-point boundary, so a split never falls inside a surrogate pair
-    String word = text.substring(0, codePointFloor(text, Math.max(0, Math.min(firstWordEnd < 0 ? limit : firstWordEnd, room))));
+    String word = text.substring(0, Utf16.floor(text, Math.max(0, Math.min(firstWordEnd < 0 ? limit : firstWordEnd, room))));
     int preTokens = pre.isEmpty() ? 0 : budget.count(pre);
     int end = preTokens < maxTokens ? budget.prefixEndWithin(word, maxTokens - preTokens) : 0;
     end = Math.max(0, Math.min(end, word.length()));
-    if (end > 0 && end < word.length() && Character.isLowSurrogate(word.charAt(end))
-        && Character.isHighSurrogate(word.charAt(end - 1))) {
-      end--;
-    }
+    end = Utf16.floor(word, end);
     while (end > 0 && !budget.fits(pre + word.substring(0, end))) {
       end = word.offsetByCodePoints(end, -1);
     }
@@ -467,15 +464,6 @@ public final class ChunkPacker {
     }
     cutInsideWord = true;
     return end;
-  }
-
-  /** {@code index}, or one less when it falls between the halves of a surrogate pair of {@code text}. */
-  private static int codePointFloor(String text, int index) {
-    if (index > 0 && index < text.length() && Character.isLowSurrogate(text.charAt(index))
-        && Character.isHighSurrogate(text.charAt(index - 1))) {
-      return index - 1;
-    }
-    return index;
   }
 
   /** End of the word starting at {@code from} (its non-whitespace run plus trailing whitespace), capped at limit; -1 at limit. */

@@ -28,6 +28,7 @@ import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.utilities.config.CloudSourceConfig;
+import org.apache.hudi.utilities.unstructured.config.NumericConfig;
 import org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientNames;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageDecoder;
@@ -76,7 +77,8 @@ public class EmbeddingTableConfig implements Serializable {
       .defaultValue("")
       .sinceVersion("1.3.0")
       .withDocumentation("Comma-separated aliases of the declared embedding models, each owning a nullable VECTOR column. Only for "
-          + "prep_and_compute: a prep_only table declares no model.");
+          + "prep_and_compute: a prep_only table declares no model. Each model's rate.limit.requests.per.second is per compute "
+          + "task, so the job's aggregate request rate scales with its active compute tasks.");
   /** Comma-separated declared models the compute flow fills; empty means every declared model. Only for prep_and_compute. */
   public static final ConfigProperty<String> ACTIVE_MODELS = ConfigProperty
       .key(PREFIX + "active.models")
@@ -983,20 +985,7 @@ public class EmbeddingTableConfig implements Serializable {
   }
 
   private long positiveLong(String key, long defaultValue, long max) {
-    String raw = ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(key).noDefaultValue(), null);
-    if (raw == null || raw.trim().isEmpty()) {
-      return defaultValue;
-    }
-    long value;
-    try {
-      value = Long.parseLong(raw.trim());
-    } catch (NumberFormatException e) {
-      throw new IllegalArgumentException("Config " + key + " must be a positive integer, got '" + raw + "'", e);
-    }
-    if (value <= 0 || value > max) {
-      throw new IllegalArgumentException("Config " + key + " must be a positive integer up to " + max + ", got " + value);
-    }
-    return value;
+    return NumericConfig.positiveLong(props, key, defaultValue, max);
   }
 
   /**
@@ -1058,6 +1047,18 @@ public class EmbeddingTableConfig implements Serializable {
     return Option.of(Collections.unmodifiableList(extensions));
   }
 
+  /** The single active model an embedding job computes; refuses zero or multiple active models. */
+  public EmbeddingModelSpec activeModel() {
+    List<EmbeddingModelSpec> active = activeModels();
+    if (active.size() != 1) {
+      throw new IllegalArgumentException("The embedding job fills one model column, but "
+          + active.stream().map(EmbeddingModelSpec::getName).collect(Collectors.toList()) + " are active; declare one model in "
+          + EmbeddingTableConfig.MODELS.key() + " or set " + EmbeddingTableConfig.ACTIVE_MODELS.key() + " to one of them. Nothing was "
+          + "written");
+    }
+    return active.get(0);
+  }
+
   /**
    * Models declared on the table, in declaration order. Each one owns a nullable VECTOR column.
    *
@@ -1095,6 +1096,10 @@ public class EmbeddingTableConfig implements Serializable {
           ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(keyPrefix + MODEL_NAME_SUFFIX).noDefaultValue(), name).trim(),
           modalities(keyPrefix + MODEL_MODALITIES_SUFFIX,
               ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(keyPrefix + MODEL_MODALITIES_SUFFIX).noDefaultValue(), null)));
+      if (!spec.getColumn().matches("[A-Za-z_][A-Za-z0-9_]*")) {
+        throw new IllegalArgumentException("Config " + keyPrefix + MODEL_COLUMN_SUFFIX + " resolves to '" + spec.getColumn()
+            + "', which is not a valid Avro field name; set a column starting with a letter or underscore, followed by letters, digits or underscores");
+      }
       specs.add(spec);
     }
     checkDistinctColumns(specs, props);

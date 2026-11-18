@@ -391,7 +391,8 @@ public class StreamSync implements Serializable, Closeable {
       SourceContracts.validate(contract, hoodieSparkContext.jsc(), sparkSession, chain == null ? Collections.emptyList() : chain,
           transformerProps, userTargetSchema(), tableSchemaWithoutMetaFields(metaClient));
     }
-    Source source = UtilHelpers.createSource(cfg.sourceClassName, props, hoodieSparkContext.jsc(), sparkSession, metrics, streamContext);
+    StreamContext sourceContext = new DefaultStreamContext(streamContext.getSchemaProvider(), streamContext.getSourceProfileSupplier(), contract);
+    Source source = UtilHelpers.createSource(cfg.sourceClassName, props, hoodieSparkContext.jsc(), sparkSession, metrics, sourceContext);
     this.formatAdapter = new SourceFormatAdapter(source, this.errorTableWriter, Option.of(props));
 
     Supplier<Option<HoodieSchema>> schemaSupplier = schemaProvider == null ? Option::empty : () -> Option.ofNullable(schemaProvider.getSourceHoodieSchema());

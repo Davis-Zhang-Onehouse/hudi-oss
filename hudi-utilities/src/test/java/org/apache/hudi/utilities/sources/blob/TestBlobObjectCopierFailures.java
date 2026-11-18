@@ -363,7 +363,7 @@ class TestBlobObjectCopierFailures {
     conf = lookup;
     resetStorage();
     assertConstructionFault("s3a://bucket/docs/a.pdf", BlobCopyFailure.Fault.PLATFORM, missingClass ? 0 : 1);
-    assertEquals(1, lookup.lookups);
+    assertEquals(missingClass ? 1 : 2, lookup.lookups, "a resolved class is looked up again to classify construction failure");
     assertNull(conf.get("fs.s3a.impl"));
   }
 

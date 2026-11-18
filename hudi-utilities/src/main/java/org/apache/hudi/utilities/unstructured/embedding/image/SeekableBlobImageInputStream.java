@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.image;
 
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReferenceException;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobTruncatedException;
@@ -147,7 +148,7 @@ public class SeekableBlobImageInputStream extends ImageInputStreamImpl {
   }
 
   private static boolean carriesIoException(Throwable failure) {
-    for (Throwable cause = failure; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (cause instanceof IOException) {
         return true;
       }

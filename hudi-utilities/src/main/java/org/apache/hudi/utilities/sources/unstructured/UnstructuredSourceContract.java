@@ -58,6 +58,9 @@ public class UnstructuredSourceContract implements SourceContract {
 
   private final UnstructuredMode mode;
   private final UnstructuredTableProperties tablePins;
+  private TypedProperties preparedProperties;
+  private String checkedTablePath;
+  private Properties checkedTableProperties;
 
   /**
    * The contract of the job of {@code props}.
@@ -85,6 +88,9 @@ public class UnstructuredSourceContract implements SourceContract {
   /** Merges this mode's settings once, before any job consumer reads them. */
   @Override
   public TypedProperties prepareJob(TypedProperties jobProps) {
+    if (isPreparedJob(jobProps)) {
+      return jobProps;
+    }
     TypedProperties merged = TypedProperties.copy(jobProps);
     require(merged, KeyGeneratorOptions.RECORDKEY_FIELD_NAME, String.join(",", mode.keyColumns()),
         UnstructuredSourceContract::fields, " (these fields, in this order)");
@@ -101,6 +107,7 @@ public class UnstructuredSourceContract implements SourceContract {
     merged = tablePins.apply(merged);
     checkKeyGenerator(UnstructuredSchemaContract.sourceName(mode), merged);
     validateJob(merged);
+    preparedProperties = TypedProperties.copy(merged);
     return merged;
   }
 
@@ -129,7 +136,14 @@ public class UnstructuredSourceContract implements SourceContract {
 
   /** Checks the table's pins next to the record-key validation, before source construction. */
   public void checkTable(String basePath, HoodieTableConfig table) {
+    if (basePath.equals(checkedTablePath) && table.getProps().equals(checkedTableProperties)) {
+      return;
+    }
+    UnstructuredDataSource.validate(mode, basePath, table);
     tablePins.checkTable(basePath, table);
+    checkedTablePath = basePath;
+    checkedTableProperties = new Properties();
+    checkedTableProperties.putAll(table.getProps());
   }
 
   private void require(TypedProperties props, ConfigProperty<?> key, String value, UnaryOperator<String> normalize, String hint) {
@@ -177,8 +191,8 @@ public class UnstructuredSourceContract implements SourceContract {
 
   /**
    * Reads the job and the cloud, refuses a key of the other cloud, and validates the job's other properties
-   * ({@link BlobSourceSetup#validate}), the table-version floor among them; returns {@code props} unchanged. The streamer runs it
-   * with the merge, before it builds anything or creates the table, and the source again as it is built: one copy of the checks.
+   * ({@link BlobSourceSetup#validate}), the table-version floor among them; returns validated properties. The streamer runs it
+   * with the merge, before it builds anything or creates the table, and the source reuses the result while the properties are unchanged.
    *
    * @throws IllegalArgumentException          naming the setting and {@code UnstructuredDataSource (mode ...)}
    * @throws org.apache.hudi.exception.HoodieValidationException when the job's table version is below the tables' floor (9)
@@ -189,6 +203,11 @@ public class UnstructuredSourceContract implements SourceContract {
     String name = UnstructuredSchemaContract.sourceName(mode);
     cloud.validate(props, name);
     return BlobSourceSetup.validate(props, mode, name);
+  }
+
+  @Override
+  public boolean isPreparedJob(TypedProperties props) {
+    return preparedProperties != null && preparedProperties.equals(props);
   }
 
   /**

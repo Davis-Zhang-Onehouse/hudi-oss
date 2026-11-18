@@ -68,7 +68,6 @@ public final class SourceContracts {
   /** Dispatches source-owned table validation before the streamer's stock table validation. */
   public static void validate(SourceContract contract, String basePath, HoodieTableConfig table) {
     if (contract instanceof UnstructuredSourceContract) {
-      UnstructuredDataSource.validate(((UnstructuredSourceContract) contract).mode(), basePath, table);
       ((UnstructuredSourceContract) contract).checkTable(basePath, table);
     }
   }
