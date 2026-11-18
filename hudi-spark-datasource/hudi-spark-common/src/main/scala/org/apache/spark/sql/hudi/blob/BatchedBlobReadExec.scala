@@ -46,6 +46,7 @@ import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
  * @param tableBasePath Base path of the Hudi table the blob column comes from (see [[BlobTableBasePath]]),
  *                      used to resolve managed references stored relative to it; None if unknown
  * @param output Output attributes resolved from the logical plan
+ * @param tableLayoutVersion Explicit layout version of the producing tables; None for legacy resolution
  */
 case class BatchedBlobReadExec(child: SparkPlan,
                                 maxGapBytes: Int,
@@ -53,7 +54,8 @@ case class BatchedBlobReadExec(child: SparkPlan,
                                 lookaheadSize: Int,
                                 blobAttr: Attribute,
                                 tableBasePath: Option[String],
-                                override val output: Seq[Attribute])
+                                override val output: Seq[Attribute],
+                                tableLayoutVersion: Option[String] = None)
   extends UnaryExecNode {
 
   override protected def doExecute(): RDD[InternalRow] = {
@@ -70,7 +72,8 @@ case class BatchedBlobReadExec(child: SparkPlan,
       maxGapBytes,
       lookaheadSize,
       ordinal,
-      tableBasePath = tableBasePath
+      tableBasePath = tableBasePath,
+      tableLayoutVersion = tableLayoutVersion
     )
   }
 

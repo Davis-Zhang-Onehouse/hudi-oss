@@ -20,6 +20,7 @@
 package org.apache.spark.sql.hudi.blob
 
 import org.apache.hudi.{HoodieBaseRelation, HoodieFileIndex}
+import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient}
 
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, ExprId}
 import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, Union}
@@ -49,34 +50,54 @@ object BlobTableBasePath {
    * @param attr The blob column attribute
    * @return The base path of the Hudi table the column comes from, or None if unknown or ambiguous
    */
-  def resolve(plan: LogicalPlan, attr: Attribute): Option[String] = resolve(plan, attr.exprId)
+  def resolve(plan: LogicalPlan, attr: Attribute): Option[String] =
+    resolveTables(plan, attr.exprId).flatMap { tables =>
+      val paths = tables.flatten.map(_.getBasePath.toString).distinct
+      if (tables.forall(_.isDefined) && paths.size == 1) paths.headOption else None
+    }
 
-  private def resolve(plan: LogicalPlan, exprId: ExprId): Option[String] = plan match {
+  /** Layout metadata follows the same attribute lineage; mixed versions cannot reinterpret a scheme-less path. */
+  def resolveLayoutVersion(plan: LogicalPlan, attr: Attribute): Option[String] =
+    resolveTables(plan, attr.exprId).flatMap { tables =>
+      val versions = tables.flatten.map(t => Option(t.getTableConfig.getProps.getProperty(HoodieTableConfig.BLOB_LAYOUT_VERSION.key()))).distinct
+      if (versions.exists(_.isDefined) && tables.exists(_.isEmpty)) {
+        Some("mixed")
+      } else if (versions.size == 1) {
+        versions.head
+      } else if (versions.isEmpty) {
+        None
+      } else {
+        Some("mixed")
+      }
+    }
+
+  private def resolveTables(plan: LogicalPlan, exprId: ExprId): Option[Seq[Option[HoodieTableMetaClient]]] = plan match {
     case lr: LogicalRelation =>
-      if (lr.output.exists(_.exprId == exprId)) hudiBasePath(lr) else None
+      if (lr.output.exists(_.exprId == exprId)) Some(Seq(hudiMetaClient(lr))) else None
 
     case stage: LogicalQueryStage =>
-      resolve(stage.logicalPlan, exprId)
+      resolveTables(stage.logicalPlan, exprId)
 
     case union: Union =>
       val index = union.output.indexWhere(_.exprId == exprId)
       if (index < 0) {
         None
       } else {
-        val paths = union.children.map(child => resolve(child, child.output(index).exprId))
-        paths.headOption.flatten.filter(p => paths.forall(_.contains(p)))
+        Some(union.children.flatMap { child =>
+          resolveTables(child, child.output(index).exprId).getOrElse(Seq(None))
+        })
       }
 
     case node =>
       aliasedAttribute(node, exprId) match {
         case Some(source) =>
           node.children match {
-            case Seq(child) => resolve(child, source.exprId)
+            case Seq(child) => resolveTables(child, source.exprId)
             case _ => None
           }
         case None =>
           node.children.filter(_.outputSet.exists(_.exprId == exprId)) match {
-            case Seq(child) => resolve(child, exprId)
+            case Seq(child) => resolveTables(child, exprId)
             case _ => None
           }
       }
@@ -88,12 +109,12 @@ object BlobTableBasePath {
       case a @ Alias(source: Attribute, _) if a.exprId == exprId => source
     }
 
-  private def hudiBasePath(lr: LogicalRelation): Option[String] = lr.relation match {
+  private def hudiMetaClient(lr: LogicalRelation): Option[HoodieTableMetaClient] = lr.relation match {
     case fs: HadoopFsRelation => fs.location match {
-      case fileIndex: HoodieFileIndex => Some(fileIndex.metaClient.getBasePath.toString)
+      case fileIndex: HoodieFileIndex => Some(fileIndex.metaClient)
       case _ => None
     }
-    case rel: HoodieBaseRelation => Some(rel.metaClient.getBasePath.toString)
+    case rel: HoodieBaseRelation => Some(rel.metaClient)
     case _ => None
   }
 }

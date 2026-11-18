@@ -100,12 +100,14 @@ import scala.collection.mutable.ArrayBuffer
  * @param tableBasePath  Base path of the Hudi table the blob column was read from, if known. Managed
  *                       references with a relative external_path are resolved against it; see
  *                       [[BatchedBlobReader.resolveReferencePath]].
+ * @param tableLayoutVersion Explicit layout version; None retains legacy path resolution.
  */
 class BatchedBlobReader(
                          resolveStorage: StoragePath => HoodieStorage,
                          maxGapBytes: Int = 4096,
                          lookaheadRows: Int = 50,
-                         tableBasePath: Option[String] = None) {
+                         tableBasePath: Option[String] = None,
+                         tableLayoutVersion: Option[String] = None) {
 
   private val logger = LoggerFactory.getLogger(classOf[BatchedBlobReader])
 
@@ -251,7 +253,7 @@ class BatchedBlobReader(
               require(externalPath != null && externalPath.nonEmpty, s"Blob reference must have non-empty external_path at row $rowIndex")
               // Resolve before grouping so rows of one object merge on the same (resolved) path
               val managed = !accessor.isNullAt(referenceStruct, 3) && accessor.getBoolean(referenceStruct, 3)
-              val filePath = BatchedBlobReader.resolveReferencePath(externalPath, managed, tableBasePath)
+              val filePath = BatchedBlobReader.resolveReferencePath(externalPath, managed, tableBasePath, tableLayoutVersion)
               val offsetIsNull = accessor.isNullAt(referenceStruct, 1)
               val lengthIsNull = accessor.isNullAt(referenceStruct, 2)
               if (offsetIsNull && lengthIsNull) {
@@ -704,49 +706,51 @@ object BatchedBlobReader {
   /**
    * Resolves a blob reference's external_path to the path that is opened.
    *
-   * A path is relative when it has no URI scheme and does not start with "/".
-   * <ul>
-   *   <li>Absolute paths are returned unchanged.</li>
-   *   <li>Unmanaged (managed = false or null) relative paths are returned unchanged, so the
-   *       filesystem resolves them against its working directory.</li>
-   *   <li>Managed relative paths are resolved against `tableBasePath`; the result must stay under
-   *       the base path, so a reference whose ".." segments escape the table is rejected.</li>
-   *   <li>Managed relative paths without a known base path are rejected: read_blob() knows the base
-   *       path only when the blob column is read directly from a Hudi table (not from a cached,
-   *       checkpointed or streamed DataFrame); [[readBatched]] takes it as `tableBasePath`.</li>
-   * </ul>
+   * Layout version 1 resolves a path without a URI scheme against the table base path, regardless
+   * of managed (cleaner ownership only). A scheme is used as given. A leading slash is table-relative;
+   * use file:/... for a local absolute path. Scheme-less paths need a known base and must stay within it.
+   * Without a layout version, absolute and unmanaged paths retain their existing filesystem resolution;
+   * only managed relative paths use the table base.
    *
    * @param externalPath  The reference's external_path
-   * @param managed       The reference's managed flag (null treated as false)
+   * @param managed       Cleaner ownership; does not affect path resolution
    * @param tableBasePath Base path of the Hudi table the reference belongs to, if known
+   * @param tableLayoutVersion Explicit layout version, or None for legacy path resolution
    * @return The path to open
-   * @throws IllegalArgumentException if a managed relative path escapes the base path, or no base path is known
+   * @throws IllegalArgumentException if a scheme-less path escapes the base or the base is unknown
    */
-  def resolveReferencePath(externalPath: String, managed: Boolean, tableBasePath: Option[String]): String = {
+  def resolveReferencePath(externalPath: String, managed: Boolean, tableBasePath: Option[String],
+                           tableLayoutVersion: Option[String]): String = {
     val uri = new StoragePath(externalPath).toUri
-    val isRelative = uri.getScheme == null && !uri.getPath.startsWith(StoragePath.SEPARATOR)
-    if (!isRelative || !managed) {
+    if (uri.getScheme != null) {
+      externalPath
+    } else if (tableLayoutVersion.isEmpty && (!managed || uri.getPath.startsWith(StoragePath.SEPARATOR))) {
       externalPath
     } else {
+      require(tableLayoutVersion.forall(_ == "1"), s"Unsupported or ambiguous blob layout version: $tableLayoutVersion")
       tableBasePath match {
         case Some(base) =>
           val basePath = new StoragePath(base)
-          val resolved = new StoragePath(basePath, externalPath).toString
+          val resolved = new StoragePath(basePath, externalPath.stripPrefix(StoragePath.SEPARATOR)).toString
           val baseString = basePath.toString
           val basePrefix = if (baseString.endsWith(StoragePath.SEPARATOR)) baseString else baseString + StoragePath.SEPARATOR
           if (!resolved.startsWith(basePrefix)) {
             throw new IllegalArgumentException(
-              s"Managed blob reference '$externalPath' resolves to '$resolved', outside the table base path '$base'")
+              s"Blob reference '$externalPath' resolves to '$resolved', outside the table base path '$base'")
           }
           resolved
         case None =>
           throw new IllegalArgumentException(
-            s"Managed blob reference '$externalPath' is relative to its table's base path, which is unknown here. read_blob() resolves it " +
+            s"Blob reference '$externalPath' is relative to its table's base path, which is unknown here. read_blob() resolves it " +
               s"only when the blob column is read directly from a Hudi table (not from a cached, checkpointed or streamed DataFrame); " +
               s"BatchedBlobReader.readBatched takes the table base path as tableBasePath")
       }
     }
   }
+
+  /** Legacy entry point retained for Java as well as Scala callers. */
+  def resolveReferencePath(externalPath: String, managed: Boolean, tableBasePath: Option[String]): String =
+    resolveReferencePath(externalPath, managed, tableBasePath, None)
 
   /**
    * Read byte ranges from a DataFrame with a Blob column.
@@ -766,8 +770,9 @@ object BatchedBlobReader {
    * @param lookaheadSize  Rows to buffer for batching (default: 50)
    * @param columnName     Optional column name to resolve. If not provided, searches for column with hudi_blob=true metadata
    * @param keepTempColumn If true, keeps __temp__data column; if false (default), renames it to original column name
-   * @param tableBasePath  Base path of the Hudi table `df` was read from, used to resolve managed relative
+   * @param tableBasePath  Base path of the Hudi table `df` was read from, used to resolve scheme-less
    *                       references (see [[resolveReferencePath]]). Without it such references fail the read.
+   * @param tableLayoutVersion Explicit layout version; None retains legacy path resolution
    * @return DataFrame with struct column + data column
    * @throws IllegalArgumentException if struct column is missing or has wrong schema
    */
@@ -778,7 +783,8 @@ object BatchedBlobReader {
       lookaheadSize: Int = DEFAULT_LOOKAHEAD_SIZE,
       columnName: Option[String] = None,
       keepTempColumn: Boolean = false,
-      tableBasePath: Option[String] = None): Dataset[Row] = {
+      tableBasePath: Option[String] = None,
+      tableLayoutVersion: Option[String] = None): Dataset[Row] = {
 
     require(maxGapBytes >= 0, "maxGapBytes must be non-negative")
     require(lookaheadSize > 0, "lookaheadSize must be positive")
@@ -810,7 +816,7 @@ object BatchedBlobReader {
       // Create reader for this partition
       val partitionConf = storageConfFrom(broadcastConf)
       val reader = new BatchedBlobReader(
-        HoodieStorageUtils.getStorage(_, partitionConf), maxGapBytes, lookaheadSize, tableBasePath)
+        HoodieStorageUtils.getStorage(_, partitionConf), maxGapBytes, lookaheadSize, tableBasePath, tableLayoutVersion)
 
       // Import implicit instances for Row
       import RowAccessor.rowAccessor
@@ -843,8 +849,9 @@ object BatchedBlobReader {
    * @param lookaheadSize Rows to buffer for batching (default: 50)
    * @param columnName    Name of the blob column to read. A name shared by several columns is ambiguous (the
    *                      lookup picks one of them); callers that know the column's position use [[processRDDAtOrdinal]].
-   * @param tableBasePath Base path of the Hudi table the rows were read from, used to resolve managed relative
+   * @param tableBasePath Base path of the Hudi table the rows were read from, used to resolve scheme-less
    *                      references (see [[resolveReferencePath]]). Without it such references fail the read.
+   * @param tableLayoutVersion Explicit layout version; None retains legacy path resolution
    * @return RDD with struct column + data column
    * @throws IllegalArgumentException if struct column is missing or has wrong schema
    */
@@ -855,9 +862,10 @@ object BatchedBlobReader {
       maxGapBytes: Int = DEFAULT_MAX_GAP_BYTES,
       lookaheadSize: Int = DEFAULT_LOOKAHEAD_SIZE,
       columnName: String,
-      tableBasePath: Option[String] = None): RDD[InternalRow] = {
+      tableBasePath: Option[String] = None,
+      tableLayoutVersion: Option[String] = None): RDD[InternalRow] = {
 
-    processRDDAtOrdinal(rdd, schema, broadcastConf, maxGapBytes, lookaheadSize, schema.fieldIndex(columnName), tableBasePath)
+    processRDDAtOrdinal(rdd, schema, broadcastConf, maxGapBytes, lookaheadSize, schema.fieldIndex(columnName), tableBasePath, tableLayoutVersion)
   }
 
   /**
@@ -872,8 +880,9 @@ object BatchedBlobReader {
    * @param maxGapBytes   Max gap to consider consecutive (default: 4096)
    * @param lookaheadSize Rows to buffer for batching (default: 50)
    * @param structColIdx  Ordinal of the blob column in `schema`
-   * @param tableBasePath Base path of the Hudi table the rows were read from, used to resolve managed relative
+   * @param tableBasePath Base path of the Hudi table the rows were read from, used to resolve scheme-less
    *                      references (see [[resolveReferencePath]]). Without it such references fail the read.
+   * @param tableLayoutVersion Explicit layout version; None retains legacy path resolution
    * @return RDD with struct column + data column
    * @throws IllegalArgumentException if the ordinal is out of range or the column has the wrong schema
    */
@@ -884,7 +893,8 @@ object BatchedBlobReader {
       maxGapBytes: Int = DEFAULT_MAX_GAP_BYTES,
       lookaheadSize: Int = DEFAULT_LOOKAHEAD_SIZE,
       structColIdx: Int,
-      tableBasePath: Option[String] = None): RDD[InternalRow] = {
+      tableBasePath: Option[String] = None,
+      tableLayoutVersion: Option[String] = None): RDD[InternalRow] = {
 
     require(maxGapBytes >= 0, "maxGapBytes must be non-negative")
     require(lookaheadSize > 0, "lookaheadSize must be positive")
@@ -902,7 +912,7 @@ object BatchedBlobReader {
     rdd.mapPartitions { partition =>
       val partitionConf = storageConfFrom(broadcastConf)
       val reader = new BatchedBlobReader(
-        HoodieStorageUtils.getStorage(_, partitionConf), maxGapBytes, lookaheadSize, tableBasePath)
+        HoodieStorageUtils.getStorage(_, partitionConf), maxGapBytes, lookaheadSize, tableBasePath, tableLayoutVersion)
 
       // Import implicit instances for InternalRow
       import RowAccessor.internalRowAccessor

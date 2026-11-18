@@ -30,6 +30,7 @@ import org.apache.spark.sql.types._
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.Test
 
+import java.net.URI
 import java.util.Collections
 
 /**
@@ -116,7 +117,7 @@ class TestReadBlobSQL extends HoodieClientTestBase {
     // so the borrowed scheme has to be registered there rather than on a conf the test holds.
     withBorrowedSchemes(sparkSession.sparkContext.hadoopConfiguration, Seq("test-bucket"), "s3a") {
       val extFile = createTestFile(tempDir, "non-local-sql.bin", 10000)
-      val reference = s"s3a://test-bucket$extFile"
+      val reference = s"s3a://test-bucket${new URI(extFile).getRawPath}"
       val tablePath = s"$tempDir/hudi_blob_table_non_local"
 
       val rawDf = sparkSession.createDataFrame(Seq(
@@ -572,7 +573,7 @@ class TestReadBlobSQL extends HoodieClientTestBase {
 
   @Test
   def testReadBlobWithMissingFile(): Unit = {
-    val missingPath = tempDir.resolve("does_not_exist.bin").toString
+    val missingPath = tempDir.resolve("does_not_exist.bin").toUri.toString
     val df = sparkSession.createDataFrame(Seq(
       (1, missingPath, 0L, 10L)
     )).toDF("id", "external_path", "offset", "length")
