@@ -20,19 +20,23 @@ package org.apache.hudi.utilities.unstructured.embedding.compute.bedrock;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingCallStats;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClient;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientConfigException;
+import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingComputePlatformException;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingInput;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingProviderUnavailableException;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingResult;
+import org.apache.hudi.utilities.unstructured.embedding.compute.ImageFailures;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ProviderResponseKind;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ProviderRetryLoop;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ProviderRetryLoop.Answer;
 import org.apache.hudi.utilities.unstructured.embedding.compute.RequestRateLimiter;
 import org.apache.hudi.utilities.unstructured.embedding.compute.RetryAfter;
 import org.apache.hudi.utilities.unstructured.embedding.compute.bedrock.BedrockInvoker.BedrockReply;
+import org.apache.hudi.utilities.unstructured.embedding.image.PreparedImage;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,6 +49,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -52,16 +57,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /**
- * An {@link EmbeddingClient} over Amazon Bedrock InvokeModel for one text model family.
+ * An {@link EmbeddingClient} over Amazon Bedrock InvokeModel for one model family ({@link BedrockModelFamily}), whose
+ * modalities it reports ({@link #supportedModalities}).
  * Requests use the AWS SDK default credential chain through {@link SdkBedrockInvoker}.
- * Texts are packed within the family's request limits. Empty or unsupported inputs fail permanently without a request.
+ * Texts are packed within the family's request limits, and so are the images of a family that embeds images, in its own
+ * request format, after their preparation ({@link EmbeddingInput#image()}); a failed preparation is that input's outcome
+ * ({@link ImageFailures}), and an image the family cannot take (its type, encoded size or side) fails permanently without a
+ * request, its error naming the row. Empty or unsupported inputs fail permanently without a request.
  * {@link ProviderRetryLoop} bounds retries, rate waits and deadlines; malformed answers remain retryable.
- * Rejected packed inputs are isolated. Before any successful embedding, an entirely rejected multi-input call fails
- * configuration rather than quarantining rows; a rejection beside retryable inputs stays retryable.
+ * Rejected packed inputs are isolated. Before any successful embedding, a call whose every input sent to Bedrock (more than
+ * one) was rejected fails configuration rather than quarantining rows; inputs settled without a request (empty, refused or
+ * failed preparation) do not count. A rejection beside retryable inputs stays retryable.
  */
 public abstract class BedrockEmbeddingClient implements EmbeddingClient {
 
@@ -69,6 +80,8 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
   /** Provider id of the Bedrock clients ({@code hoodie.unstructured.embedding.model.<alias>.provider}). */
   public static final String PROVIDER = "bedrock";
   static final String EMPTY_INPUT = "empty input";
+  /** Error of an image input that reaches the client without a prepared image: a broken compute invariant. */
+  public static final String IMAGE_WITHOUT_PREPARED_INPUT = "image input without a prepared image";
   static final String COHERE_INPUT_TYPE = "search_document";
   /** Cohere's {@code truncate}: an over-long input is rejected, never silently cut. */
   static final String COHERE_TRUNCATE = "NONE";
@@ -101,6 +114,14 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
   /** Cohere caps a request at 128k tokens; a text counts one token per UTF-8 byte plus 8, an upper bound. */
   private static final long COHERE_MAX_REQUEST_TOKENS = 128_000L;
   private static final long COHERE_TOKENS_PER_INPUT = 8L;
+  /** Cohere caps a request's payload at about 20 MB; images are packed so their data URIs stay within 20,000,000 bytes. */
+  private static final long COHERE_MAX_REQUEST_PAYLOAD_BYTES = 20_000_000L;
+  /** Cohere resamples an image above 2,458,624 pixels down to that size and one below 3,136 pixels up to it. */
+  private static final long COHERE_MAX_IMAGE_PIXELS = 2_458_624L;
+  private static final long COHERE_MIN_IMAGE_PIXELS = 3_136L;
+  /** Cohere counts an image as {@code (pixels / 784) x 4} tokens. */
+  private static final long COHERE_PIXELS_PER_TOKEN_UNIT = 784L;
+  private static final long COHERE_TOKENS_PER_UNIT = 4L;
 
   private final Function<BedrockClientConfig, BedrockInvoker> invokers;
   private final LongSupplier clock;
@@ -130,6 +151,12 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
 
   /** The family this client serves. */
   public abstract BedrockModelFamily family();
+
+  /** The family's modalities: the client is chosen by family, so the model name adds nothing. */
+  @Override
+  public Set<String> supportedModalities(String modelName) {
+    return family().modalities();
+  }
 
   /**
    * @throws EmbeddingClientConfigException naming the offending key for an invalid configuration, or when the SDK client cannot
@@ -175,6 +202,7 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
     Call call = new Call(inputs.size());
     try {
       List<Integer> texts = new ArrayList<>();
+      List<Integer> images = new ArrayList<>();
       for (int i = 0; i < inputs.size(); i++) {
         EmbeddingInput input = inputs.get(i);
         if (EmbeddingTableSchema.MODALITY_TEXT.equals(input.getModality())) {
@@ -183,6 +211,13 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
           } else {
             texts.add(i);
           }
+        } else if (EmbeddingTableSchema.MODALITY_IMAGE.equals(input.getModality())
+            && family().modalities().contains(EmbeddingTableSchema.MODALITY_IMAGE)) {
+          if (input.image() == null) {
+            // compute builds every image input of a model that declares image with its preparation: a missing one is a broken invariant
+            throw new EmbeddingComputePlatformException(IMAGE_WITHOUT_PREPARED_INPUT + " (model " + spec.getName() + ")");
+          }
+          images.add(i);
         } else {
           call.results[i] = EmbeddingResult.permanent("modality " + input.getModality() + " is not supported by " + PROVIDER
               + " " + family());
@@ -191,6 +226,7 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
       for (List<Integer> request : packTexts(inputs, texts)) {
         sendTexts(call, inputs, request);
       }
+      sendImages(call, inputs, images);
       settleRejections(call);
     } finally {
       // also when a config failure is thrown: the stats then describe the requests that led to it
@@ -201,7 +237,7 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
 
   /** Text requests: consecutive texts up to the per-request input limit and, for Cohere, its token budget. */
   private List<List<Integer>> packTexts(List<EmbeddingInput> inputs, List<Integer> texts) {
-    int maxInputs = Math.min(family().maxTextsPerRequest(), config.settings().maxInputs());
+    int maxInputs = Math.min(family().maxInputsPerRequest(), config.settings().maxInputs());
     List<List<Integer>> requests = new ArrayList<>();
     List<Integer> current = new ArrayList<>();
     long tokens = 0;
@@ -227,6 +263,7 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
       call.fill(request, EmbeddingResult.retryable(notSent));
       return;
     }
+    call.sent.addAll(request);
     List<String> texts = new ArrayList<>(request.size());
     for (int index : request) {
       texts.add(inputs.get(index).getText());
@@ -254,6 +291,134 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
       default:
         throw configFailure(answer.error());
     }
+  }
+
+  /**
+   * Image requests, packed like texts: each image is prepared in input order (a failure is that input's outcome,
+   * {@link ImageFailures}) and checked against the family's image limits, then added to the request being built, up to the
+   * per-request input limit and, for Cohere, its payload and token budgets. A request full by count is sent before the next
+   * image is prepared; one that the next image would take over the payload or token budget is sent once that image is
+   * prepared. So the call holds the prepared images of one request, plus at most the next image. The payload counts the
+   * request's JSON envelope and each data URI with its quotes and separator.
+   */
+  private void sendImages(Call call, List<EmbeddingInput> inputs, List<Integer> images) {
+    int maxInputs = Math.min(family().maxInputsPerRequest(), config.settings().maxInputs());
+    boolean cohere = family() == BedrockModelFamily.COHERE_EMBED_V4;
+    long maxPayload = cohere ? COHERE_MAX_REQUEST_PAYLOAD_BYTES : Long.MAX_VALUE;
+    long envelope = cohere ? imageBody(Collections.emptyList()).length : 0L;
+    List<Integer> request = new ArrayList<>();
+    List<PreparedImage> prepared = new ArrayList<>();
+    long payload = envelope;
+    long tokens = 0;
+    for (int index : images) {
+      if (request.size() >= maxInputs) {
+        sendImageRequest(call, request, prepared);
+        request = new ArrayList<>();
+        prepared = new ArrayList<>();
+        payload = envelope;
+        tokens = 0;
+      }
+      String notSent = loop.notSentReason();
+      if (notSent != null) {
+        call.results[index] = EmbeddingResult.retryable(notSent);
+        continue;
+      }
+      EmbeddingInput input = inputs.get(index);
+      PreparedImage image;
+      try {
+        image = input.image().get();
+      } catch (IOException | RuntimeException e) {
+        // a malformed stored-input reference throws EmbeddingComputePlatformException from here
+        call.results[index] = ImageFailures.result(input, e);
+        continue;
+      }
+      String refused = imageRefusal(image);
+      if (refused != null) {
+        // the row is named, so alike refusals of rows of several files are never read as the provider rejecting the request
+        call.results[index] = EmbeddingResult.permanent(input.describeIdentity() + ": " + refused);
+        continue;
+      }
+      // the URI's two quotes, plus a comma after the first
+      long bytes = dataUriLength(image) + (request.isEmpty() ? 2L : 3L);
+      long cost = cohereImageTokens(image);
+      if (!request.isEmpty() && (payload + bytes > maxPayload || tokens + cost > COHERE_MAX_REQUEST_TOKENS)) {
+        sendImageRequest(call, request, prepared);
+        request = new ArrayList<>();
+        prepared = new ArrayList<>();
+        payload = envelope;
+        tokens = 0;
+        bytes = dataUriLength(image) + 2L;
+      }
+      request.add(index);
+      prepared.add(image);
+      payload += bytes;
+      tokens += cost;
+    }
+    if (!request.isEmpty()) {
+      sendImageRequest(call, request, prepared);
+    }
+  }
+
+  /** One image request; a rejected request of several images is isolated, each image alone. */
+  private void sendImageRequest(Call call, List<Integer> request, List<PreparedImage> prepared) {
+    String notSent = loop.notSentReason();
+    if (notSent != null) {
+      call.fill(request, EmbeddingResult.retryable(notSent));
+      return;
+    }
+    call.sent.addAll(request);
+    byte[] body = imageBody(prepared);
+    Answer<float[][]> answer = loop.send(() -> attempt(call, body, request.size()));
+    switch (answer.kind()) {
+      case OK:
+        accept(call, request, answer.value());
+        break;
+      case INPUT:
+        if (request.size() == 1) {
+          call.rejected.put(request.get(0), answer.error());
+        } else {
+          for (int i = 0; i < request.size(); i++) {
+            call.isolationRequests++;
+            sendImageRequest(call, Collections.singletonList(request.get(i)), Collections.singletonList(prepared.get(i)));
+          }
+        }
+        break;
+      case RETRYABLE:
+        call.fill(request, EmbeddingResult.retryable(answer.error()));
+        break;
+      default:
+        throw configFailure(answer.error());
+    }
+  }
+
+  /**
+   * Cohere Embed v4's token count of an image, {@code (pixels / 784) x 4}, its pixels clamped to what Cohere resamples to
+   * ([{@value #COHERE_MIN_IMAGE_PIXELS}, {@value #COHERE_MAX_IMAGE_PIXELS}]); 0 for another family.
+   */
+  private long cohereImageTokens(PreparedImage image) {
+    if (family() != BedrockModelFamily.COHERE_EMBED_V4) {
+      return 0L;
+    }
+    long pixels = Math.max(COHERE_MIN_IMAGE_PIXELS, Math.min(COHERE_MAX_IMAGE_PIXELS, (long) image.getWidth() * image.getHeight()));
+    return (pixels + COHERE_PIXELS_PER_TOKEN_UNIT - 1) / COHERE_PIXELS_PER_TOKEN_UNIT * COHERE_TOKENS_PER_UNIT;
+  }
+
+  /** Why the family cannot take {@code image} (its type, encoded size or long side), or null when it can. */
+  private String imageRefusal(PreparedImage image) {
+    BedrockModelFamily family = family();
+    if (!family.imageMimeTypes().contains(image.getMimeType())) {
+      return "the prepared image is " + image.getMimeType() + ", which " + family + " does not accept (it accepts "
+          + new TreeSet<>(family.imageMimeTypes()) + ")";
+    }
+    if (image.getEncoded().length > family.maxImageBytes()) {
+      return "the prepared image is " + image.getEncoded().length + " bytes, over the " + family.maxImageBytes() + " bytes "
+          + family + " accepts; lower " + EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key();
+    }
+    if (family.maxImageSide() > 0 && Math.max(image.getWidth(), image.getHeight()) > family.maxImageSide()) {
+      return "the prepared image is " + image.getWidth() + "x" + image.getHeight() + " pixels, over the " + family.maxImageSide()
+          + " pixels per side " + family + " accepts; lower " + EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key();
+    }
+    return null;
   }
 
   /** One attempt: invoke, classify, parse; never throws for a provider or transport failure. */
@@ -333,9 +498,10 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
   }
 
   /**
-   * Inputs Bedrock rejected alone become PERMANENT once this client has embedded anything, or when the call holds one input: one
-   * rejection cannot tell the row's fault from the binding's, and failing the run would fail every later run on the same row.
-   * Otherwise the call fails as configuration, since a wrong model id or binding is rejected the same way.
+   * Inputs Bedrock rejected alone become PERMANENT once this client has embedded anything, or when the call sent Bedrock one
+   * input: one rejection cannot tell the row's fault from the binding's, and failing the run would fail every later run on the
+   * same row. Otherwise (several inputs sent, every one rejected) the call fails as configuration, since a wrong model id or
+   * binding is rejected the same way. Inputs settled without a request are not counted as sent.
    */
   private void settleRejections(Call call) {
     if (call.rejected.isEmpty()) {
@@ -349,7 +515,7 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
       }
       return;
     }
-    if (!embeddedOnce && call.results.length > 1) {
+    if (!embeddedOnce && call.sent.size() > 1) {
       throw configFailure(call.rejected.size() + " input(s) rejected and nothing embedded yet by this client, so the "
           + "binding's configuration (model id, family, dimensions) may be the cause; first rejection: "
           + call.rejected.values().iterator().next());
@@ -377,10 +543,50 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
       case COHERE_EMBED_V4:
         cohereBody(body).putArray("texts").addAll(textNodes(texts));
         break;
+      case TITAN_EMBED_IMAGE_V1:
+        body.put("inputText", texts.get(0));
+        titanMultimodalConfig(body);
+        break;
       default:
         throw new UnsupportedOperationException("Unhandled Bedrock model family " + family());
     }
     return bytes(body);
+  }
+
+  /**
+   * The request of {@code images}: Cohere Embed v4 {@code images}, a list of {@code data:<mime>;base64,…} URIs in input order
+   * (never sent beside {@code texts}); Titan Multimodal G1 {@code inputImage}, the bare base64 of its one image.
+   */
+  private byte[] imageBody(List<PreparedImage> images) {
+    ObjectNode body = MAPPER.createObjectNode();
+    switch (family()) {
+      case COHERE_EMBED_V4:
+        ArrayNode uris = cohereBody(body).putArray("images");
+        images.forEach(image -> uris.add(dataUri(image)));
+        break;
+      case TITAN_EMBED_IMAGE_V1:
+        body.put("inputImage", Base64.getEncoder().encodeToString(images.get(0).getEncoded()));
+        titanMultimodalConfig(body);
+        break;
+      default:
+        throw new UnsupportedOperationException("Bedrock model family " + family() + " embeds no image");
+    }
+    return bytes(body);
+  }
+
+  /** The length of {@link #dataUri}, without building it: base64 writes 4 characters per 3 bytes, padded. */
+  private static long dataUriLength(PreparedImage image) {
+    return ("data:" + image.getMimeType() + ";base64,").length() + 4L * ((image.getEncoded().length + 2L) / 3L);
+  }
+
+  /** {@code data:<mime>;base64,<the encoded image>}. */
+  private static String dataUri(PreparedImage image) {
+    return "data:" + image.getMimeType() + ";base64," + Base64.getEncoder().encodeToString(image.getEncoded());
+  }
+
+  /** Titan Multimodal G1's {@code embeddingConfig.outputEmbeddingLength}: the model's dimension. */
+  private void titanMultimodalConfig(ObjectNode body) {
+    body.putObject("embeddingConfig").put("outputEmbeddingLength", spec.getDimension());
   }
 
   /** Cohere Embed v4: {@code truncate} NONE "returns an error if the input exceeds the limit"; the default is not documented. */
@@ -406,7 +612,7 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
     }
   }
 
-  /** Titan: {@code embedding}; Cohere: {@code embeddings.float} (or a bare {@code embeddings} list). */
+  /** Titan (text and multimodal): {@code embedding}; Cohere: {@code embeddings.float} (or a bare {@code embeddings} list). */
   private float[][] parse(byte[] body, int expected) throws IOException {
     JsonNode root = MAPPER.readTree(body);
     if (root == null || !root.isObject()) {
@@ -470,10 +676,14 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
     return getClass().getSimpleName() + "{" + config + "}";
   }
 
-  /** The per-call state: results by input position, inputs rejected alone, isolation requests, reported input tokens. */
+  /**
+   * The per-call state: results by input position, inputs rejected alone, the distinct inputs sent to Bedrock, isolation
+   * requests, reported input tokens.
+   */
   private static final class Call {
     private final EmbeddingResult[] results;
     private final Map<Integer, String> rejected = new LinkedHashMap<>();
+    private final Set<Integer> sent = new HashSet<>();
     private int isolationRequests;
     private long tokens = -1L;
 

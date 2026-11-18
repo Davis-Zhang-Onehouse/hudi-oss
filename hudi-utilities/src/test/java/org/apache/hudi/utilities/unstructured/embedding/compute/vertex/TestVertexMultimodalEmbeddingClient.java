@@ -25,12 +25,12 @@ import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClient;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientConfigException;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientFactory;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingComputePlatformException;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingInput;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingResult;
-import org.apache.hudi.utilities.unstructured.embedding.compute.MultimodalEmbeddingClient;
 import org.apache.hudi.utilities.unstructured.embedding.compute.PreparedImageSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageFixtures;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImagePreparer;
@@ -413,7 +413,7 @@ public class TestVertexMultimodalEmbeddingClient {
     assertEquals("https://us-central1-aiplatform.googleapis.com/v1/projects/proj/locations/us-central1/publishers/google/models/"
         + "multimodalembedding@001:predict", VertexClientConfig.from(spec(128), noEndpoint).endpoint());
     assertEquals(VertexMultimodalEmbeddingClient.class.getName(), EmbeddingClientFactory.clientClassName(spec(128)));
-    assertTrue(client(128) instanceof MultimodalEmbeddingClient);
+    assertEquals(EmbeddingClient.TEXT_AND_IMAGE, client(128).supportedModalities("multimodalembedding@001"));
   }
 
   @Test

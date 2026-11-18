@@ -20,8 +20,13 @@ package org.apache.hudi.utilities.unstructured.embedding.compute;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Computes embeddings by calling a third-party endpoint ("model embedding computation is always 3 party
@@ -40,11 +45,42 @@ import java.util.List;
  * {@link EmbeddingProviderUnavailableException} (the client's outage short-circuit is open, or its credential's token endpoint
  * cannot be reached) fail the task, so the compute
  * commit writes nothing and the next sync retries its rows.
+ *
+ * <p>Modalities: {@link #supportedModalities} names the modalities the client has a request format for. Compute hands the
+ * client only rows of the modalities the model declares ({@code hoodie.unstructured.embedding.model.<alias>.modalities}), and
+ * the job refuses at start a declaration outside {@link #supportedModalities}.
+ *
+ * <p>Outcome contract for image inputs (modality {@code image}), on top of the above: each such {@link EmbeddingInput} carries
+ * its stored input ({@link EmbeddingInput#storedImage()}) and the resized model input ({@link EmbeddingInput#image()}), made
+ * lazily when the client asks for it, so a client holds at most the prepared images of the request it is building, never the
+ * whole call's. When {@link PreparedImageSupplier#get()} throws, the client answers that input with {@link ImageFailures#result} and goes on with
+ * the others. A refusal before decode
+ * ({@link org.apache.hudi.utilities.unstructured.embedding.image.ImageRefusedException}), an unreadable header
+ * ({@link org.apache.hudi.utilities.unstructured.embedding.image.ImageHeaderException}), corrupt pixel data
+ * ({@link javax.imageio.IIOException}) or a body cut short is PERMANENT; a storage failure under the read
+ * ({@link org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException} in the cause chain) is RETRYABLE; a malformed
+ * stored-input reference fails the run ({@link EmbeddingComputePlatformException}).
  */
 public interface EmbeddingClient extends AutoCloseable {
 
+  /** The modalities of a client that embeds text only. */
+  Set<String> TEXT_ONLY = Collections.singleton(EmbeddingTableSchema.MODALITY_TEXT);
+
+  /** The modalities of a client that embeds text and images. */
+  Set<String> TEXT_AND_IMAGE = Collections.unmodifiableSet(new TreeSet<>(Arrays.asList(
+      EmbeddingTableSchema.MODALITY_TEXT, EmbeddingTableSchema.MODALITY_IMAGE)));
+
   /** Prepares the client for {@code spec}; called once, before any {@link #embed}. */
   void init(EmbeddingModelSpec spec, TypedProperties props);
+
+  /**
+   * The modalities this client has a request format for when it serves {@code modelName} (the model's {@code .name}), a subset
+   * of {@code text} and {@code image}. Called on the driver at start, on an instance built with the no-arg constructor that
+   * {@link #init} has not been called on, so it reads no configuration and opens no connection. Default: {@code text} only.
+   */
+  default Set<String> supportedModalities(String modelName) {
+    return TEXT_ONLY;
+  }
 
   /** The model this client was initialized for. */
   EmbeddingModelSpec spec();

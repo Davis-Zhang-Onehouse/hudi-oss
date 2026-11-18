@@ -39,10 +39,11 @@ public class ComputeCounters implements Serializable {
   private final LongAccumulator rowsRetried;
   private final LongAccumulator rowsPermanent;
   private final LongAccumulator rateLimitWaitMillis;
+  private final LongAccumulator callsRefused;
 
   /**
-   * Counters with a fresh, unregistered rate-limit wait accumulator: driver-local only (tests that run the iterator in the
-   * driver). Spark refuses to ship an unregistered accumulator to executors; production uses {@link #register}.
+   * Counters with fresh, unregistered rate-limit wait and refusal accumulators: driver-local only (tests that run the iterator in
+   * the driver). Spark refuses to ship an unregistered accumulator to executors; production uses {@link #register}.
    */
   public ComputeCounters(LongAccumulator batchesOk, LongAccumulator batchesFailed, LongAccumulator rowsEmbedded,
                          LongAccumulator rowsRetried, LongAccumulator rowsPermanent) {
@@ -51,19 +52,26 @@ public class ComputeCounters implements Serializable {
 
   public ComputeCounters(LongAccumulator batchesOk, LongAccumulator batchesFailed, LongAccumulator rowsEmbedded,
                          LongAccumulator rowsRetried, LongAccumulator rowsPermanent, LongAccumulator rateLimitWaitMillis) {
+    this(batchesOk, batchesFailed, rowsEmbedded, rowsRetried, rowsPermanent, rateLimitWaitMillis, new LongAccumulator());
+  }
+
+  public ComputeCounters(LongAccumulator batchesOk, LongAccumulator batchesFailed, LongAccumulator rowsEmbedded,
+                         LongAccumulator rowsRetried, LongAccumulator rowsPermanent, LongAccumulator rateLimitWaitMillis,
+                         LongAccumulator callsRefused) {
     this.batchesOk = batchesOk;
     this.batchesFailed = batchesFailed;
     this.rowsEmbedded = rowsEmbedded;
     this.rowsRetried = rowsRetried;
     this.rowsPermanent = rowsPermanent;
     this.rateLimitWaitMillis = rateLimitWaitMillis;
+    this.callsRefused = callsRefused;
   }
 
   public static ComputeCounters register(SparkContext sc) {
     return new ComputeCounters(sc.longAccumulator("embedding.compute.batchesOk"),
         sc.longAccumulator("embedding.compute.batchesFailed"), sc.longAccumulator("embedding.compute.rowsEmbedded"),
         sc.longAccumulator("embedding.compute.rowsRetried"), sc.longAccumulator("embedding.compute.rowsPermanent"),
-        sc.longAccumulator("embedding.compute.rateLimitWaitMillis"));
+        sc.longAccumulator("embedding.compute.rateLimitWaitMillis"), sc.longAccumulator("embedding.compute.callsRefused"));
   }
 
   public LongAccumulator getBatchesOk() {
@@ -94,5 +102,13 @@ public class ComputeCounters implements Serializable {
    */
   public LongAccumulator getRateLimitWaitMillis() {
     return rateLimitWaitMillis;
+  }
+
+  /**
+   * Compute tasks the provider refused permanently ({@link EmbeddingClientConfigException}): each such task stops at its first
+   * refusal and ends normally with one marker row ({@link ComputeRound#REFUSED_PREFIX}), and the driver fails the round.
+   */
+  public LongAccumulator getCallsRefused() {
+    return callsRefused;
   }
 }

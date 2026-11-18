@@ -47,6 +47,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -244,9 +245,14 @@ public class TestStoredImageOutcomes {
   }
 
   /** A multimodal client whose every call fails on a broken invariant. */
-  public static class PlatformFailingClient implements MultimodalEmbeddingClient {
+  public static class PlatformFailingClient implements EmbeddingClient {
     static final String MESSAGE = "image input without a prepared image (model " + MODEL + ")";
     private EmbeddingModelSpec spec;
+
+    @Override
+    public Set<String> supportedModalities(String modelName) {
+      return TEXT_AND_IMAGE;
+    }
 
     @Override
     public void init(EmbeddingModelSpec spec, TypedProperties props) {
@@ -287,6 +293,7 @@ public class TestStoredImageOutcomes {
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_DIMENSIONS_SUFFIX, String.valueOf(DIM));
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_PROVIDER_SUFFIX,
         DummyMultimodalEmbeddingClient.PROVIDER);
+    props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_MODALITIES_SUFFIX, "text,image");
     props.setProperty(EmbeddingTableConfig.COMPUTE_RETRY_BACKOFF_MS.key(), "0");
     return props;
   }
