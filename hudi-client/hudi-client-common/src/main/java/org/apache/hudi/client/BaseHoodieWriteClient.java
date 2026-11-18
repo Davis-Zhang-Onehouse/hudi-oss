@@ -98,6 +98,7 @@ import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.action.HoodieWriteMetadata;
 import org.apache.hudi.table.action.commit.CommitMetadataResolverFactory;
 import org.apache.hudi.table.action.restore.RestoreUtils;
+import org.apache.hudi.table.action.rollback.RestorePlanActionExecutor;
 import org.apache.hudi.table.action.savepoint.SavepointHelpers;
 import org.apache.hudi.table.marker.WriteMarkersFactory;
 import org.apache.hudi.table.upgrade.SupportsUpgradeDowngrade;
@@ -871,6 +872,8 @@ public abstract class BaseHoodieWriteClient<T, I, K, O> extends BaseHoodieClient
    * @param savepointTime Savepoint time to rollback to
    */
   public void restoreToSavepoint(String savepointTime) {
+    // before the metadata table may be deleted below, so a refused restore changes nothing
+    checkRestorable(savepointTime);
     boolean initializeMetadataTableIfNecessary = config.isMetadataTableEnabled();
     if (initializeMetadataTableIfNecessary && shouldDeleteMdtBeforeRestore(savepointTime)) {
       HoodieTableMetadataUtil.deleteMetadataTable(config.getBasePath(), context);
@@ -939,6 +942,16 @@ public abstract class BaseHoodieWriteClient<T, I, K, O> extends BaseHoodieClient
   }
 
   /**
+   * Refuses a restore of this table to {@code targetInstant} that would roll back a completed commit marked
+   * {@link RestorePlanActionExecutor#RESTORE_UNSUPPORTED_REASON_KEY}, before anything is changed. Reads the timeline only.
+   *
+   * @throws org.apache.hudi.exception.HoodieRestoreException naming the first such commit
+   */
+  public void checkRestorable(String targetInstant) {
+    RestorePlanActionExecutor.checkRestorable(createTable(config), config.getBasePath(), targetInstant);
+  }
+
+  /**
    * Deletes the metadata table (MDT) if it would be left in an inconsistent state by a restore
    * to {@code targetInstant}, and returns whether the MDT was actually deleted.
    *
@@ -956,6 +969,8 @@ public abstract class BaseHoodieWriteClient<T, I, K, O> extends BaseHoodieClient
    *         {@code false} otherwise (MDT either did not need deletion or does not exist)
    */
   public boolean deleteMdtIfNecessaryBeforeRestore(String targetInstant) {
+    // before the metadata table is deleted, so a refused restore changes nothing
+    checkRestorable(targetInstant);
     if (shouldDeleteMdtBeforeRestore(targetInstant)) {
       HoodieTableMetadataUtil.deleteMetadataTable(config.getBasePath(), context);
       return true;
