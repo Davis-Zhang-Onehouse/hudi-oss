@@ -19,7 +19,11 @@
 package org.apache.hudi.utilities.unstructured.embedding.balance;
 
 import org.apache.hudi.common.config.TypedProperties;
+import org.apache.hudi.utilities.unstructured.embedding.prep.ImageInputPreprocessor;
+import org.apache.hudi.utilities.unstructured.embedding.prep.JcodecVideoFramePreprocessor;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
+import org.apache.hudi.utilities.unstructured.embedding.prep.VideoFramePreprocessor;
+import org.apache.hudi.utilities.unstructured.embedding.prep.pdf.PdfFilePreprocessor;
 
 import org.apache.spark.sql.Column;
 import org.apache.spark.sql.functions;
@@ -51,8 +55,7 @@ public final class BalanceGroups {
   public static final String UNMAPPED = "unmapped";
 
   private static final List<String> SHIPPED_VIDEO_CLASSES =
-      Arrays.asList("org.apache.hudi.utilities.unstructured.embedding.prep.VideoFramePreprocessor",
-          "org.apache.hudi.utilities.unstructured.embedding.prep.JcodecVideoFramePreprocessor");
+      Arrays.asList(VideoFramePreprocessor.class.getName(), JcodecVideoFramePreprocessor.class.getName());
 
   private final Map<String, String> groupByExtension;
 
@@ -72,10 +75,10 @@ public final class BalanceGroups {
   }
 
   private static String groupOfClass(String className, Set<String> videoClasses) {
-    if (PreprocessorRegistry.PDF_PREPROCESSOR_CLASS.equals(className)) {
+    if (PdfFilePreprocessor.class.getName().equals(className)) {
       return PDF;
     }
-    if ("org.apache.hudi.utilities.unstructured.embedding.prep.ImageInputPreprocessor".equals(className)) {
+    if (ImageInputPreprocessor.class.getName().equals(className)) {
       return IMAGE;
     }
     return videoClasses.contains(className) ? VIDEO : className;

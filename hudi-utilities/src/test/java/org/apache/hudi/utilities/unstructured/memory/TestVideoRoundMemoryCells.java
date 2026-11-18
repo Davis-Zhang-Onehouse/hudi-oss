@@ -449,7 +449,7 @@ public class TestVideoRoundMemoryCells extends EmbeddingRoundTestBase {
     // the child installs the bucket file system over the same objects
     props.setProperty(BucketFolderFileSystem.ROOT, objects.objectsRoot().toAbsolutePath().toString());
     props.setProperty(HoodieWriteConfig.TAGGED_RECORD_STORAGE_LEVEL_VALUE.key(), "DISK_ONLY");
-    props.remove(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key());
+    props.remove(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key());
     props.setProperty(EmbeddingTableConfig.COMPUTE_PARALLELISM.key(), String.valueOf(TASKS));
     props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "mp4");
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key(), String.valueOf(MAX_PIXELS));

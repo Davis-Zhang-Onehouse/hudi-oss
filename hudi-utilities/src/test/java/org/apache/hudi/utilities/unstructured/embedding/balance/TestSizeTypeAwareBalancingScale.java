@@ -78,7 +78,7 @@ public class TestSizeTypeAwareBalancingScale extends SparkClientFunctionalTestHa
         "org.apache.hudi.utilities.unstructured.embedding.prep.ImageInputPreprocessor");
     props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "mp4" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
         "org.apache.hudi.utilities.unstructured.embedding.prep.VideoFramePreprocessor");
-    props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), String.valueOf(P));
+    props.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), String.valueOf(P));
     return props;
   }
 

@@ -88,6 +88,7 @@ public class TestRowBalancer extends SparkClientFunctionalTestHarness {
   private static TypedProperties props(int partitions) {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), String.valueOf(partitions));
+    props.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), String.valueOf(partitions));
     return props;
   }
 

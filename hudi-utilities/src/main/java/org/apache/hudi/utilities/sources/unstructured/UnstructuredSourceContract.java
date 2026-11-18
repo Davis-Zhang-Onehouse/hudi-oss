@@ -33,7 +33,9 @@ import org.apache.hudi.keygen.factory.HoodieSparkKeyGeneratorFactory;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobSourceSetup;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PrepLogicVersions;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -86,7 +88,7 @@ public class UnstructuredSourceContract implements SourceContract {
     TypedProperties merged = TypedProperties.copy(jobProps);
     require(merged, KeyGeneratorOptions.RECORDKEY_FIELD_NAME, String.join(",", mode.keyColumns()),
         UnstructuredSourceContract::fields, " (these fields, in this order)");
-    if (ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE)) {
+    if (ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE) && storesInputs(merged)) {
       require(merged, HoodieWriteConfig.MARKERS_TYPE, MarkerType.TIMELINE_SERVER_BASED.name(), UnstructuredSourceContract::ignoringCase, "");
       require(merged, HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE, "true", UnstructuredSourceContract::ignoringCase, "");
     }
@@ -100,6 +102,19 @@ public class UnstructuredSourceContract implements SourceContract {
     checkKeyGenerator(UnstructuredSchemaContract.sourceName(mode), merged);
     validateJob(merged);
     return merged;
+  }
+
+  /** Blob jobs store objects; embedding jobs need input-store markers only for the allowed preprocessors that store inputs. */
+  private boolean storesInputs(TypedProperties props) {
+    if (mode == UnstructuredMode.BLOB) {
+      return true;
+    }
+    PreprocessorRegistry registry = new PreprocessorRegistry(props);
+    try {
+      return registry.storesInputs(EmbeddingTableConfig.from(props));
+    } finally {
+      registry.close();
+    }
   }
 
   @Override

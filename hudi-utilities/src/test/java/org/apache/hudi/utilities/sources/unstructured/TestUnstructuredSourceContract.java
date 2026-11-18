@@ -176,6 +176,32 @@ class TestUnstructuredSourceContract {
   }
 
   @Test
+  void textOnlyEmbeddingKeepsDirectMarkers() {
+    for (String extensions : new String[] {"pdf", "txt", "pdf,txt"}) {
+      TypedProperties props = mode("embedding");
+      props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), extensions);
+      props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
+          org.apache.hudi.utilities.unstructured.embedding.prep.TestPreprocessingIterator.PipeSplitPreprocessor.class.getName());
+      props.setProperty(MARKERS, "DIRECT");
+      TypedProperties merged = new UnstructuredSourceContract(props).prepareJob(props);
+      assertEquals("DIRECT", merged.getString(MARKERS));
+      assertFalse(merged.containsKey(ROLLBACK));
+    }
+  }
+
+  @Test
+  void inputStoringEmbeddingStillRequiresTimelineServerMarkers() {
+    for (String extensions : new String[] {"jpg", "mp4", "pdf,jpg", ""}) {
+      TypedProperties props = mode("embedding");
+      if (!extensions.isEmpty()) {
+        props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), extensions);
+      }
+      props.setProperty(MARKERS, "DIRECT");
+      assertTrue(refusal(new UnstructuredSourceContract(props), props).contains("TIMELINE_SERVER_BASED"), extensions);
+    }
+  }
+
+  @Test
   void goldenSettingsEmbedding() {
     Map<String, String> embedding = new TreeMap<>();
     embedding.put("hoodie.table.blob.layout.version", "1");

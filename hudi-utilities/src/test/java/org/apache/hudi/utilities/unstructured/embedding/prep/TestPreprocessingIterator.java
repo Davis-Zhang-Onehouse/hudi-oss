@@ -48,6 +48,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -63,6 +64,7 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.hudi.common.schema.HoodieSchema.Blob.INLINE;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -137,6 +139,74 @@ public class TestPreprocessingIterator {
         }
       };
     }
+  }
+
+  /** Emits one derived payload to exercise the iterator's input-store contract. */
+  public static class DerivedPayloadPreprocessor extends PipeSplitPreprocessor {
+    @Override
+    public ClosableIterator<Chunk> open(BlobBytesSupplier bytes, FileMeta file, Tokenizer tokenizer, TypedProperties props) {
+      Chunk chunk = Chunk.builder(EmbeddingTableSchema.MODALITY_IMAGE)
+          .payload(() -> new ByteArrayInputStream(new byte[] {1, 2, 3}),
+              props.getLong("test.payload.size", 3), props.getString("test.payload.type", "image/jpeg")).build();
+      Iterator<Chunk> chunks = Collections.singletonList(chunk).iterator();
+      return new ClosableIterator<Chunk>() {
+        @Override
+        public void close() {
+        }
+
+        @Override
+        public boolean hasNext() {
+          return chunks.hasNext();
+        }
+
+        @Override
+        public Chunk next() {
+          return chunks.next();
+        }
+      };
+    }
+  }
+
+  @Test
+  public void derivedPayloadWithoutDestinationChecksContentType() {
+    TypedProperties props = derivedPayloadProps();
+    props.setProperty("test.payload.type", "application/octet-stream");
+    try (PreprocessingIterator iterator = iterator(props, blobRow("sha", "txt", "input"))) {
+      assertTrue(drain(iterator).isEmpty());
+      assertTrue(iterator.getSideOutputs().get(0).getError().contains("A stored embedding input"));
+    }
+  }
+
+  @Test
+  public void derivedPayloadWithoutDestinationUsesSharedSizeFailure() {
+    TypedProperties props = derivedPayloadProps();
+    props.setProperty("test.payload.size", "4");
+    try (PreprocessingIterator iterator = iterator(props, blobRow("sha", "txt", "input"))) {
+      assertTrue(drain(iterator).isEmpty());
+      assertTrue(iterator.getSideOutputs().get(0).getError().contains("Payload of 3 bytes, but its chunk declares 4"));
+    }
+  }
+
+  @Test
+  public void validDerivedPayloadWithoutDestinationKeepsBytes() {
+    TypedProperties props = derivedPayloadProps();
+    try (PreprocessingIterator iterator = iterator(props, blobRow("sha", "txt", "input"))) {
+      List<Row> rows = drain(iterator);
+      assertEquals(1, rows.size());
+      Row payload = (Row) column(rows.get(0), EmbeddingTableSchema.build(EmbeddingTableConfig.from(props)),
+          EmbeddingTableSchema.PREPARED_IMAGE);
+      assertEquals(INLINE, payload.getString(0));
+      assertArrayEquals(new byte[] {1, 2, 3}, (byte[]) payload.get(1));
+      assertNull(payload.get(2));
+      assertTrue(iterator.getSideOutputs().isEmpty());
+    }
+  }
+
+  private TypedProperties derivedPayloadProps() {
+    TypedProperties props = props();
+    props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
+        DerivedPayloadPreprocessor.class.getName());
+    return props;
   }
 
   @TempDir

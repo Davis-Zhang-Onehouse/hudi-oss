@@ -121,18 +121,15 @@ public final class PreparedInputs implements Serializable, Closeable {
    */
   public Row prepare(String row, String partitionPath, String contentType, BlobBytesSupplier payload, long sizeBytes) {
     checkTaskCeiling();
-    if (payload == null || sizeBytes < 0 || sizeBytes > MAX_PAYLOAD_BYTES) {
-      throw new IllegalArgumentException("A stored embedding input needs a payload of 0 to " + MAX_PAYLOAD_BYTES + " bytes: "
-          + row + ", size " + sizeBytes);
-    }
+    checkPayload(row, payload, sizeBytes);
     checkInput(partitionPath, contentType);
     if (sizeBytes <= inlineMaxBytes) {
-      return new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.INLINE, readWhole(payload, sizeBytes), null}, BLOB_STRUCT);
+      return new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.INLINE, readWhole(payload, sizeBytes, contentType), null}, BLOB_STRUCT);
     }
     PayloadWriter.Payload target = new PayloadWriter.Payload(row, partitionPath, sizeBytes);
     if (sizeBytes <= OutOfLineWritePool.MAX_PENDING_BYTES) {
       // read whole here, so a payload not of its size fails as before, before anything is marked; written in the background
-      byte[] bytes = readWhole(payload, sizeBytes);
+      byte[] bytes = readWhole(payload, sizeBytes, contentType);
       return outOfLine(PayloadWriter.write(writer(target), writes(), target, bytes), sizeBytes);
     }
     OutOfLineWritePool pool = writes;
@@ -203,6 +200,13 @@ public final class PreparedInputs implements Serializable, Closeable {
     }
   }
 
+  private static void checkPayload(String row, BlobBytesSupplier payload, long sizeBytes) {
+    if (payload == null || sizeBytes < 0 || sizeBytes > MAX_PAYLOAD_BYTES) {
+      throw new IllegalArgumentException("A stored embedding input needs a payload of 0 to " + MAX_PAYLOAD_BYTES + " bytes: "
+          + row + ", size " + sizeBytes);
+    }
+  }
+
   private static void checkInput(String partition, String contentType) {
     if (!ImageContentTypes.stored().contains(contentType)) {
       throw new IllegalArgumentException("A stored embedding input is one of " + ImageContentTypes.stored() + ", not " + contentType);
@@ -221,8 +225,15 @@ public final class PreparedInputs implements Serializable, Closeable {
     return inlineMaxBytes;
   }
 
-  /** Exactly {@code sizeBytes} bytes of {@code payload}. */
-  private static byte[] readWhole(BlobBytesSupplier payload, long sizeBytes) {
+  /**
+   * Exactly {@code sizeBytes} bytes of a stored input, including one read without a payload destination.
+   *
+   * @throws IllegalArgumentException for an unsupported content type, invalid payload size or a size mismatch
+   * @throws HoodieIOException when the payload stream cannot be read
+   */
+  public static byte[] readWhole(BlobBytesSupplier payload, long sizeBytes, String contentType) {
+    checkPayload("inline payload", payload, sizeBytes);
+    checkInput(null, contentType);
     byte[] bytes = new byte[(int) sizeBytes];
     try (InputStream in = payload.open()) {
       int read = 0;

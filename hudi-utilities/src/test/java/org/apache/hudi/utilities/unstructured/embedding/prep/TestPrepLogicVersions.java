@@ -227,6 +227,7 @@ class TestPrepLogicVersions {
     TypedProperties changed = new TypedProperties();
     changed.setProperty(EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key(), "0");
     changed.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "4");
+    changed.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), "5");
     changed.setProperty(AudioConfigKeys.RUNTIME_PREFIX + "transcriber.whisper.threads", "2");
     changed.setProperty(AudioConfigKeys.RUNTIME_PREFIX + "transcriber.whisper.model.dir", "/models/another-location");
     for (String kind : new String[] {"text", "image", "video", "audio"}) {

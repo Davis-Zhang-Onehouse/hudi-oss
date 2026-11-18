@@ -523,46 +523,26 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
       return currentBlob;
     }
     long size = chunk.getPayloadSizeBytes();
-    if (preparedInputs != null) {
-      try {
+    try {
+      if (preparedInputs != null) {
         return preparedInputs.prepare(rowName(chunk, chunkId), null, chunk.getPayloadContentType(), chunk.getPayload(), size);
-      } catch (IllegalArgumentException | HoodieIOException e) {
-        // a payload not of its declared size, of an unstored type, or unreadable: this chunk's content, unless the read met a
-        // round failure (a source a later run can still read)
-        PrepFailures.rethrowRoundFailure(e);
-        throw new PreprocessingException("Payload of chunk " + fileChunks + " could not be stored: " + e.getMessage(), e);
-      } catch (EmbeddingPayloadWriteException e) {
-        throw e;
-      } catch (HoodieValidationException e) {
-        // the task's inline ceiling refused the threshold: the job's configuration, never this file's content; the round fails
-        throw new PrepPlatformException("The input store could not store the payload of " + rowName(chunk, chunkId) + ": "
-            + e.getMessage(), e);
       }
-    }
-    if (size > payloadInlineMaxBytes) {
-      throw new PreprocessingException("Payload of chunk " + fileChunks + " is " + size + " bytes, above the inline threshold "
-          + EmbeddingInputConfig.INLINE_MAX_BYTES.key() + "=" + payloadInlineMaxBytes + ", and this prep has no payload destination");
-    }
-    byte[] bytes = new byte[(int) size];
-    try (InputStream in = chunk.getPayload().open()) {
-      int read = 0;
-      while (read < bytes.length) {
-        int n = in.read(bytes, read, bytes.length - read);
-        if (n < 0) {
-          throw new PreprocessingException("Payload of chunk " + fileChunks + " ended after " + read + " of its declared " + size
-              + " bytes");
-        }
-        read += n;
+      if (size > payloadInlineMaxBytes) {
+        throw new PreprocessingException("Payload of chunk " + fileChunks + " is " + size + " bytes, above the inline threshold "
+            + EmbeddingInputConfig.INLINE_MAX_BYTES.key() + "=" + payloadInlineMaxBytes + ", and this prep has no payload destination");
       }
-      if (in.read() >= 0) {
-        throw new PreprocessingException("Payload of chunk " + fileChunks + " is longer than its declared " + size + " bytes");
-      }
-    } catch (IOException e) {
-      // a storage failure under the reader fails the round, as on every other per-file path
+      return RowFactory.create(HoodieSchema.Blob.INLINE,
+          PreparedInputs.readWhole(chunk.getPayload(), size, chunk.getPayloadContentType()), null);
+    } catch (IllegalArgumentException | HoodieIOException e) {
+      // A read's storage failure still fails the round; payload content failures fail this chunk.
       PrepFailures.rethrowRoundFailure(e);
-      throw new PreprocessingException("Payload of chunk " + fileChunks + " could not be read: " + e.getMessage(), e);
+      throw new PreprocessingException("Payload of chunk " + fileChunks + " could not be stored: " + e.getMessage(), e);
+    } catch (EmbeddingPayloadWriteException e) {
+      throw e;
+    } catch (HoodieValidationException e) {
+      throw new PrepPlatformException("The input store could not store the payload of " + rowName(chunk, chunkId) + ": "
+          + e.getMessage(), e);
     }
-    return RowFactory.create(HoodieSchema.Blob.INLINE, bytes, null);
   }
 
   /** The row a chunk's payload belongs to, by its record key fields, for the input store's failure messages. */

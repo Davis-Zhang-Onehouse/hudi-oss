@@ -23,6 +23,7 @@ import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.marker.MarkerType;
+import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
@@ -42,6 +43,7 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.StorageLevel;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -97,6 +99,24 @@ public class TestPrepRoundPayloadDestination extends SparkClientFunctionalTestHa
         RowFactory.create(HoodieSchema.Blob.INLINE, "alpha|beta".getBytes(StandardCharsets.UTF_8), null));
     return PrepRound.prepare(spark(), spark().createDataFrame(Collections.singletonList(text), SOURCE), config,
         HadoopFSUtils.getStorageConf(jsc().hadoopConfiguration()), table, output, "001", StorageLevel.MEMORY_AND_DISK());
+  }
+
+  @Test
+  public void missingTimelineServerIsRefusedAtRoundStart() {
+    TypedProperties props = new TypedProperties();
+    props.setProperty(HoodieWriteConfig.BASE_PATH.key(), basePath());
+    props.setProperty(EmbeddingTableConfig.MODE.key(), EmbeddingTableConfig.MODE_PREP_ONLY);
+    props.setProperty(EmbeddingTableConfig.TOKENIZER_TYPE.key(), "word-count");
+    props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "jpg");
+    props.setProperty(HoodieWriteConfig.MARKERS_TYPE.key(), MarkerType.TIMELINE_SERVER_BASED.name());
+    props.setProperty(HoodieWriteConfig.EMBEDDED_TIMELINE_SERVER_ENABLE.key(), "false");
+    HoodieValidationException refused = assertThrows(HoodieValidationException.class,
+        () -> EmbeddingTableTransformer.checkRound(EmbeddingTableConfig.from(props), spark(), Option.empty()));
+    assertTrue(refused.getMessage().contains("timeline server"), refused.getMessage());
+    // The same start check permits a PDF-only round under DIRECT markers, without reading any batch.
+    props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "pdf");
+    props.setProperty(HoodieWriteConfig.MARKERS_TYPE.key(), MarkerType.DIRECT.name());
+    assertEquals(Option.empty(), EmbeddingTableTransformer.checkRound(EmbeddingTableConfig.from(props), spark(), Option.empty()));
   }
 
   @ParameterizedTest
