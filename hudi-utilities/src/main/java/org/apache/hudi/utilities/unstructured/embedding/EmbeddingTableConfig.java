@@ -224,23 +224,30 @@ public class EmbeddingTableConfig implements Serializable {
   public static final String PREPROCESSOR_CLASS_SUFFIX = ".class";
   /** Prefix of the row-balancing keys; they do not shape the preprocessing style. */
   public static final String BALANCE_PREFIX = PREP_PREFIX + "balance.";
-  /** The class of the row-balancing strategy that assigns a prep round's source rows to its tasks. */
+  /**
+   * RowBalancingStrategy implementation; the default, {@code balance.HashBalancingStrategy}, spreads the files over exactly
+   * {@code num.partitions} tasks by a hash of their source version, with one shuffle: balanced in expectation, not exactly.
+   */
   public static final ConfigProperty<String> BALANCE_STRATEGY_CLASS = ConfigProperty
       .key(BALANCE_PREFIX + "strategy.class")
       .defaultValue("org.apache.hudi.utilities.unstructured.embedding.balance.HashBalancingStrategy")
       .markAdvanced()
       .sinceVersion("1.3.0")
-      .withDocumentation("The class of the row-balancing strategy that assigns a prep round's source rows to its tasks.");
+      .withDocumentation("RowBalancingStrategy implementation. The default, HashBalancingStrategy, spreads the files over "
+          + "exactly hoodie.unstructured.embedding.prep.balance.num.partitions tasks by a hash of their source version (path "
+          + "sha, modification time, size), with one shuffle and no plan: a file's task depends on its version alone, and task "
+          + "file counts are balanced in expectation, not exactly equal.");
   /**
-   * Number of Spark partitions P of the prep row balancing, must be positive (default {@code spark.default.parallelism}).
+   * Number of Spark partitions P, must be positive: the exact task count of the hash strategy (default
+   * {@code spark.default.parallelism}).
    */
   public static final ConfigProperty<String> BALANCE_NUM_PARTITIONS = ConfigProperty
       .key(BALANCE_PREFIX + "num.partitions")
       .noDefaultValue("<derived>")
       .markAdvanced()
       .sinceVersion("1.3.0")
-      .withDocumentation("Number of Spark partitions P of the prep row balancing, a positive integer (default "
-          + "spark.default.parallelism).");
+      .withDocumentation("Number of Spark partitions P, a positive integer: the exact task count of the hash strategy, "
+          + "HashBalancingStrategy (default spark.default.parallelism).");
   /**
    * Tries in all of opening one blob's stored bytes when the open fails transiently (a throttled, reset or timed-out
    * request), within the same prep round; the last failure fails the round, which the next run retries from the same
