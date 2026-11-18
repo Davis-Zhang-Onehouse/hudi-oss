@@ -78,7 +78,10 @@ public class SizeTypeAwareBalancingStrategy extends AssignmentBalancingStrategy 
   public static final long DEFAULT_BALANCE_PDF_MAX_BYTES_PER_TASK = 256L * 1024 * 1024;
   /** Byte budget per task of the {@code image} group, 2 GiB. */
   public static final long DEFAULT_BALANCE_IMAGE_MAX_BYTES_PER_TASK = 2048L * 1024 * 1024;
-  /** Byte budget per task of the {@code video} group, 1 GiB. */
+  /**
+   * Source bytes per video task, 1 GiB: lower to spread source bytes over more tasks; frame memory is per slot (tune slots/heap),
+   * while decode time follows duration and resolution.
+   */
   public static final long DEFAULT_BALANCE_VIDEO_MAX_BYTES_PER_TASK = 1024L * 1024 * 1024;
   /** Byte budget per task of a custom group, the PDF value. */
   public static final long DEFAULT_BALANCE_DEFAULT_MAX_BYTES_PER_TASK = DEFAULT_BALANCE_PDF_MAX_BYTES_PER_TASK;

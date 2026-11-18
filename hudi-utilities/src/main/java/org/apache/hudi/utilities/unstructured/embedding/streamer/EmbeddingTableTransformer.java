@@ -38,6 +38,7 @@ import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistr
 import org.apache.hudi.utilities.unstructured.embedding.prep.VideoFrameHeapCheck;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenizerFactory;
+import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter;
 
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Dataset;
@@ -268,6 +269,8 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       if (registry.storesInputs(config)) {
         // the input store's inline threshold against the per-task heap ceiling, before any Spark work
         EmbeddingInputConfig.checkOnDriver(props, spark.sparkContext().getConf());
+        OutOfLineWriter.checkTimelineServerMarkers(HadoopFSUtils.getStorageConf(spark.sparkContext().hadoopConfiguration()),
+            config.targetTablePath(), props);
       }
       if (VideoFrameHeapCheck.prepsVideo(config, registry)) {
         // the executor heap must hold the frame decodes of a video: refused before any Spark work

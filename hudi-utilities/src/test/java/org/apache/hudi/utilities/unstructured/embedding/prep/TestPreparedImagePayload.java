@@ -462,7 +462,7 @@ public class TestPreparedImagePayload {
     assertEquals(1, rows.size());
     assertArrayEquals(DERIVED, (byte[]) preparedImage(rows.get(0)).get(1));
     String error = iterator.getSideOutputs().get(0).getError();
-    assertTrue(error.contains("ended after " + DERIVED.length + " of its declared " + (DERIVED.length + 3)), error);
+    assertTrue(error.contains("Payload of " + DERIVED.length + " bytes, but its chunk declares " + (DERIVED.length + 3)), error);
   }
 
   @Test
@@ -473,7 +473,7 @@ public class TestPreparedImagePayload {
 
     assertEquals(1, rows.size());
     String error = iterator.getSideOutputs().get(0).getError();
-    assertTrue(error.contains("longer than its declared " + (DERIVED.length - 1)), error);
+    assertTrue(error.contains("Payload of more than " + (DERIVED.length - 1) + " bytes, but its chunk declares " + (DERIVED.length - 1)), error);
   }
 
   @Test

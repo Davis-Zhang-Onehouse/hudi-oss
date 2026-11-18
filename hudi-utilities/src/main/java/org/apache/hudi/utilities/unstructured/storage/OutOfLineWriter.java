@@ -25,7 +25,6 @@ import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.IOType;
 import org.apache.hudi.common.table.HoodieTableVersion;
 import org.apache.hudi.common.table.marker.MarkerType;
-import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.VisibleForTesting;
@@ -33,9 +32,11 @@ import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.HoodieValidationException;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.storage.StorageSchemes;
 import org.apache.hudi.table.HoodieSparkTable;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.marker.TimelineServerBasedWriteMarkers;
@@ -132,6 +133,31 @@ public final class OutOfLineWriter {
   }
 
   /**
+   * Refuses direct-marker fallback before an embedding round reads or balances its source batch. No table or marker is created.
+   *
+   * @throws HoodieValidationException when out-of-line markers are enabled and the effective marker configuration falls back
+   *     to direct markers (including an HDFS destination or no embedded or remote timeline server)
+   */
+  public static void checkTimelineServerMarkers(StorageConfiguration<?> storageConf, String basePath, Properties props) {
+    checkTimelineServerMarkers(storageConf, basePath, HoodieWriteConfig.newBuilder().withProps(props).withPath(basePath).build());
+  }
+
+  private static void checkTimelineServerMarkers(StorageConfiguration<?> storageConf, String basePath, HoodieWriteConfig config) {
+    if (!config.isBlobMarkersEnabled()) {
+      return;
+    }
+    MarkerType markerType = config.getMarkersType();
+    if (markerType != MarkerType.TIMELINE_SERVER_BASED
+        || (!config.isEmbeddedTimelineServerEnabled() && !config.isRemoteViewStorageType())
+        || StorageSchemes.HDFS.getScheme().equals(HadoopFSUtils.getScheme(HadoopFSUtils.getFs(basePath, storageConf, true)))) {
+      throw new HoodieValidationException("Out-of-line writes to " + basePath + " require TIMELINE_SERVER_BASED markers served by "
+          + "a timeline server, but the write gets direct markers (" + HoodieWriteConfig.MARKERS_TYPE.key() + "=" + markerType
+          + ", an HDFS base path, or no embedded or remote timeline server). Set "
+          + HoodieWriteConfig.BLOB_MARKERS_ENABLE.key() + "=false to write out-of-line files without markers");
+    }
+  }
+
+  /**
    * The driver-built table, serialized into tasks. A task creates its instant's markers from it, as write handles do
    * (HoodieWriteHandle); the markers themselves are not shipped, since their marker folder path does not serialize.
    */
@@ -152,17 +178,7 @@ public final class OutOfLineWriter {
      * them ({@link OutOfLineWriter}).
      */
     private void checkTimelineServerMarkers() {
-      if (!table.getConfig().isBlobMarkersEnabled()) {
-        return;
-      }
-      MarkerType markerType = table.getConfig().getMarkersType();
-      if (markerType != MarkerType.TIMELINE_SERVER_BASED
-          || !(WriteMarkersFactory.get(markerType, table, HoodieTimeline.INIT_INSTANT_TS) instanceof TimelineServerBasedWriteMarkers)) {
-        throw new HoodieValidationException("Out-of-line writes to " + basePath + " require TIMELINE_SERVER_BASED markers served by "
-            + "a timeline server, but the write gets direct markers (" + HoodieWriteConfig.MARKERS_TYPE.key() + "=" + markerType
-            + ", an HDFS base path, or no embedded or remote timeline server). Set "
-            + HoodieWriteConfig.BLOB_MARKERS_ENABLE.key() + "=false to write out-of-line files without markers");
-      }
+      OutOfLineWriter.checkTimelineServerMarkers(table.getContext().getStorageConf(), basePath, table.getConfig());
     }
 
     /** A writer for {@code instant}, with no table, metaClient or write config built in the task. */

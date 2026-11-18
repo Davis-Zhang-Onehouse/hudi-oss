@@ -28,6 +28,7 @@ import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.utilities.config.CloudSourceConfig;
+import org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientNames;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageDecoder;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageDecoderLogicMismatchException;
@@ -562,19 +563,28 @@ public class EmbeddingTableConfig implements Serializable {
           + "task. HashBalancingStrategy spreads the files over exactly hoodie.unstructured.embedding.prep.num.partitions "
           + "tasks by a hash of their source version (path sha, modification time, size), with one shuffle and no plan: a file's "
           + "task depends on its version alone, and task file counts are balanced in expectation, not exactly equal.");
-  /**
-   * Number of Spark partitions P, must be positive: the exact task count of the hash strategy (default
-   * {@code spark.default.parallelism}), and the parallelism each group's task floor uses in
-   * {@code balance.SizeTypeAwareBalancingStrategy} (default derived from the job's executors).
-   */
+  /** Exact task count of {@code balance.HashBalancingStrategy}; positive, default {@code spark.default.parallelism}. */
   public static final ConfigProperty<String> BALANCE_NUM_PARTITIONS = ConfigProperty
       .key(PREP_PREFIX + "num.partitions")
       .noDefaultValue("<derived>")
       .markAdvanced()
       .sinceVersion("1.3.0")
-      .withDocumentation("Number of Spark partitions P, a positive integer: the exact task count of the hash strategy, "
-          + "HashBalancingStrategy (default spark.default.parallelism), and the parallelism each group's task floor uses in the "
-          + "size and type aware strategy, SizeTypeAwareBalancingStrategy (default derived from the job's executors).");
+      .withDocumentation("Exact task count of HashBalancingStrategy, a positive integer (default spark.default.parallelism). "
+          + "Ignored by SizeTypeAwareBalancingStrategy; its per-group floor uses hoodie.unstructured.embedding.prep.balance.min.partitions.");
+  /**
+   * Parallelism P of {@code balance.SizeTypeAwareBalancingStrategy}'s per-group floor: at least {@code min(files, P)} tasks per
+   * group, with more when its source-byte budget requires them. Positive; default derived from the job's executor capacity.
+   * Independent of {@link #BALANCE_NUM_PARTITIONS}; neither key is an alias for the other. Not preprocessing style.
+   */
+  public static final ConfigProperty<String> BALANCE_MIN_PARTITIONS = ConfigProperty
+      .key(BALANCE_PREFIX + "min.partitions")
+      .noDefaultValue("<derived>")
+      .markAdvanced()
+      .sinceVersion("1.3.0")
+      .withDocumentation("Parallelism P of SizeTypeAwareBalancingStrategy's per-group floor: at least min(files, P) tasks per "
+          + "group, with more when its source-byte budget requires them. Positive; default derived from the job's executor "
+          + "capacity. Independent of hoodie.unstructured.embedding.prep.num.partitions, which only the hash strategy reads. "
+          + "Not part of the preprocessing style.");
   /**
    * Suffix of the per-group byte budget of one prep task, {@code hoodie.unstructured.embedding.prep.balance.<group>.max.bytes.per.task}
    * ({@code balance.SizeTypeAwareBalancingStrategy}); {@code <group>} is {@code pdf}, {@code image}, {@code video} or a custom
@@ -592,20 +602,26 @@ public class EmbeddingTableConfig implements Serializable {
           + "hoodie.unstructured.embedding.prep.balance.<group>.max.bytes.per.task "
           + "(org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy); <group> is pdf, "
           + "image, video or a custom preprocessor's fully qualified class name. Must be positive (bytes). Replace "
-          + "<group> with a balancing group. pdf=268435456; image=2147483648; video=1073741824; custom "
-          + "group=hoodie.unstructured.embedding.prep.balance.default.max.bytes.per.task (268435456). Default: "
+          + "<group> with a balancing group. pdf=" + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_PDF_MAX_BYTES_PER_TASK
+          + "; image=" + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_IMAGE_MAX_BYTES_PER_TASK
+          + "; video=" + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_VIDEO_MAX_BYTES_PER_TASK
+          + "; custom group=hoodie.unstructured.embedding.prep.balance.default.max.bytes.per.task ("
+          + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_DEFAULT_MAX_BYTES_PER_TASK + "). "
+          + "The video budget bounds source bytes per task; frame memory is per task slot and decode time follows duration "
+          + "and resolution. Lower the video budget to spread source bytes over more tasks; tune executor slots/heap for frames. Default: "
           + "<group-dependent>.");
   /**
-   * The byte budget per task of a custom preprocessor group with no budget key of its own; default the {@code pdf} budget,
-   * 256 MiB ({@code balance.SizeTypeAwareBalancingStrategy}).
+   * The byte budget per task of a custom preprocessor group with no budget key of its own; default
+   * {@value SizeTypeAwareBalancingStrategy#DEFAULT_BALANCE_DEFAULT_MAX_BYTES_PER_TASK} bytes, the shared PDF budget.
    */
   public static final ConfigProperty<Long> BALANCE_DEFAULT_MAX_BYTES_PER_TASK = ConfigProperty
       .key(BALANCE_PREFIX + "default" + BALANCE_MAX_BYTES_PER_TASK_SUFFIX)
-      .defaultValue(268435456L)
+      .defaultValue(SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_DEFAULT_MAX_BYTES_PER_TASK)
       .markAdvanced()
       .sinceVersion("1.3.0")
       .withDocumentation("The byte budget per task of a custom preprocessor group with no budget key of its own; default the pdf "
-          + "budget, 256 MiB (org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy). "
+          + "budget, " + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_DEFAULT_MAX_BYTES_PER_TASK
+          + " bytes (org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy). "
           + "custom-group fallback; built-in group defaults unaffected by this key.");
   /**
    * Tries in all of opening one blob's stored bytes when the open fails transiently (a throttled, reset or timed-out
@@ -994,6 +1010,18 @@ public class EmbeddingTableConfig implements Serializable {
       return defaultValue;
     }
     return positive(BALANCE_NUM_PARTITIONS.key(), intValue(BALANCE_NUM_PARTITIONS, 0));
+  }
+
+  /**
+   * {@link #BALANCE_MIN_PARTITIONS} when set, else {@code defaultValue}; a size-aware per-group floor, independent of hash tasks.
+   *
+   * @throws IllegalArgumentException if the configured value is not positive
+   */
+  public int balanceMinPartitions(int defaultValue) {
+    if (!props.containsKey(BALANCE_MIN_PARTITIONS.key())) {
+      return defaultValue;
+    }
+    return positive(BALANCE_MIN_PARTITIONS.key(), intValue(BALANCE_MIN_PARTITIONS, 0));
   }
 
   /**

@@ -35,7 +35,9 @@ import org.apache.hudi.keygen.factory.HoodieSparkKeyGeneratorFactory;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobSourceSetup;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PrepLogicVersions;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
 
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.SparkSession;
@@ -90,7 +92,7 @@ public class UnstructuredSourceContract implements SourceContract {
         UnstructuredSourceContract::fields, " (these fields, in this order)");
     require(merged, HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS, mode.injectorClass(), String::trim,
         " (a job's own injector goes under " + mode.injectorDelegateKey() + ", and runs first)");
-    if (mode == UnstructuredMode.EMBEDDING && ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE)) {
+    if (ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE) && storesInputs(merged)) {
       require(merged, HoodieWriteConfig.MARKERS_TYPE, MarkerType.TIMELINE_SERVER_BASED.name(),
           value -> value.trim().toLowerCase(java.util.Locale.ROOT), "");
       require(merged, HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE, "true",
@@ -104,6 +106,23 @@ public class UnstructuredSourceContract implements SourceContract {
     checkKeyGenerator(UnstructuredSchemaContract.sourceName(mode), merged);
     validateJob(merged);
     return merged;
+  }
+
+  /**
+   * Whether the job writes files beside its data files (out-of-line inputs, which need timeline-server markers so a failed
+   * round's rollback removes them): only an embedding job whose allowed preprocessors store inputs (video frames). A blob job
+   * never does: a file above its inline threshold is referenced where it is.
+   */
+  private boolean storesInputs(TypedProperties props) {
+    if (mode == UnstructuredMode.BLOB) {
+      return false;
+    }
+    PreprocessorRegistry registry = new PreprocessorRegistry(props);
+    try {
+      return registry.storesInputs(EmbeddingTableConfig.from(props));
+    } finally {
+      registry.close();
+    }
   }
 
   @Override

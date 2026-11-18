@@ -28,7 +28,7 @@ import java.util.regex.Pattern;
 
 /**
  * The parallelism P each group's task floor uses in size/type-aware prep balancing:
- * {@link EmbeddingTableConfig#BALANCE_NUM_PARTITIONS} when set; in local mode ({@code local[n]}) n; else the cores of the most
+ * {@link EmbeddingTableConfig#BALANCE_MIN_PARTITIONS} when set; in local mode ({@code local[n]}) n; else the cores of the most
  * executors the job can have, not only those registered when prep plans its tasks (an autoscaled job may have zero executors up
  * then, and planning for the maximum gives the autoscaler the backlog it scales on):
  * {@code P = max(registered executor cores, maxExecutors × spark.executor.cores)}, where maxExecutors is the first set of
@@ -75,14 +75,14 @@ public final class BalanceParallelism {
   /**
    * @param registeredCores    the cores of the executors registered now (the driver's own entry excluded)
    * @param defaultParallelism {@code SparkContext#defaultParallelism()}, the fallback
-   * @throws IllegalArgumentException if {@link EmbeddingTableConfig#BALANCE_NUM_PARTITIONS} is set and not positive, or an
+   * @throws IllegalArgumentException if {@link EmbeddingTableConfig#BALANCE_MIN_PARTITIONS} is set and not positive, or an
    *                                  executor count or {@code spark.executor.cores} read is not an integer
    */
   public static Resolved resolve(TypedProperties props, SparkConf conf, String master, int registeredCores,
                                  int defaultParallelism) {
-    if (props.containsKey(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key())) {
-      return new Resolved(EmbeddingTableConfig.from(props).balanceNumPartitions(defaultParallelism),
-          EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key());
+    if (props.containsKey(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key())) {
+      return new Resolved(EmbeddingTableConfig.from(props).balanceMinPartitions(defaultParallelism),
+          EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key());
     }
     String trimmed = master == null ? "" : master.trim();
     if (trimmed.equals("local")) {

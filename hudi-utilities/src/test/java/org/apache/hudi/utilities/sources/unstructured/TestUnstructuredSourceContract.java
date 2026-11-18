@@ -201,6 +201,32 @@ class TestUnstructuredSourceContract {
     assertFalse(unset.containsKey(ROLLBACK), "the blob job sets no rollback using markers");
   }
 
+  @Test
+  void textOnlyEmbeddingKeepsDirectMarkers() {
+    for (String extensions : new String[] {"pdf", "txt", "pdf,txt"}) {
+      TypedProperties props = mode("embedding");
+      props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), extensions);
+      props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
+          org.apache.hudi.utilities.unstructured.embedding.prep.TestPreprocessingIterator.PipeSplitPreprocessor.class.getName());
+      props.setProperty(MARKERS, "DIRECT");
+      TypedProperties merged = new UnstructuredSourceContract(props).prepareJob(props);
+      assertEquals("DIRECT", merged.getString(MARKERS));
+      assertFalse(merged.containsKey(ROLLBACK));
+    }
+  }
+
+  @Test
+  void inputStoringEmbeddingStillRequiresTimelineServerMarkers() {
+    for (String extensions : new String[] {"jpg", "mp4", "pdf,jpg", ""}) {
+      TypedProperties props = mode("embedding");
+      if (!extensions.isEmpty()) {
+        props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), extensions);
+      }
+      props.setProperty(MARKERS, "DIRECT");
+      assertTrue(refusal(new UnstructuredSourceContract(props), props).contains("TIMELINE_SERVER_BASED"), extensions);
+    }
+  }
+
   /** The complex or the non-partitioned key generator, named or inferred; any other is refused, naming the source and its mode. */
   private static void assertKeyGenerators(UnstructuredSourceContract contract) {
     for (String accepted : new String[] {ComplexKeyGenerator.class.getName(), NonpartitionedKeyGenerator.class.getName()}) {
