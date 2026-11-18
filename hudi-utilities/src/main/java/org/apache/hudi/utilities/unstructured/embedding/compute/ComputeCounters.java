@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.compute;
 
+import org.apache.spark.SparkContext;
 import org.apache.spark.util.LongAccumulator;
 
 import java.io.Serializable;
@@ -45,6 +46,12 @@ public class ComputeCounters implements Serializable {
     this.rowsEmbedded = rowsEmbedded;
     this.rowsRetried = rowsRetried;
     this.rowsPermanent = rowsPermanent;
+  }
+
+  public static ComputeCounters register(SparkContext sc) {
+    return new ComputeCounters(sc.longAccumulator("embedding.compute.batchesOk"),
+        sc.longAccumulator("embedding.compute.batchesFailed"), sc.longAccumulator("embedding.compute.rowsEmbedded"),
+        sc.longAccumulator("embedding.compute.rowsRetried"), sc.longAccumulator("embedding.compute.rowsPermanent"));
   }
 
   public LongAccumulator getBatchesOk() {
