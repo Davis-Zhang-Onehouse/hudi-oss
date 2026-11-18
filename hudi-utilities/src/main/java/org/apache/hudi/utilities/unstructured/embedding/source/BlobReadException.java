@@ -18,10 +18,9 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.source;
 
+import org.apache.hudi.exception.ExceptionUtil;
+
 import java.io.IOException;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.Set;
 
 /**
  * A failure of the storage under an image (a connection reset, a timeout), as opposed to a property of the image's bytes.
@@ -48,8 +47,7 @@ public class BlobReadException extends IOException {
 
   /** Whether {@code failure} or any of its causes is a {@link BlobReadException}. */
   public static boolean isStorageFailure(Throwable failure) {
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (cause instanceof BlobReadException) {
         return true;
       }

@@ -20,6 +20,7 @@ package org.apache.hudi.utilities.unstructured.embedding.prep;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.util.collection.ClosableIterator;
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioInput;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioRows;
@@ -260,7 +261,7 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
   }
 
   private static <T extends Throwable> T find(Throwable failure, Class<T> type) {
-    for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause()) {
+    for (Throwable t : ExceptionUtil.getCauses(failure)) {
       if (type.isInstance(t)) {
         return type.cast(t);
       }
@@ -270,10 +271,7 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
 
   /** Class and message, plus the root cause's: the quarantine entry alone tells an operator what went wrong. */
   static String describe(Throwable failure) {
-    Throwable root = failure;
-    while (root.getCause() != null && root.getCause() != root) {
-      root = root.getCause();
-    }
+    Throwable root = ExceptionUtil.getRootCause(failure);
     String described = failure.getClass().getSimpleName() + ": " + failure.getMessage();
     return root == failure ? described
         : described + " (root cause " + root.getClass().getSimpleName() + ": " + root.getMessage() + ")";

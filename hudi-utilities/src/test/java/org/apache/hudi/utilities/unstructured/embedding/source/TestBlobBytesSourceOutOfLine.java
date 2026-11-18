@@ -78,6 +78,13 @@ public class TestBlobBytesSourceOutOfLine {
   }
 
   @Test
+  void unavailableConnectorIsAReferenceFailure() {
+    BlobReferenceException failure = assertThrows(BlobReferenceException.class,
+        () -> source().open(outOfLine("oss://bucket/a.pdf", null, null, false)));
+    assertTrue(SourceFailures.isContentFailure(failure));
+  }
+
+  @Test
   void opensAnAbsoluteReferenceWholeWithoutARange() throws Exception {
     byte[] bytes = "%PDF-1.7 the source object".getBytes(StandardCharsets.UTF_8);
     String absolute = write("landing/a.pdf", bytes);

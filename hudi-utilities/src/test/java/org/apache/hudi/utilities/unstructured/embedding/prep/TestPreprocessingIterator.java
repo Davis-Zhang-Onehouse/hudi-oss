@@ -53,7 +53,10 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -68,8 +71,10 @@ import static org.apache.hudi.common.schema.HoodieSchema.Blob.INLINE;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -210,6 +215,16 @@ public class TestPreprocessingIterator {
     return props;
   }
 
+  public static class CyclicFailurePreprocessor extends PipeSplitPreprocessor {
+    @Override
+    public ClosableIterator<Chunk> open(BlobBytesSupplier bytes, FileMeta file, Tokenizer tokenizer, TypedProperties props) {
+      IllegalStateException first = new IllegalStateException("first");
+      IOException second = new IOException("second", first);
+      first.initCause(second);
+      throw first;
+    }
+  }
+
   @TempDir
   Path temp;
 
@@ -270,6 +285,21 @@ public class TestPreprocessingIterator {
       rows.add(iterator.next());
     }
     return rows;
+  }
+
+  @Test
+  public void causeCycleIsFormattedAsAFileFailureWithoutHanging() {
+    assertEquals(1, drain(iterator(props(), blobRow("control", "txt", "alpha"))).size());
+    TypedProperties failing = props();
+    failing.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
+        CyclicFailurePreprocessor.class.getName());
+    assertTimeoutPreemptively(Duration.ofSeconds(1), () -> {
+      try (PreprocessingIterator iterator = iterator(failing, blobRow("failed", "txt", "alpha"))) {
+        assertTrue(drain(iterator).isEmpty());
+        assertEquals(1, iterator.getSideOutputs().size());
+        assertTrue(iterator.getSideOutputs().get(0).getError().contains("root cause IOException: second"));
+      }
+    });
   }
 
   @Test
@@ -369,6 +399,40 @@ public class TestPreprocessingIterator {
    * table's managed form, which SQL read_blob resolves against that table's base) is a reference error of that file alone, and
    * the files beside it are prepared.
    */
+  @Test
+  public void overwrittenObjectFailsPrepInsteadOfUsingItsPreviousVersionKey() throws IOException {
+    Path file = temp.resolve("source.txt");
+    Files.write(file, new byte[] {'a'});
+    Files.setLastModifiedTime(file, FileTime.fromMillis(MODIFICATION_TIME));
+    Row sourceRow = outOfLineRow("source", file.toUri().toString());
+    StringBuilder observed = new StringBuilder("source_path_sha\tsource_modification_time\tsource_file_size\tmodality\tchunk_id\ttext\tstage\terror_class\n");
+    try (PreprocessingIterator control = iterator(props(), sourceRow)) {
+      List<Row> rows = drain(control);
+      assertEquals(1, rows.size());
+      assertEquals("a", rows.get(0).getString(8));
+      Row row = rows.get(0);
+      observed.append(row.getString(0)).append('\t').append(row.getLong(1)).append('\t').append(row.getLong(2))
+          .append('\t').append(row.getString(3)).append('\t').append(row.getLong(4)).append('\t').append(row.getString(8)).append("\t\t\n");
+      assertTrue(control.getSideOutputs().isEmpty());
+    }
+    Files.write(file, new byte[] {'b'});
+    Files.setLastModifiedTime(file, FileTime.fromMillis(MODIFICATION_TIME + 1000));
+    try (PreprocessingIterator changed = iterator(props(), sourceRow)) {
+      assertEquals(Collections.emptyList(), drain(changed), "new bytes must not use the old source version key");
+      assertEquals(1, changed.getSideOutputs().size());
+      assertEquals(PrepSideOutput.STAGE_PREP, changed.getSideOutputs().get(0).getStage());
+      assertTrue(changed.getSideOutputs().get(0).getError().contains("changed"));
+      PrepSideOutput failure = changed.getSideOutputs().get(0);
+      observed.append(failure.getSourcePathSha()).append('\t').append(failure.getSourceModificationTime()).append('\t')
+          .append(failure.getSourceFileSize()).append("\t\t\t\t").append(failure.getStage()).append('\t')
+          .append(failure.getError().split(":", 2)[0]).append('\n');
+    }
+    try (InputStream golden = getClass().getResourceAsStream("/unstructured/embedding/golden/source-version-guard.txt")) {
+      assertNotNull(golden);
+      assertEquals(new String(golden.readAllBytes(), StandardCharsets.UTF_8), observed.toString());
+    }
+  }
+
   @Test
   public void relativeOutOfLineReferenceFailsTheFileOnly() {
     PreprocessingIterator iterator = iterator(props("m1"), outOfLineRow("sha-rel", ".hoodie/.blob/txt/a.bin"),

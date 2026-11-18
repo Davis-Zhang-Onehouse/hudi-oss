@@ -21,6 +21,7 @@ package org.apache.hudi.utilities.unstructured.embedding.prep;
 import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.ClosableIterator;
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.HoodieValidationException;
@@ -140,6 +141,11 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   /** The current file's modalities not to prepare (their chunk 0 failed). */
   private final Set<String> skippedModalities = new HashSet<>();
 
+  /** Protects ownership transfers only; storage and preprocessor calls never hold this lock. */
+  private final Object lifecycle = new Object();
+  private boolean opening;
+  private boolean registryClosed;
+  private int closingChunks;
   private ClosableIterator<Chunk> currentChunks;
   private FilePreprocessor currentPreprocessor;
   private FileMeta currentFile;
@@ -365,8 +371,35 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   }
 
   private void openFile(Row blobRow) {
+    synchronized (lifecycle) {
+      if (closed) {
+        return;
+      }
+      opening = true;
+    }
+    Throwable failure = null;
+    try {
+      openFileOwned(blobRow);
+    } catch (Error error) {
+      failure = error;
+      throw closedOn(error);
+    } catch (RuntimeException error) {
+      failure = error;
+      throw error;
+    } finally {
+      synchronized (lifecycle) {
+        opening = false;
+      }
+      closeRegistryPreserving(failure);
+    }
+  }
+
+  private void openFileOwned(Row blobRow) {
     // the bytes read ahead for this row, if any; then the next row's read starts, to overlap this file's preparation
     byte[] readAhead = prefetcher.take(blobRow);
+    if (closed) {
+      return;
+    }
     readNextAhead();
     currentSourceRow = blobRow;
     fileChunks = 0;
@@ -388,21 +421,29 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
           PrepSideOutput.NO_PREPROCESSOR));
       return;
     }
-    currentPreprocessor = preprocessor.get();
+    FilePreprocessor processor = preprocessor.get();
     if (isGone(blobRow)) {
       // the source confirmed the object absent at its status call or its inline read: the file fails as a failed file does
       // (a side output of stage prep), and only a file a preprocessor would have read
       LOG.warn("EMBED-PREP-GONE source_path_sha={} source_path={}", currentFile.getSourcePathSha(), currentSourcePath);
       counters.getFilesFailed().add(1);
-      sideOutputs.accept(sideOutput(currentPreprocessor.sourceKind().markerModality(), PrepSideOutput.STAGE_PREP,
-          BlobTableSchema.GONE_SINCE_ANNOUNCED));
+      sideOutputs.accept(sideOutput(processor.sourceKind().markerModality(), PrepSideOutput.STAGE_PREP, BlobTableSchema.GONE_SINCE_ANNOUNCED));
       return;
     }
     try {
       Row blob = blobRow.getAs(BlobColumns.BLOB);
       currentBlob = blob;
-      currentChunks = currentPreprocessor.open(new BlobRowBytes(bytesSource, blob, currentFile.getFileSize(), readAhead), currentFile,
+      ClosableIterator<Chunk> opened = processor.open(new BlobRowBytes(bytesSource, blob, currentFile, readAhead), currentFile,
           tokenizer, config.getProps());
+      synchronized (lifecycle) {
+        if (!closed) {
+          currentPreprocessor = processor;
+          currentChunks = opened;
+          return;
+        }
+      }
+      // The opener retains a late result; task completion never installs or abandons it.
+      opened.close();
     } catch (SourceReadException | PreprocessorConfigurationException | PrepPlatformException e) {
       // a storage failure of a source a later run can still read, a configuration or a platform failure: the round fails,
       // never a quarantine entry committed past it
@@ -410,7 +451,11 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
     } catch (Exception e) {
       PrepFailures.rethrowRoundFailure(e);
       rethrowInterruption(e);
-      failCurrentFile(currentPreprocessor.name(), currentPreprocessor.sourceKind().markerModality(), e);
+      if (closed) {
+        LOG.warn("A preprocessor open, or the close of its late result, failed after the iterator closed for source_path_sha={}", currentFile.getSourcePathSha(), e);
+      } else {
+        failCurrentFile(processor.name(), processor.sourceKind().markerModality(), e);
+      }
     } catch (Error e) {
       throw closedOn(e);
     }
@@ -474,13 +519,7 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
    * task ends.
    */
   private static void rethrowInterruption(Exception e) {
-    TaskContext task = TaskContext.get();
-    boolean interrupted = Thread.currentThread().isInterrupted() || (task != null && task.isInterrupted());
-    for (Throwable t = e; t != null && !interrupted; t = t.getCause() == t ? null : t.getCause()) {
-      interrupted = t instanceof java.io.InterruptedIOException || t instanceof InterruptedException
-          || t instanceof java.nio.channels.ClosedByInterruptException; // an NIO read interrupted
-    }
-    if (interrupted) {
+    if (PrepFailures.isInterrupted(e)) {
       throw e instanceof RuntimeException ? (RuntimeException) e : new HoodieException("Interrupted while preprocessing", e);
     }
   }
@@ -521,10 +560,7 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
     if (failure instanceof PreprocessingException) {
       return failure.getMessage();
     }
-    Throwable root = failure;
-    while (root.getCause() != null && root.getCause() != root) {
-      root = root.getCause();
-    }
+    Throwable root = ExceptionUtil.getRootCause(failure);
     String described = failure.getClass().getSimpleName() + ": " + failure.getMessage();
     return root == failure ? described
         : described + " (root cause " + root.getClass().getSimpleName() + ": " + root.getMessage() + ")";
@@ -645,11 +681,51 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   }
 
   private void closeCurrentFile() {
-    ClosableIterator<Chunk> toClose = currentChunks;
-    currentChunks = null;
-    currentPreprocessor = null;
-    if (toClose != null) {
+    ClosableIterator<Chunk> toClose;
+    synchronized (lifecycle) {
+      toClose = currentChunks;
+      currentChunks = null;
+      currentPreprocessor = null;
+      if (toClose != null) {
+        closingChunks++;
+      }
+    }
+    if (toClose == null) {
+      return;
+    }
+    Throwable failure = null;
+    try {
       toClose.close();
+    } catch (RuntimeException | Error error) {
+      failure = error;
+      throw error;
+    } finally {
+      synchronized (lifecycle) {
+        closingChunks--;
+      }
+      closeRegistryPreserving(failure);
+    }
+  }
+
+  /** A chunk close and an open both retain the registry until their cleanup finishes. */
+  private void closeRegistryIfUnowned() {
+    synchronized (lifecycle) {
+      if (!closed || opening || currentChunks != null || closingChunks != 0 || registryClosed) {
+        return;
+      }
+      registryClosed = true;
+    }
+    registry.close();
+  }
+
+  private void closeRegistryPreserving(Throwable failure) {
+    try {
+      closeRegistryIfUnowned();
+    } catch (RuntimeException | Error cleanup) {
+      if (failure == null) {
+        throw cleanup;
+      }
+      failure.addSuppressed(cleanup);
     }
   }
 
@@ -663,18 +739,24 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
 
   @Override
   public void close() {
-    if (!closed) {
+    synchronized (lifecycle) {
+      if (closed) {
+        return;
+      }
       closed = true;
+    }
+    try {
       try {
         prefetcher.close();
-        closeCurrentFileQuietly();
       } finally {
-        try {
-          registry.close();
-        } finally {
-          if (preparedInputs != null) {
-            preparedInputs.close();
-          }
+        closeCurrentFileQuietly();
+      }
+    } finally {
+      try {
+        closeRegistryIfUnowned();
+      } finally {
+        if (preparedInputs != null) {
+          preparedInputs.close();
         }
       }
     }
@@ -704,28 +786,31 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
 
   /**
    * The bytes of one source row, as a stream or for random access. The object's length is the one the source listed for it, so
-   * an open sends no status request for it; an object read ahead whole is served from memory, with no storage access.
+   * prep checks the current object's version before consuming it. An object read ahead whole is then served from memory.
    */
   private static final class BlobRowBytes implements SeekableBlobBytesSupplier {
     private final BlobBytesSource source;
     private final Row blob;
+    private final FileMeta file;
     private final long objectLength;
     /** The whole object, read ahead; null when it was not. */
     private final byte[] readAhead;
 
-    BlobRowBytes(BlobBytesSource source, Row blob, long objectLength, byte[] readAhead) {
+    BlobRowBytes(BlobBytesSource source, Row blob, FileMeta file, byte[] readAhead) {
       this.source = source;
       this.blob = blob;
-      this.objectLength = objectLength;
+      this.file = file;
+      this.objectLength = file.getFileSize();
       this.readAhead = readAhead;
     }
 
     @Override
     public InputStream open() throws IOException {
-      if (readAhead != null) {
-        return new ByteArrayInputStream(readAhead);
-      }
       try {
+        source.checkVersion(blob, file.getSourceModificationTime(), objectLength);
+        if (readAhead != null) {
+          return new ByteArrayInputStream(readAhead);
+        }
         return new SourceInputStream(source.open(blob, objectLength));
       } catch (IOException | RuntimeException e) {
         throw classified(e);
@@ -735,6 +820,7 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
     @Override
     public SeekableBlob openSeekable() throws IOException {
       try {
+        source.checkVersion(blob, file.getSourceModificationTime(), objectLength);
         return new SourceSeekableBlob(readAhead != null ? source.openSeekable(blob, readAhead) : source.openSeekable(blob, objectLength));
       } catch (IOException | RuntimeException e) {
         throw classified(e);

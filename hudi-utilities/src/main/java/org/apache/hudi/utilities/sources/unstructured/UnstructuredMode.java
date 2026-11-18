@@ -123,6 +123,7 @@ public enum UnstructuredMode {
           throw new IllegalArgumentException(sourceName + " requires " + EmbeddingTableConfig.MODE.key() + ", one of: "
               + EmbeddingTableConfig.MODE_PREP_ONLY + ", " + EmbeddingTableConfig.MODE_PREP_AND_COMPUTE + "; configured: none");
         }
+        EmbeddingTableTransformer.checkJob(EmbeddingTableConfig.from(props));
         break;
       default:
         throw new UnsupportedOperationException("Unknown unstructured mode " + this);

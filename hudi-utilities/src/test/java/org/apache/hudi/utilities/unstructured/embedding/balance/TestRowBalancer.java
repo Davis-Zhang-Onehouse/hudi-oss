@@ -624,4 +624,26 @@ public class TestRowBalancer extends SparkClientFunctionalTestHarness {
   public void anAssignmentNeedsAPartition() {
     assertThrows(IllegalArgumentException.class, () -> new BalancingAssignment(0, batch(0)));
   }
+
+  /** A strategy whose assignment leaves out one version: {@link #balance} trusts every version to be named. */
+  private static final class IncompleteAssignmentStrategy extends AssignmentBalancingStrategy {
+    @Override
+    public BalancingAssignment assign(Dataset<Row> rowsWithoutBlob, TypedProperties writerProps) {
+      Dataset<Row> named = rowsWithoutBlob.filter(rowsWithoutBlob.col(BlobColumns.SOURCE_PATH_SHA).notEqual("sha-1"))
+          .select(rowsWithoutBlob.col(BlobColumns.SOURCE_PATH_SHA), rowsWithoutBlob.col(BlobColumns.SOURCE_MODIFICATION_TIME),
+              rowsWithoutBlob.col(BlobColumns.SOURCE_FILE_SIZE), org.apache.spark.sql.functions.lit(0).as(BalancingAssignment.PARTITION));
+      return new BalancingAssignment(2, named);
+    }
+  }
+
+  /** A version the assignment does not name fails the round with the strategy and the version named, not a bare NPE (RV32-4). */
+  @Test
+  public void anUnassignedVersionNamesTheStrategyAndTheVersion() {
+    Dataset<Row> batch = batch(3);
+    try (BalancedRows balanced = RowBalancer.balance(batch, new IncompleteAssignmentStrategy(), props(2))) {
+      Exception failure = assertThrows(Exception.class, () -> balanced.getRows().collect());
+      String message = String.valueOf(failure.getMessage());
+      assertTrue(message.contains(IncompleteAssignmentStrategy.class.getName()) && message.contains("sha-1"), message);
+    }
+  }
 }

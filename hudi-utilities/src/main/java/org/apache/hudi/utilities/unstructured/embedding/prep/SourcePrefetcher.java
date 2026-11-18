@@ -108,9 +108,8 @@ final class SourcePrefetcher implements AutoCloseable {
         cancelPending();
         return null;
       }
+      // Keep the awaited future reachable by close(); its worker may not immediately observe interruption.
       read = pending;
-      pending = null;
-      pendingRow = null;
     }
     try {
       return read.get();
@@ -129,6 +128,13 @@ final class SourcePrefetcher implements AutoCloseable {
     } catch (CancellationException e) {
       LOG.debug("Reading ahead was cancelled; the task opens the file itself", e);
       return null;
+    } finally {
+      synchronized (this) {
+        if (pending == read) {
+          pending = null;
+          pendingRow = null;
+        }
+      }
     }
   }
 

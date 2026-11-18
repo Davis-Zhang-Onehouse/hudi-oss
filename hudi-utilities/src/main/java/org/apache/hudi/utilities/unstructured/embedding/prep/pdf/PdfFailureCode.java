@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.prep.pdf;
 
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.unstructured.embedding.prep.ErrorText;
 
 /**
@@ -42,10 +43,7 @@ public enum PdfFailureCode {
     if (cause == null) {
       return name();
     }
-    Throwable root = cause;
-    while (root.getCause() != null && root.getCause() != root) {
-      root = root.getCause();
-    }
+    Throwable root = ExceptionUtil.getRootCause(cause);
     String detail = name() + ": " + root.getClass().getName() + ": " + root.getMessage()
         + (root == cause ? "" : " (" + cause.getMessage() + ")");
     return ErrorText.truncate(detail, MAX_DETAIL_CHARS);

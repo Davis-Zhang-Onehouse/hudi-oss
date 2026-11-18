@@ -22,6 +22,7 @@ import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.LocalFileSystem;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -35,20 +36,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** The served-scheme and missing-authority rules of a storage reference. */
 public class TestStorageReferenceRules {
 
-  /** Every scheme upstream Hudi supports is served, in any case. */
+  /** A supported scheme with no connector cannot serve a row in this job. */
   @ParameterizedTest
-  @ValueSource(strings = {"s3a", "s3", "gs", "abfss", "wasbs", "hdfs", "file", "oss", "viewfs", "cosn", "alluxio", "S3A", "Oss"})
-  public void upstreamSchemesAreServed(String scheme) {
+  @ValueSource(strings = {"oss", "Oss", "cosn", "missingconnector"})
+  public void unavailableSchemesAreNotServed(String scheme) {
     Configuration conf = new Configuration(false);
-    assertTrue(StorageReferenceRules.isServedScheme(scheme, conf));
-    assertTrue(StorageReferenceRules.isServedScheme(scheme, new HadoopStorageConfiguration(conf)));
+    assertFalse(StorageReferenceRules.isServedScheme(scheme, conf));
+    assertFalse(StorageReferenceRules.isServedScheme(scheme, new HadoopStorageConfiguration(conf)));
   }
 
   @Test
   public void configuredImplementationServesAScheme() {
     Configuration conf = new Configuration(false);
+    assertTrue(StorageReferenceRules.isServedScheme("file", conf));
     assertFalse(StorageReferenceRules.isServedScheme("rulesfs", conf));
-    conf.set("fs.rulesfs.impl", "com.example.RulesFileSystem");
+    conf.set("fs.rulesfs.impl", LocalFileSystem.class.getName());
     assertTrue(StorageReferenceRules.isServedScheme("rulesfs", conf));
     assertTrue(StorageReferenceRules.isServedScheme("RulesFS", new HadoopStorageConfiguration(conf)));
   }
@@ -66,7 +68,7 @@ public class TestStorageReferenceRules {
   public void s3nIsServedOnlyWhenConfigured() {
     Configuration conf = new Configuration(false);
     assertFalse(StorageReferenceRules.isServedScheme("s3n", conf));
-    conf.set("fs.s3n.impl", "com.example.S3nFileSystem");
+    conf.set("fs.s3n.impl", LocalFileSystem.class.getName());
     assertTrue(StorageReferenceRules.isServedScheme("s3n", conf));
   }
 

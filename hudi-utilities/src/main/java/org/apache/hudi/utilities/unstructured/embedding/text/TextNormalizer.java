@@ -128,10 +128,7 @@ public final class TextNormalizer {
     String nfkc = Normalizer.normalize(cleaned, Normalizer.Form.NFKC);
     boolean truncated = nfkc.length() > maxPageChars && maxPageChars > 0;
     if (truncated) {
-      int end = maxPageChars;
-      if (Character.isLowSurrogate(nfkc.charAt(end)) && Character.isHighSurrogate(nfkc.charAt(end - 1))) {
-        end--;
-      }
+      int end = Utf16.floor(nfkc, maxPageChars);
       nfkc = nfkc.substring(0, end);
     }
     // step 6 (3-4 again, then collapse) and step 7

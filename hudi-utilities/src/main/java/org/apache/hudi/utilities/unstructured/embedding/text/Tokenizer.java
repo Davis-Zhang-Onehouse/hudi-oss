@@ -59,7 +59,7 @@ public interface Tokenizer {
     int fits = 0;
     int exceeds = text.length();
     while (true) {
-      int mid = codePointBoundary(text, (fits + exceeds) >>> 1);
+      int mid = Utf16.floor(text, (fits + exceeds) >>> 1);
       if (mid <= fits) {
         mid = text.offsetByCodePoints(fits, 1);
       }
@@ -74,45 +74,4 @@ public interface Tokenizer {
     }
   }
 
-  /**
-   * A start index {@code s} of {@code text} with {@code countTokens(text.substring(s)) <= maxTokens}, never inside a
-   * surrogate pair: 0 when the whole text fits, {@code text.length()} when no code point does. Like
-   * {@link #prefixEndWithin} a checked small start, not promised to be the smallest.
-   */
-  default int suffixStartWithin(String text, int maxTokens) {
-    if (text == null || text.isEmpty()) {
-      return 0;
-    }
-    if (maxTokens <= 0) {
-      return text.length();
-    }
-    if (countTokens(text) <= maxTokens) {
-      return 0;
-    }
-    int exceeds = 0;
-    int fits = text.length();
-    while (true) {
-      int mid = codePointBoundary(text, (exceeds + fits) >>> 1);
-      if (mid <= exceeds) {
-        mid = text.offsetByCodePoints(exceeds, 1);
-      }
-      if (mid >= fits) {
-        return fits;
-      }
-      if (countTokens(text.substring(mid)) <= maxTokens) {
-        fits = mid;
-      } else {
-        exceeds = mid;
-      }
-    }
-  }
-
-  /** {@code index}, or one char earlier when {@code index} falls between the two halves of a surrogate pair. */
-  static int codePointBoundary(String text, int index) {
-    if (index > 0 && index < text.length() && Character.isLowSurrogate(text.charAt(index))
-        && Character.isHighSurrogate(text.charAt(index - 1))) {
-      return index - 1;
-    }
-    return index;
-  }
 }

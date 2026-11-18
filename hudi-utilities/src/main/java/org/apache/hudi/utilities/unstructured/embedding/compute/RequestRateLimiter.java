@@ -33,13 +33,16 @@ import java.util.function.LongSupplier;
  * second. Without a rate the limiter is {@link #isLimited() unlimited}: {@link #acquire} returns at once and nothing changes.
  * At most about 1000 tokens are taken per second whatever the rate (the clock and the shortest wait are in milliseconds).
  *
+ * <p>Each compute task owns its client and limiter. Rates and bursts are per task: 10 requests/s with 64 active compute
+ * tasks permits up to 640 requests/s across those tasks.
+ *
  * <p>Not thread safe.
  */
 public final class RequestRateLimiter {
 
   /**
    * {@code hoodie.unstructured.embedding.model.<name>.rate.limit.requests.per.second}: the refill rate, a positive decimal
-   * ({@code 0.5} = one token every 2 s); unset or blank = no limit.
+   * ({@code 0.5} = one token every 2 s), per compute task; unset or blank = no limit.
    */
   public static final String RATE_LIMIT_REQUESTS_PER_SECOND_SUFFIX = ".rate.limit.requests.per.second";
 

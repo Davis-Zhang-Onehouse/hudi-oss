@@ -223,6 +223,16 @@ final class SourceObjectOpener {
       try {
         return (FSDataInputStream) future.get();
       } catch (InterruptedException e) {
+        // The backend may finish opening after this task stops waiting. Cancelling its future could discard that stream.
+        future.whenComplete((opened, failure) -> {
+          if (opened instanceof FSDataInputStream) {
+            try {
+              ((FSDataInputStream) opened).close();
+            } catch (IOException | RuntimeException closeFailure) {
+              LOG.warn("Cannot close an abandoned stored-object stream for {}", path, closeFailure);
+            }
+          }
+        });
         Thread.currentThread().interrupt();
         InterruptedIOException interrupted = new InterruptedIOException("Interrupted while opening a stored object");
         interrupted.initCause(e);

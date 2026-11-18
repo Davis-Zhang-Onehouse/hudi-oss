@@ -67,11 +67,11 @@ class TestEmbeddingOutputSchema {
       expected = expected.add(EmbeddingTableSchema.vectorField(model.get()));
     }
 
-    StructType round = EmbeddingTableTransformer.outputSchema(config, Option.of(legacy), model);
+    StructType round = EmbeddingTableSchema.outputSchema(config, Option.of(legacy), model);
 
     assertEquals(expected, round);
     assertEquals(EmbeddingTableSchema.preparedImageField(), round.apply(EmbeddingTableSchema.PREPARED_IMAGE));
-    assertArrayEquals(expected.fieldNames(), EmbeddingTableTransformer.roundSchema(config, Option.of(legacy)).fieldNames());
+    assertArrayEquals(expected.fieldNames(), EmbeddingTableSchema.roundSchema(config, Option.of(legacy)).fieldNames());
   }
 
   @Test
@@ -80,8 +80,8 @@ class TestEmbeddingOutputSchema {
     StructType table = EmbeddingTableSchema.build(config)
         .add(DataTypes.createStructField("customer_note", DataTypes.StringType, true));
 
-    assertEquals(table, EmbeddingTableTransformer.outputSchema(config, Option.of(table), Option.empty()));
-    assertEquals(table, EmbeddingTableTransformer.outputSchema(config, Option.empty(), Option.empty())
+    assertEquals(table, EmbeddingTableSchema.outputSchema(config, Option.of(table), Option.empty()));
+    assertEquals(table, EmbeddingTableSchema.outputSchema(config, Option.empty(), Option.empty())
         .add(DataTypes.createStructField("customer_note", DataTypes.StringType, true)));
   }
 
@@ -90,7 +90,7 @@ class TestEmbeddingOutputSchema {
   void existingTableColumnsAreKeptAsTheyAre() {
     EmbeddingTableConfig config = config(false);
     StructType table = EmbeddingTableSchema.build(config).add("customer_column", DataTypes.StringType, true);
-    StructType round = EmbeddingTableTransformer.outputSchema(config, Option.of(table), Option.empty());
+    StructType round = EmbeddingTableSchema.outputSchema(config, Option.of(table), Option.empty());
     assertArrayEquals(table.fields(), round.fields());
   }
 
@@ -101,7 +101,7 @@ class TestEmbeddingOutputSchema {
     StructType table = new StructType(Arrays.stream(EmbeddingTableSchema.build(config).fields())
         .filter(field -> !field.name().equals(EmbeddingTableSchema.SOURCE_PATH_SHA)).toArray(StructField[]::new));
     IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-        () -> EmbeddingTableTransformer.outputSchema(config, Option.of(table), Option.empty()));
+        () -> EmbeddingTableSchema.outputSchema(config, Option.of(table), Option.empty()));
     assertTrue(refused.getMessage().contains(EmbeddingTableSchema.SOURCE_PATH_SHA), refused.getMessage());
   }
 }

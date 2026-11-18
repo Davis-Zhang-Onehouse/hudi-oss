@@ -22,6 +22,7 @@ import org.apache.hudi.common.config.ConfigProperty;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.common.util.StringUtils;
+import org.apache.hudi.utilities.unstructured.config.NumericConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
 
@@ -126,20 +127,7 @@ public class SizeTypeAwareBalancingStrategy extends AssignmentBalancingStrategy 
   }
 
   private static long positiveLong(TypedProperties props, String key, long defaultValue) {
-    String raw = ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(key).noDefaultValue(), null);
-    if (raw == null || raw.trim().isEmpty()) {
-      return defaultValue;
-    }
-    long value;
-    try {
-      value = Long.parseLong(raw.trim());
-    } catch (NumberFormatException e) {
-      throw new IllegalArgumentException("Config " + key + " must be a positive integer, got '" + raw + "'", e);
-    }
-    if (value <= 0) {
-      throw new IllegalArgumentException("Config " + key + " must be a positive integer up to " + Long.MAX_VALUE + ", got " + value);
-    }
-    return value;
+    return NumericConfig.positiveLong(props, key, defaultValue, Long.MAX_VALUE);
   }
 
   @Override

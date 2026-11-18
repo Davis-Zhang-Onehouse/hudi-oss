@@ -55,6 +55,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -126,8 +127,10 @@ public class TestPreprocessingIteratorPrefetch {
 
     assertEquals(without.rows, with.rows);
     assertEquals(without.sideOutputs, with.sideOutputs);
-    assertEquals(12, with.rows.size(), with.rows.toString());
-    assertEquals(5, with.sideOutputs.size(), with.sideOutputs.toString());
+    assertEquals(9, with.rows.size(), with.rows.toString());
+    assertEquals(6, with.sideOutputs.size(), with.sideOutputs.toString());
+    assertTrue(with.sideOutputs.stream().anyMatch(error -> error.startsWith("sha-longer prep text") && error.contains("changed")),
+        with.sideOutputs.toString());
     assertTrue(with.prefetchOpens > 0, "files were read ahead");
     assertEquals(0, without.prefetchOpens, "nothing is read ahead at 0");
   }
@@ -155,7 +158,7 @@ public class TestPreprocessingIteratorPrefetch {
     assertTrue(openThreads.get("two.png").get(0).startsWith(PREFETCH_THREAD), openThreads.toString());
     assertTrue(openThreads.get("big.bmp").stream().noneMatch(t -> t.startsWith(PREFETCH_THREAD)), "larger than the bound");
     assertTrue(openThreads.get("three.png").get(0).startsWith(PREFETCH_THREAD), openThreads.toString());
-    assertEquals(0, CountingObjectFileSystem.counts(path("two.png")).statuses.get(), "no status request for a listed object");
+    assertEquals(1, CountingObjectFileSystem.counts(path("two.png")).statuses.get(), "prep verifies the listed source version before consuming read-ahead bytes");
   }
 
   /** A read ahead that fails hands the file back to the task, which opens it itself, exactly as without a read ahead. */
@@ -555,6 +558,7 @@ public class TestPreprocessingIteratorPrefetch {
     Path file = local(key);
     Files.createDirectories(file.getParent());
     Files.write(file, bytes);
+    Files.setLastModifiedTime(file, FileTime.fromMillis(1L));
     return path(key);
   }
 

@@ -146,6 +146,28 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
   }
 
   @Test
+  public void missingAssignmentFailsInsteadOfDroppingASourceVersion() {
+    Dataset<Row> input = batch(Arrays.asList(new File("keep", "pdf", 1L), new File("missing", "pdf", 2L)));
+    TypedProperties props = props(1);
+    try (BalancedRows balanced = new SizeTypeAwareBalancingStrategy().balance(input, props)) {
+      assertEquals(2, balanced.getRows().collect().size(), "control: every input version is assigned");
+    }
+    AssignmentBalancingStrategy incomplete = new AssignmentBalancingStrategy() {
+      @Override
+      public BalancingAssignment assign(Dataset<Row> metadata, TypedProperties writerProps) {
+        Dataset<Row> assignment = metadata.filter(functions.col(BlobColumns.SOURCE_PATH_SHA).equalTo("keep"))
+            .selectExpr("source_path_sha", "source_modification_time", "source_file_size", "0 AS _balance_partition");
+        return new BalancingAssignment(1, assignment);
+      }
+    };
+    assertThrows(Exception.class, () -> {
+      try (BalancedRows balanced = incomplete.balance(input, props)) {
+        balanced.getRows().collect();
+      }
+    });
+  }
+
+  @Test
   public void groupColumnMatchesGroupOf() {
     List<File> files = Arrays.asList(new File("a", "pdf", 1L), new File("b", "PNG", 1L), new File("c", "mov", 1L),
         new File("d", null, 1L), new File("e", "docx", 1L));

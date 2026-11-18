@@ -19,6 +19,7 @@
 package org.apache.hudi.utilities.unstructured.embedding.balance;
 
 import org.apache.hudi.common.config.TypedProperties;
+import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
 
@@ -38,8 +39,8 @@ import scala.Tuple2;
  * partition assignment. {@link #balance} is fixed: it trusts the assignment to name every input version exactly once with a
  * non-null INT partition in [0, numPartitions), a contract each subclass's tests hold it to. The assignment is persisted
  * at the configured tagged-record level ({@link EmbeddingTableConfig#persistLevel}) and computed into that cache before the join
- * is planned, so the strategy runs once, a recomputed join reads the same assignment, and the join is planned on the
- * assignment's real size. The assignment is joined back to the full rows, and the rows are shuffled once with an
+ * is planned, so the join is planned on the assignment's real size. Persistence saves computation cost; an executor loss
+ * can recompute the assignment, so {@link RowBalancingStrategy}'s determinism contract keeps retries consistent. The assignment is joined back to the full rows, and the rows are shuffled once with an
  * {@link ExactPartitioner}, so Spark partition k holds exactly the rows assigned to k, the way
  * {@code HoodieSparkEngineContext#mapGroupsByKey} keys values by their target group and partitions on it. The join carries no
  * hint: the persisted assignment is broadcast automatically when it is small (under {@code spark.sql.autoBroadcastJoinThreshold}),
@@ -77,8 +78,9 @@ public abstract class AssignmentBalancingStrategy implements RowBalancingStrateg
       // fills the cache, so the join below is planned on the assignment's real size, with or without adaptive execution
       assigned.count();
       StructType rowSchema = blobRows.schema();
+      String strategy = getClass().getName();
       balanced = new BalancedRows(joinAssignment(blobRows, assigned).javaRDD()
-          .mapToPair(row -> new Tuple2<>(row.getInt(row.length() - 1), row))
+          .mapToPair(row -> new Tuple2<>(assignedPartition(row, strategy), row))
           .partitionBy(new ExactPartitioner(assignment.getNumPartitions()))
           .values()
           .map(row -> dropLast(row, rowSchema)), assigned);
@@ -106,7 +108,21 @@ public abstract class AssignmentBalancingStrategy implements RowBalancingStrateg
       matches = matches.and(source.col(column).eqNullSafe(assigned.col(column)));
     }
     // source columns keep their original layout
-    return source.join(assigned, matches).select(source.col("*"), assigned.col(BalancingAssignment.PARTITION));
+    return source.join(assigned, matches, "left").select(source.col("*"), assigned.col(BalancingAssignment.PARTITION));
+  }
+
+  /** The partition the assignment gives {@code row}; refuses a version the assignment does not name. */
+  private static int assignedPartition(Row row, String strategy) {
+    int last = row.length() - 1;
+    if (row.isNullAt(last)) {
+      StringBuilder version = new StringBuilder();
+      for (String column : BalancingAssignment.KEY_COLUMNS) {
+        version.append(version.length() == 0 ? "" : ", ").append(column).append('=').append((Object) row.getAs(column));
+      }
+      throw new HoodieException(strategy + " assigned no partition to the version (" + version + "): an assignment must "
+          + "name every input version once");
+    }
+    return row.getInt(last);
   }
 
   private static Row dropLast(Row row, StructType schema) {

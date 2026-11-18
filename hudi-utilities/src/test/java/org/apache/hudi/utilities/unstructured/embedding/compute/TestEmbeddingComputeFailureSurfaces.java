@@ -200,10 +200,12 @@ public class TestEmbeddingComputeFailureSurfaces {
 
   @Test
   public void clientThatCannotStartFailsTheStep() {
+    FailingClient.CLOSES.set(0);
     FailingClient.failInit = true;
     EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class,
         () -> new MicroBatchEmbeddingIterator(rows(), model(), props(), SCHEMA, 8, counters()));
     FailingClient.failInit = false;
+    assertEquals(1, FailingClient.CLOSES.get(), "a client whose init fails is closed");
     assertTrue(failure.getMessage().contains("EMBED-COMPUTE-CLIENT-INIT-FAILED"), failure.getMessage());
   }
 

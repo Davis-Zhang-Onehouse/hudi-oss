@@ -18,10 +18,13 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.prep;
 
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingPayloadWriteException;
 import org.apache.hudi.utilities.unstructured.embedding.source.PrepPlatformException;
 import org.apache.hudi.utilities.unstructured.embedding.source.PreprocessorConfigurationException;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenizerException;
+
+import org.apache.spark.TaskContext;
 
 import java.util.ArrayDeque;
 import java.util.Collections;
@@ -102,6 +105,21 @@ public final class PrepFailures {
       throw new PreprocessorConfigurationException(message, failure);
     }
     throw new PrepPlatformException(message, failure);
+  }
+
+  /** Whether the thread, Spark task or cause chain reports an interruption, including libraries that clear the flag. */
+  public static boolean isInterrupted(Throwable failure) {
+    TaskContext task = TaskContext.get();
+    if (Thread.currentThread().isInterrupted() || (task != null && task.isInterrupted())) {
+      return true;
+    }
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
+      if (cause instanceof java.io.InterruptedIOException || cause instanceof InterruptedException
+          || cause instanceof java.nio.channels.ClosedByInterruptException) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static boolean failsTheRound(Throwable cause) {

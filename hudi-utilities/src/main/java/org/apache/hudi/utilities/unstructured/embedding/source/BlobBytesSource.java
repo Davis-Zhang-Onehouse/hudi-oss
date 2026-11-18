@@ -25,6 +25,7 @@ import org.apache.hudi.io.SeekableDataInputStream;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.storage.StoragePathInfo;
 import org.apache.hudi.utilities.unstructured.retry.TransientRetry;
 import org.apache.hudi.utilities.unstructured.storage.StorageReferenceRules;
 
@@ -42,11 +43,8 @@ import java.io.InputStream;
 import java.io.Serializable;
 import java.net.URI;
 import java.nio.file.AccessDeniedException;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.Map;
-import java.util.Set;
 
 import scala.Option;
 
@@ -162,8 +160,7 @@ public class BlobBytesSource implements Serializable {
       return false;
     }
     boolean storageFailure = false;
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (SourceFailures.isAccessDenial(cause) || cause instanceof UnsupportedFileSystemException
           || cause instanceof ClassNotFoundException || cause instanceof NoClassDefFoundError) {
         // a 403 / KMS denial (S3A or the GCS connector), an HDFS permission check or a missing file system: a platform failure,
@@ -205,6 +202,31 @@ public class BlobBytesSource implements Serializable {
    */
   public InputStream open(Row blob, long objectLength) throws IOException {
     return open(parse(blob), objectLength);
+  }
+
+  /**
+   * Verifies the listed version before prep consumes a whole out-of-line source object, including read-ahead bytes.
+   * Inline bytes and explicit stored ranges already identify their bytes. A zero modification time is unknown; size is always
+   * compared. Changed objects fail their file, while a status request's storage failure keeps the source-open retry policy.
+   */
+  public void checkVersion(Row blob, long modificationTime, long length) throws IOException {
+    ParsedBlob parsed = parse(blob);
+    if (parsed.data != null || parsed.offset != null) {
+      return;
+    }
+    openRetry.call("check blob source version " + parsed.path, () -> {
+      HoodieStorage storage = storageFor(parsed.path, parsed.absolute);
+      try {
+        StoragePathInfo info = storage.getPathInfo(parsed.path);
+        if (info.getLength() != length || (modificationTime > 0 && info.getModificationTime() != modificationTime)) {
+          throw new BlobSourceChangedException("Source object " + parsed.path + " changed since it was listed: expected mtime="
+              + modificationTime + ", size=" + length + "; found mtime=" + info.getModificationTime() + ", size=" + info.getLength());
+        }
+      } catch (IOException | RuntimeException failure) {
+        throw notFoundChecked(storage, parsed.path, failure);
+      }
+      return null;
+    }, BlobBytesSource::isTransient);
   }
 
   private InputStream open(ParsedBlob parsed, Long objectLength) throws IOException {
@@ -537,11 +559,10 @@ public class BlobBytesSource implements Serializable {
   /** Construction can reject an authority before any read; I/O failures at open/read never use this rule. */
   private boolean isMalformedStorageReference(StoragePath path, RuntimeException failure) {
     URI uri = path.toUri();
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (cause instanceof UnsupportedFileSystemException) {
-        // a scheme this deployment serves whose file system is missing is a platform fault (a connector jar absent on
-        // the executor), never the reference's; a scheme outside that set is the reference's own fault
+        // a scheme whose file system resolves in this job but fails to construct is a platform fault; a scheme with no
+        // resolvable file system here (no connector on this executor, or a foreign scheme) is the reference's own fault
         return !StorageReferenceRules.isServedScheme(uri.getScheme(), storageConf);
       }
       if (StorageReferenceRules.isInvalidAuthorityFailure(uri, cause)) {

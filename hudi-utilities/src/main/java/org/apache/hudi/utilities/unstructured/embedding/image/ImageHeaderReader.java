@@ -18,6 +18,8 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.image;
 
+import org.apache.hudi.exception.ExceptionUtil;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,10 +96,7 @@ public final class ImageHeaderReader {
 
   /** {@code <class>: <message>}, followed by the root cause's when the reader wrapped one (e.g. a read cap). */
   static String describe(Throwable e) {
-    Throwable root = e;
-    while (root.getCause() != null && root.getCause() != root) {
-      root = root.getCause();
-    }
+    Throwable root = ExceptionUtil.getRootCause(e);
     String text = e.getClass().getSimpleName() + ": " + e.getMessage();
     return root == e ? text : text + " (caused by " + root.getClass().getSimpleName() + ": " + root.getMessage() + ")";
   }

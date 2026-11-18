@@ -18,13 +18,12 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.source;
 
+import org.apache.hudi.exception.ExceptionUtil;
+
 import org.apache.hadoop.security.AccessControlException;
 
 import java.io.FileNotFoundException;
 import java.nio.file.AccessDeniedException;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.Set;
 
 /**
  * Tells a storage failure that is a file's own fault from one a later run may not see: a
@@ -84,8 +83,7 @@ public final class SourceFailures {
 
   /** Whether {@code failure} or any of its causes is an access denial ({@link #isAccessDenial}). */
   public static boolean isCausedByAccessDenial(Throwable failure) {
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (isAccessDenial(cause)) {
         return true;
       }
@@ -101,13 +99,12 @@ public final class SourceFailures {
    */
   public static boolean isContentFailure(Throwable failure) {
     boolean content = false;
-    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (isAccessDenial(cause)) {
         return false;
       }
       content |= cause instanceof FileNotFoundException || cause instanceof BlobTruncatedException
-          || cause instanceof BlobReferenceException;
+          || cause instanceof BlobReferenceException || cause instanceof BlobSourceChangedException;
     }
     return content;
   }

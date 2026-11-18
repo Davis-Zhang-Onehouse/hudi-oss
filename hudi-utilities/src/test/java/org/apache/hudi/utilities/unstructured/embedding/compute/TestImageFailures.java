@@ -22,6 +22,7 @@ import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReferenceException;
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobSourceChangedException;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobTruncatedException;
 
 import org.junit.jupiter.api.Test;
@@ -55,6 +56,23 @@ public class TestImageFailures {
   private static final EmbeddingInput INPUT = new EmbeddingInput("f", 0, EmbeddingTableSchema.MODALITY_IMAGE, null);
   /** The five key columns of {@link #INPUT}, as every text naming the row gives them. */
   private static final String ROW = "source_path_sha=f source_modification_time=0 source_file_size=0 modality=image chunk_id=0";
+
+  @Test
+  public void changedSourceVersionIsPermanentNamingTheRow() {
+    EmbeddingResult result = ImageFailures.result(INPUT, new BlobSourceChangedException("source version changed"));
+    assertEquals(EmbeddingResult.Status.PERMANENT_FAILURE, result.getStatus());
+    assertTrue(result.getError().contains(ROW));
+    assertTrue(result.getError().contains("BlobSourceChangedException: source version changed"));
+  }
+
+  @Test
+  public void wrappedChangedSourceVersionIsPermanentNamingTheRow() {
+    EmbeddingResult result = ImageFailures.result(INPUT,
+        new IIOException("image read failed", new BlobSourceChangedException("source version changed")));
+    assertEquals(EmbeddingResult.Status.PERMANENT_FAILURE, result.getStatus());
+    assertTrue(result.getError().contains(ROW));
+    assertTrue(result.getError().contains("BlobSourceChangedException: source version changed"));
+  }
 
   @Test
   public void suppressedJvmFailureFromImageCloseFailsTheRun() {

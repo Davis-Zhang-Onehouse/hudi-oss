@@ -112,9 +112,7 @@ public final class TokenBudget {
     int exceeds = s.length();
     while (true) {
       int mid = (fitsEnd + exceeds) >>> 1;
-      if (mid > 0 && mid < s.length() && Character.isLowSurrogate(s.charAt(mid)) && Character.isHighSurrogate(s.charAt(mid - 1))) {
-        mid--;
-      }
+      mid = Utf16.floor(s, mid);
       if (mid <= fitsEnd) {
         mid = s.offsetByCodePoints(fitsEnd, 1);
       }

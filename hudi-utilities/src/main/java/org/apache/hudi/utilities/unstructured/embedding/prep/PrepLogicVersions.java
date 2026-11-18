@@ -100,6 +100,7 @@ public final class PrepLogicVersions {
       for (String kind : Arrays.asList("text", "image", "video", "audio")) {
         Map<String, String> identity = new TreeMap<>();
         identity.put("format", "prep-logic-v1");
+        identity.put("source-version-check", "mtime-size-v1");
         identity.put("jdk", System.getProperty("java.runtime.version") + "/" + System.getProperty("java.vendor"));
         settings.forEach((key, value) -> {
           if (applies(kind, key)) {

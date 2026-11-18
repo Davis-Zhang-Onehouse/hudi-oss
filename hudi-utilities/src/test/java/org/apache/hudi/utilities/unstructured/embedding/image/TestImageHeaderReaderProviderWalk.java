@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.image;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
@@ -36,6 +37,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -43,6 +45,7 @@ import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -51,6 +54,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * throws unchecked (out of the iterator's next). The JDK reader or writer is still found.
  */
 public class TestImageHeaderReaderProviderWalk {
+
+  @Test
+  public void cycleInImageHeaderFailureDetailsTerminates() {
+    IOException first = new IOException("first");
+    IOException second = new IOException("second", first);
+    first.initCause(second);
+    assertTimeoutPreemptively(Duration.ofSeconds(1), () -> assertTrue(ImageHeaderReader.describe(first).contains("second")));
+  }
 
   private static final byte[] PNG_MAGIC = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
 

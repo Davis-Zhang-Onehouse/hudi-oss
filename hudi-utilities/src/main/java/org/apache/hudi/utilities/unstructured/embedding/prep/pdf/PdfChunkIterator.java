@@ -25,8 +25,6 @@ import org.apache.hudi.utilities.unstructured.embedding.text.PackedChunk;
 import org.apache.hudi.utilities.unstructured.embedding.text.TextNormalizer;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenBudget;
 
-import org.apache.spark.TaskContext;
-
 import java.util.Locale;
 import java.util.NoSuchElementException;
 
@@ -335,13 +333,7 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
    * the flag).
    */
   private void checkInterrupted(Throwable failure) {
-    TaskContext task = TaskContext.get();
-    boolean interrupted = Thread.currentThread().isInterrupted() || (task != null && task.isInterrupted());
-    for (Throwable t = failure; t != null && !interrupted; t = t.getCause() == t ? null : t.getCause()) {
-      interrupted = t instanceof java.io.InterruptedIOException || t instanceof java.nio.channels.ClosedByInterruptException
-          || t instanceof InterruptedException;
-    }
-    if (interrupted) {
+    if (PrepFailures.isInterrupted(failure)) {
       closeSource();
       throw new PdfChunkerInterruptedException("interrupted while chunking source_path_sha " + meta.sourcePathSha());
     }

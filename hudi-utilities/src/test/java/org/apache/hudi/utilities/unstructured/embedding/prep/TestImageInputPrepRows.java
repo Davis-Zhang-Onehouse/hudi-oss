@@ -51,6 +51,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -108,7 +109,7 @@ public class TestImageInputPrepRows {
     byte[] png = ImageFixtures.image("png", 97, 41);
     // libtiff layout: the directory after the pixel data, read by random access over the object
     byte[] tiff = ImageFixtures.singleStripTiff(400, 300);
-    String tiffPath = Files.write(temp.resolve("scan.tif"), tiff).toUri().toString();
+    String tiffPath = writeSource(temp.resolve("scan.tif"), tiff).toUri().toString();
     Row inline = inlineRow("sha-png", "png", png);
     Row reference = referenceRow("sha-tif", "tif", tiffPath, tiff.length);
 
@@ -196,6 +197,23 @@ public class TestImageInputPrepRows {
     assertTrue(iterator.getSideOutputs().isEmpty(), iterator.getSideOutputs().toString());
   }
 
+  @Test
+  public void changedImageIsAFileFailureBeforeOpeningIt() throws IOException {
+    byte[] png = ImageFixtures.image("png", 30, 20);
+    Path local = bucketObject("changed.png", png);
+    Row row = referenceRow("sha-changed", "png", bucketPath("changed.png"), png.length);
+    Files.setLastModifiedTime(local, FileTime.fromMillis(2L));
+    AtomicInteger opens = new AtomicInteger();
+    SourceOpenHooks.beforeOpen(local.toAbsolutePath().toString(), opens::incrementAndGet);
+    PreprocessingIterator iterator = iterator(props(), bucketSource(new TransientRetry(2, 0L)), row);
+
+    assertTrue(drain(iterator).isEmpty());
+    assertEquals(1, iterator.getSideOutputs().size());
+    assertEquals(PrepSideOutput.STAGE_PREP, iterator.getSideOutputs().get(0).getStage());
+    assertContains(iterator.getSideOutputs().get(0).getError(), "changed since it was listed");
+    assertEquals(0, opens.get(), "a changed object is refused before its image bytes are opened");
+  }
+
   private static void assertImageRow(Row row, String sha, int width, int height, String format) {
     assertEquals(sha, row.get(EmbeddingTableSchema.BASE_COLUMNS.indexOf(EmbeddingTableSchema.SOURCE_PATH_SHA)));
     assertEquals(EmbeddingTableSchema.MODALITY_IMAGE, row.get(EmbeddingTableSchema.BASE_COLUMNS.indexOf(EmbeddingTableSchema.MODALITY)));
@@ -234,7 +252,14 @@ public class TestImageInputPrepRows {
   private Path bucketObject(String key, byte[] bytes) throws IOException {
     Path file = BucketFolderFileSystem.file(temp.resolve("buckets"), "bucket", key);
     Files.createDirectories(file.getParent());
-    return Files.write(file, bytes);
+    return writeSource(file, bytes);
+  }
+
+  /** Writes the same source version (mtime 1) that the fixture rows declare. */
+  private static Path writeSource(Path file, byte[] bytes) throws IOException {
+    Files.write(file, bytes);
+    Files.setLastModifiedTime(file, FileTime.fromMillis(1L));
+    return file;
   }
 
   private static String bucketPath(String key) {
