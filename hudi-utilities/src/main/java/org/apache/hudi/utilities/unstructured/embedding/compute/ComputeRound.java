@@ -132,8 +132,10 @@ public final class ComputeRound {
    * {@code level} and counted, so every model call has run when it returns.
    */
   public static Dataset<Row> embed(SparkSession spark, JavaRDD<Row> rows, StructType tableSchema, EmbeddingModelSpec model,
-                                   TypedProperties props, BlobBytesSource storedInputs, ComputeCounters counters,
-                                   StorageLevel level) {
+                                   TypedProperties props, Resources resources) {
+    BlobBytesSource storedInputs = resources.storedInputs;
+    ComputeCounters counters = resources.counters;
+    StorageLevel level = resources.level;
     StructType schema = tableSchema.add(errorWorkingField(tableSchema));
     int batchSize = EmbeddingTableConfig.from(props).computeBatchSize();
     JavaRDD<Row> embedded = rows.mapPartitions(iterator -> new MicroBatchEmbeddingIterator(withErrorSlot(iterator), model, props,
@@ -196,6 +198,19 @@ public final class ComputeRound {
     return embedded.select(columns.toArray(new Column[0]));
   }
 
+  /** What a compute round reads stored inputs from, counts its calls in and persists its output at. */
+  public static final class Resources {
+    private final BlobBytesSource storedInputs;
+    private final ComputeCounters counters;
+    private final StorageLevel level;
+
+    public Resources(BlobBytesSource storedInputs, ComputeCounters counters, StorageLevel level) {
+      this.storedInputs = storedInputs;
+      this.counters = counters;
+      this.level = level;
+    }
+  }
+
   /**
    * One error-only row per PERMANENT input, in {@code outputSchema}: {@value #CORRUPT_RECORD} is the canonical JSON of
    * {@code error}, the five key columns and {@code model}; every other column NULL, or a placeholder of its type where the column is
@@ -204,7 +219,7 @@ public final class ComputeRound {
   public static Dataset<Row> errorRows(Dataset<Row> embedded, StructType outputSchema, EmbeddingModelSpec model) {
     Column error = errorColumn(embedded);
     // struct fields in key order: to_json writes them in that order with no whitespace, the canonical spelling
-    Column record = functions.to_json(functions.struct(error.as(ERROR_RECORD_ERROR),
+    Column errorRecord = functions.to_json(functions.struct(error.as(ERROR_RECORD_ERROR),
         functions.col(EmbeddingTableSchema.SOURCE_PATH_SHA),
         functions.col(EmbeddingTableSchema.SOURCE_MODIFICATION_TIME),
         functions.col(EmbeddingTableSchema.SOURCE_FILE_SIZE),
@@ -213,8 +228,12 @@ public final class ComputeRound {
         functions.lit(model.getName()).as(ERROR_RECORD_MODEL)));
     List<Column> columns = new ArrayList<>();
     for (StructField field : outputSchema.fields()) {
-      Column column = CORRUPT_RECORD.equals(field.name()) ? record
-          : field.nullable() ? functions.lit(null).cast(field.dataType()) : placeholder(field.dataType());
+      Column column;
+      if (CORRUPT_RECORD.equals(field.name())) {
+        column = errorRecord;
+      } else {
+        column = field.nullable() ? functions.lit(null).cast(field.dataType()) : placeholder(field.dataType());
+      }
       columns.add(column.as(field.name(), field.metadata()));
     }
     return embedded.filter(error.isNotNull()).select(columns.toArray(new Column[0]));

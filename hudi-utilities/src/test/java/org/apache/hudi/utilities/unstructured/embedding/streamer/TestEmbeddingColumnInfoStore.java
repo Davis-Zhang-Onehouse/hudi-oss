@@ -68,6 +68,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -156,13 +157,15 @@ class TestEmbeddingColumnInfoStore {
   }
 
   @Test
-  void anyPresentIdentityMismatchRefusesTheSamePhysicalColumn() throws Exception {
+  void anyPresentIdentityMismatchRefusesTheSamePhysicalColumn() {
     add("text", MODEL, FIRST);
     for (EmbeddingColumnInfoStore.Identity changed : Arrays.asList(identity("bedrock", "text-embedding-3-small", 1536, null),
         identity("openai", "another", 1536, null), identity("openai", "text-embedding-3-small", 3072, null),
         identity("openai", "text-embedding-3-small", 1536, "r1"))) {
-      assertThrows(IllegalArgumentException.class,
-          () -> store().checkAtStart(Collections.singletonMap("text", changed), Collections.singletonMap("text", 1536)));
+      EmbeddingColumnInfoStore reopened = store();
+      Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", changed);
+      Map<String, Integer> vectorColumns = Collections.singletonMap("text", 1536);
+      assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns));
     }
   }
 
@@ -230,8 +233,9 @@ class TestEmbeddingColumnInfoStore {
     byte[] repaired = Files.readAllBytes(file());
     nextRound.publishAfterCommit(third, repair);
     assertArrayEquals(repaired, Files.readAllBytes(file()), "publication retry retains a single ADD");
-    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(
-        Collections.singletonMap("new", identity("openai", "different-model", 3072, null)), committedVectors));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("new", identity("openai", "different-model", 3072, null));
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, committedVectors));
   }
 
   @Test
@@ -315,8 +319,10 @@ class TestEmbeddingColumnInfoStore {
   @Test
   void missingFileRecoveryStillChecksVectorDimensions() throws Exception {
     pin("1");
-    assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 8)));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", MODEL);
+    Map<String, Integer> vectorColumns = Collections.singletonMap("text", 8);
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns));
     EmbeddingColumnInfoStore store = store();
     EmbeddingColumnInfoStore.Update update = store.checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536));
     commit(FIRST);
@@ -341,8 +347,10 @@ class TestEmbeddingColumnInfoStore {
     assertEquals(events.get(0).path("identity"), events.get(1).path("identity"));
     assertEquals("add", events.get(2).path("event").textValue());
     assertEquals("r2", events.get(2).path("identity").path("model_version").textValue());
-    assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("old", MODEL), Collections.singletonMap("old", 1536)));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("old", MODEL);
+    Map<String, Integer> vectorColumns = Collections.singletonMap("old", 1536);
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns));
   }
 
   @Test
@@ -370,18 +378,24 @@ class TestEmbeddingColumnInfoStore {
     assertArrayEquals(before, Files.readAllBytes(file()), "a persistent retirement setting does not append or rewrite history");
     assertEquals(2, read().path("revision").intValue());
     assertEquals(3, read().path("events").size());
-    assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("old", MODEL), existing), "configured retired-name reuse still refuses");
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("old", MODEL);
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, existing), "configured retired-name reuse still refuses");
   }
 
   @Test
   void invalidRetirementRequestsNeverChangeHistory() throws Exception {
     add("old", MODEL, FIRST);
     byte[] before = Files.readAllBytes(file());
-    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(Collections.singletonMap("old", MODEL),
-        Collections.singletonMap("old", 1536), Collections.singleton("old")));
-    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(Collections.emptyMap(),
-        Collections.singletonMap("old", 1536), Collections.singleton("unknown")));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("old", MODEL);
+    Map<String, Integer> vectorColumns = Collections.singletonMap("old", 1536);
+    Set<String> retirements = Collections.singleton("old");
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns, retirements));
+    EmbeddingColumnInfoStore again = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> noModels = Collections.emptyMap();
+    Set<String> unknownRetirement = Collections.singleton("unknown");
+    assertThrows(IllegalArgumentException.class, () -> again.checkAtStart(noModels, vectorColumns, unknownRetirement));
     assertArrayEquals(before, Files.readAllBytes(file()));
   }
 
@@ -389,12 +403,14 @@ class TestEmbeddingColumnInfoStore {
   void unsupportedLayoutRefusesBeforeParsingAndUngovernedFileRefuses() throws Exception {
     pin("2");
     raw("not JSON");
-    IllegalArgumentException unsupported = assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", MODEL);
+    Map<String, Integer> vectorColumns = Collections.singletonMap("text", 1536);
+    IllegalArgumentException unsupported = assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns));
     assertTrue(unsupported.getMessage().contains("layout"), unsupported.getMessage());
     HoodieTableConfig.delete(meta.getStorage(), meta.getMetaPath(), Collections.singleton(EmbeddingColumnInfoStore.LAYOUT_VERSION.key()));
-    assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)));
+    EmbeddingColumnInfoStore ungoverned = store();
+    assertThrows(IllegalArgumentException.class, () -> ungoverned.checkAtStart(configuredModels, vectorColumns));
   }
 
   @Test
@@ -414,8 +430,10 @@ class TestEmbeddingColumnInfoStore {
         valid.replace("\"added_at_instant\":\"" + FIRST + "\"", "\"added_at_instant\":null"),
         valid + " {}")) {
       raw(malformed);
-      assertThrows(IllegalArgumentException.class,
-          () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)), malformed);
+      EmbeddingColumnInfoStore reopened = store();
+      Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", MODEL);
+      Map<String, Integer> vectorColumns = Collections.singletonMap("text", 1536);
+      assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns), malformed);
     }
   }
 
@@ -754,8 +772,10 @@ class TestEmbeddingColumnInfoStore {
       }
       events.add(second);
       raw(JSON.writeValueAsString(snapshot));
-      assertThrows(IllegalArgumentException.class,
-          () -> store().checkAtStart(Collections.emptyMap(), Collections.singletonMap("text", 1536)), corruption);
+      EmbeddingColumnInfoStore reopened = store();
+      Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.emptyMap();
+      Map<String, Integer> vectorColumns = Collections.singletonMap("text", 1536);
+      assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns), corruption);
     }
   }
 
@@ -767,8 +787,11 @@ class TestEmbeddingColumnInfoStore {
     store.publishAfterCommit(FIRST, update);
     raw(JSON.writeValueAsString(read()).replace("openai", "historical-provider-no-longer-installed"));
     store().checkAtStart(Collections.emptyMap(), Collections.singletonMap("legacy", 1536));
-    IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.emptyMap(), Collections.singletonMap("legacy", 1536), Collections.singleton("legacy")));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.emptyMap();
+    Map<String, Integer> vectorColumns = Collections.singletonMap("legacy", 1536);
+    Set<String> retirements = Collections.singleton("legacy");
+    IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns, retirements));
     assertTrue(conflict.getMessage().contains("unknown creation instant"), conflict.getMessage());
   }
 
@@ -866,7 +889,7 @@ class TestEmbeddingColumnInfoStore {
     return new EmbeddingColumnInfoStore(base, conf, new TypedProperties());
   }
 
-  private void add(String column, EmbeddingColumnInfoStore.Identity identity, String instant) throws Exception {
+  private void add(String column, EmbeddingColumnInfoStore.Identity identity, String instant) {
     EmbeddingColumnInfoStore store = store();
     EmbeddingColumnInfoStore.Update update = store.checkAtStart(Collections.singletonMap(column, identity), Collections.emptyMap());
     commit(instant);

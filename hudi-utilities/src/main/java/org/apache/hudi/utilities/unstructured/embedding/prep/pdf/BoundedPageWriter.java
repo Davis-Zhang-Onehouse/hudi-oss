@@ -68,10 +68,12 @@ final class BoundedPageWriter extends Writer {
 
   @Override
   public void flush() {
+    // the text is kept in memory: nothing to flush
   }
 
   @Override
   public void close() {
+    // the text is kept in memory: nothing to release
   }
 
   String text() {

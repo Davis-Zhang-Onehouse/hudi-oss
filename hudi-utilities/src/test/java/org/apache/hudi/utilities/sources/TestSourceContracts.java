@@ -75,7 +75,8 @@ class TestSourceContracts {
 
   @Test
   void registrationPropagatesInvalidJobAsThrown() {
-    assertThrows(IllegalArgumentException.class,
-        () -> SourceContracts.of(UnstructuredDataSource.class.getName(), new TypedProperties()));
+    String source = UnstructuredDataSource.class.getName();
+    TypedProperties none = new TypedProperties();
+    assertThrows(IllegalArgumentException.class, () -> SourceContracts.of(source, none));
   }
 }

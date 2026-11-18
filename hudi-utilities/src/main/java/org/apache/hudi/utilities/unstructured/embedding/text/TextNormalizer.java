@@ -100,28 +100,8 @@ public final class TextNormalizer {
 
   public Result normalize(String page) {
     StringBuilder sb = new StringBuilder(page.length());
-    int unpaired = 0;
     // steps 1 and 2
-    for (int i = 0; i < page.length(); i++) {
-      char c = page.charAt(i);
-      if (Character.isHighSurrogate(c) && i + 1 < page.length() && Character.isLowSurrogate(page.charAt(i + 1))) {
-        sb.append(c).append(page.charAt(++i));
-      } else if (Character.isSurrogate(c)) {
-        sb.append(REPLACEMENT);
-        unpaired++;
-      } else if (c == '\r') {
-        sb.append('\n');
-        if (i + 1 < page.length() && page.charAt(i + 1) == '\n') {
-          i++;
-        }
-      } else if (c == '\u2028' || c == '\u0085') {    // U+0085 NEL is a line break, not a control to delete
-        sb.append('\n');
-      } else if (c == '\u2029') {
-        sb.append("\n\n");
-      } else {
-        sb.append(c);
-      }
-    }
+    int unpaired = breaksAndSurrogates(page, sb);
     // steps 3 and 4
     String cleaned = spacesAndInvisibles(sb);
     // step 5
@@ -142,6 +122,36 @@ public final class TextNormalizer {
     return new Result(text, truncated, unpaired);
   }
 
+  /** Steps 1 and 2: line breaks to {@code \n}, unpaired surrogates to U+FFFD, appended to {@code sb}; returns the unpaired count. */
+  private static int breaksAndSurrogates(String page, StringBuilder sb) {
+    int unpaired = 0;
+    int i = 0;
+    while (i < page.length()) {
+      char c = page.charAt(i);
+      int consumed = 1;
+      if (Character.isHighSurrogate(c) && i + 1 < page.length() && Character.isLowSurrogate(page.charAt(i + 1))) {
+        sb.append(c).append(page.charAt(i + 1));
+        consumed = 2;
+      } else if (Character.isSurrogate(c)) {
+        sb.append(REPLACEMENT);
+        unpaired++;
+      } else if (c == '\r') {
+        sb.append('\n');
+        if (i + 1 < page.length() && page.charAt(i + 1) == '\n') {
+          consumed = 2;
+        }
+      } else if (c == '\u2028' || c == '\u0085') {    // U+0085 NEL is a line break, not a control to delete
+        sb.append('\n');
+      } else if (c == '\u2029') {
+        sb.append("\n\n");
+      } else {
+        sb.append(c);
+      }
+      i += consumed;
+    }
+    return unpaired;
+  }
+
   /** Steps 3 and 4: whitespace other than {@code \n} to a space, {@code Cc} removed, zero-width characters by context. */
   private static String spacesAndInvisibles(CharSequence text) {
     StringBuilder out = new StringBuilder(text.length());
@@ -152,24 +162,30 @@ public final class TextNormalizer {
       } else if (Character.isWhitespace(c) || Character.getType(c) == Character.SPACE_SEPARATOR) {
         out.append(' ');
       } else if (Character.getType(c) == Character.CONTROL || isRemovedInvisible(c)) {
-        continue;
-      } else if (c == ZERO_WIDTH_SPACE) {
-        int before = previousCodePoint(out);
-        int after = nextCodePoint(text, i + 1);
-        if (isVisible(before) && isVisible(after) && !isUnspacedScript(before) && !isUnspacedScript(after)) {
-          out.append(' ');
-        }
-      } else if (c == ZERO_WIDTH_JOINER || c == ZERO_WIDTH_NON_JOINER) {
-        int before = previousCodePoint(out);
-        int after = nextCodePoint(text, i + 1);
-        if (keepsJoiner(out, before, after)) {
-          out.append(c);
-        }
+        // removed
+      } else if (c == ZERO_WIDTH_SPACE || c == ZERO_WIDTH_JOINER || c == ZERO_WIDTH_NON_JOINER) {
+        appendZeroWidth(out, text, i, c);
       } else {
         out.append(c);
       }
     }
     return out.toString();
+  }
+
+  /**
+   * Step 4 for the zero-width character {@code c} at {@code i}: a zero-width space becomes a space between two visible characters
+   * of spaced scripts, else nothing; a joiner is kept where {@link #keepsJoiner} keeps it.
+   */
+  private static void appendZeroWidth(StringBuilder out, CharSequence text, int i, char c) {
+    int before = previousCodePoint(out);
+    int after = nextCodePoint(text, i + 1);
+    if (c == ZERO_WIDTH_SPACE) {
+      if (isVisible(before) && isVisible(after) && !isUnspacedScript(before) && !isUnspacedScript(after)) {
+        out.append(' ');
+      }
+    } else if (keepsJoiner(out, before, after)) {
+      out.append(c);
+    }
   }
 
   /** Zero-width characters that only ever ask for no break; removing them keeps the word whole. */
@@ -336,20 +352,35 @@ public final class TextNormalizer {
       if (c != ' ' && c != '\n') {
         out.append(c);
         i++;
-        continue;
-      }
-      int newlines = 0;
-      while (i < n && (text.charAt(i) == ' ' || text.charAt(i) == '\n')) {
-        if (text.charAt(i) == '\n') {
-          newlines++;
+      } else {
+        int end = whitespaceRunEnd(text, i);
+        // leading or trailing whitespace of the page is dropped
+        if (out.length() > 0 && end < n) {
+          out.append(newlines(text, i, end) >= 2 ? "\n\n" : " ");
         }
-        i++;
+        i = end;
       }
-      if (out.length() == 0 || i == n) {
-        continue;                                     // leading or trailing whitespace of the page
-      }
-      out.append(newlines >= 2 ? "\n\n" : " ");
     }
     return out.toString();
+  }
+
+  /** The end of the run of spaces and {@code \n} starting at {@code from}. */
+  private static int whitespaceRunEnd(String text, int from) {
+    int end = from;
+    while (end < text.length() && (text.charAt(end) == ' ' || text.charAt(end) == '\n')) {
+      end++;
+    }
+    return end;
+  }
+
+  /** The {@code \n} in {@code text[from, end)}. */
+  private static int newlines(String text, int from, int end) {
+    int count = 0;
+    for (int i = from; i < end; i++) {
+      if (text.charAt(i) == '\n') {
+        count++;
+      }
+    }
+    return count;
   }
 }

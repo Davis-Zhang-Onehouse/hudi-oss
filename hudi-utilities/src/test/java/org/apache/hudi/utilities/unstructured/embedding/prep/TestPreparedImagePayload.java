@@ -92,7 +92,7 @@ import static org.mockito.Mockito.when;
  * that cannot be written fails the round.
  */
 @ExtendWith(OutOfLineWriterTestExtension.class)
-public class TestPreparedImagePayload {
+class TestPreparedImagePayload {
 
   private static final StructType BLOB = (StructType) BlobType.dataType();
   private static final StructType REFERENCE = (StructType) BLOB.apply(HoodieSchema.Blob.EXTERNAL_REFERENCE).dataType();
@@ -221,7 +221,7 @@ public class TestPreparedImagePayload {
   private String embeddingTable;
 
   @BeforeEach
-  public void createTable() throws IOException {
+  void createTable() throws IOException {
     embeddingTable = temp.resolve("embedding").toUri().toString();
     HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
         .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
@@ -256,17 +256,23 @@ public class TestPreparedImagePayload {
   }
 
   private PreprocessingIterator iterator(TypedProperties props, Row... rows) {
-    return new PreprocessingIterator(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), "001",
-        new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())), new PreprocessorRegistry(props),
-        new WordCountTokenizer(), counters(), null);
+    return PreprocessingIterator.builder(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), "001")
+        .bytesSource(new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())))
+        .registry(new PreprocessorRegistry(props))
+        .tokenizer(new WordCountTokenizer())
+        .counters(counters())
+        .build();
   }
 
   /** {@link #iterator} with the input store writing out-of-line payloads under {@code table}. */
   private PreprocessingIterator storingIterator(TypedProperties props, String table, Row... rows) {
-    return new PreprocessingIterator(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), "001",
-        new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())), new PreprocessorRegistry(props),
-        new WordCountTokenizer(), counters(), null,
-        new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), table, props));
+    return PreprocessingIterator.builder(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), "001")
+        .bytesSource(new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())))
+        .registry(new PreprocessorRegistry(props))
+        .tokenizer(new WordCountTokenizer())
+        .counters(counters())
+        .destination(new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), table, props))
+        .build();
   }
 
   /** The payload files under the embedding table's blob folder, relative to its base, the checksum files left out. */
@@ -299,7 +305,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void sourcePayloadStoresTheSourceRowsInlineBlobUnchanged() {
+  void sourcePayloadStoresTheSourceRowsInlineBlobUnchanged() {
     byte[] bytes = {1, 2, 3, 4};
     Row source = inlineRow("sha-inline", "png", bytes);
     List<Row> rows = drain(iterator(props(), source));
@@ -313,7 +319,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void sourcePayloadStoresTheReferenceToTheObjectWithoutReadingIt() {
+  void sourcePayloadStoresTheReferenceToTheObjectWithoutReadingIt() {
     // the object does not exist: a source payload is never read by the framework
     String path = temp.resolve("absent.png").toUri().toString();
     Row source = referenceRow("sha-ref", path, 5_000_000L);
@@ -331,7 +337,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void derivedPayloadIsStoredInlineAndWithoutADestinationAnOversizedOneFailsAlone() {
+  void derivedPayloadIsStoredInlineAndWithoutADestinationAnOversizedOneFailsAlone() {
     TypedProperties props = props();
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length));
     // chunk 0 is exactly at the threshold; chunk 1 declares one byte more
@@ -355,7 +361,7 @@ public class TestPreparedImagePayload {
    * task's write threads end although nobody calls {@link PreprocessingIterator#close} (outside Spark nothing else would).
    */
   @Test
-  public void failedWriteAtTheEndClosesTheIterator() throws Exception {
+  void failedWriteAtTheEndClosesTheIterator() throws Exception {
     TypedProperties props = props();
     preprocessor(props, "one", OneDerivedPayloadPreprocessor.class);
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
@@ -391,7 +397,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void derivedPayloadAboveTheThresholdIsWrittenOutOfLineUnderTheEmbeddingTable() throws IOException {
+  void derivedPayloadAboveTheThresholdIsWrittenOutOfLineUnderTheEmbeddingTable() throws IOException {
     TypedProperties props = props();
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
     byte[] declared = String.valueOf(DERIVED.length).getBytes(StandardCharsets.UTF_8);
@@ -414,12 +420,12 @@ public class TestPreparedImagePayload {
       assertArrayEquals(DERIVED, Files.readAllBytes(temp.resolve("embedding").resolve(path)));
       references.add(path);
     }
-    Collections.sort(references);
+    references.sort(null);
     assertEquals(references, payloadFiles(), "one payload file per row, nothing else");
   }
 
   @Test
-  public void derivedPayloadOfAnotherSizeAboveTheThresholdFailsAloneAndLeavesNoFile() throws IOException {
+  void derivedPayloadOfAnotherSizeAboveTheThresholdFailsAloneAndLeavesNoFile() throws IOException {
     TypedProperties props = props();
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
     // chunk 1 declares three bytes more than its stream has
@@ -437,7 +443,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void payloadFileThatCannotBeWrittenFailsTheRound() throws IOException {
+  void payloadFileThatCannotBeWrittenFailsTheRound() throws IOException {
     TypedProperties props = props();
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
     // the blob folder is a file: no payload file can be created under it
@@ -454,7 +460,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void derivedPayloadShorterThanDeclaredFailsAlone() {
+  void derivedPayloadShorterThanDeclaredFailsAlone() {
     byte[] declared = String.valueOf(DERIVED.length + 3).getBytes(StandardCharsets.UTF_8);
     PreprocessingIterator iterator = iterator(props(), inlineRow("sha-short", "frm", declared));
     List<Row> rows = drain(iterator);
@@ -466,7 +472,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void derivedPayloadLongerThanDeclaredFailsAlone() {
+  void derivedPayloadLongerThanDeclaredFailsAlone() {
     byte[] declared = String.valueOf(DERIVED.length - 1).getBytes(StandardCharsets.UTF_8);
     PreprocessingIterator iterator = iterator(props(), inlineRow("sha-long", "frm", declared));
     List<Row> rows = drain(iterator);
@@ -477,7 +483,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void derivedPayloadReadFailingInStorageFailsTheRound() {
+  void derivedPayloadReadFailingInStorageFailsTheRound() {
     PreprocessingIterator iterator = iterator(props(), inlineRow("sha-srf", "srf", "x".getBytes(StandardCharsets.UTF_8)));
 
     assertThrows(SourceReadException.class, () -> drain(iterator));
@@ -485,7 +491,7 @@ public class TestPreparedImagePayload {
   }
 
   @Test
-  public void textRowsHaveNoPreparedImage() {
+  void textRowsHaveNoPreparedImage() {
     TypedProperties props = props();
     preprocessor(props, "txt", TestPreprocessingIterator.PipeSplitPreprocessor.class);
     List<Row> rows = drain(iterator(props, inlineRow("sha-t", "txt", "a|b".getBytes(StandardCharsets.UTF_8))));
@@ -500,7 +506,7 @@ public class TestPreparedImagePayload {
    * writer the store cannot build is a payload write failure, a round failure too: TestPreparedInputsWriterSetup.)
    */
   @Test
-  public void inputStoreRefusalInATaskFailsTheRound() throws IOException {
+  void inputStoreRefusalInATaskFailsTheRound() throws IOException {
     TypedProperties props = props();
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
     // a fraction so small that any task heap share gives a ceiling below the threshold

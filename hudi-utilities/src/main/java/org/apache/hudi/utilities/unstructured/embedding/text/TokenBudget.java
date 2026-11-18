@@ -279,22 +279,7 @@ public final class TokenBudget {
         return TokenBudget.this.count(text.substring(start));
       }
       if (splits == null) {
-        int[] found = new int[16];
-        int count = 0;
-        for (int i = from + 1; i < n; i++) {
-          if (isWordSpace(text, i)) {
-            if (count == found.length) {
-              found = Arrays.copyOf(found, count * 2);
-            }
-            found[count++] = i;
-          }
-        }
-        splits = Arrays.copyOf(found, count);
-        countsFrom = new int[count];
-        for (int k = count - 1; k >= 0; k--) {
-          int end = k + 1 < count ? splits[k + 1] : n;
-          countsFrom[k] = TokenBudget.this.count(text.substring(splits[k], end)) + (k + 1 < count ? countsFrom[k + 1] : 0);
-        }
+        computeSplits(n);
       }
       int k = Arrays.binarySearch(splits, start + 1);
       k = k >= 0 ? k : -k - 1;                        // the first split after start
@@ -303,13 +288,34 @@ public final class TokenBudget {
       }
       return TokenBudget.this.count(text.substring(start, splits[k])) + countsFrom[k];
     }
+
+    /** The word-space split points after {@code from}, and the token count from each split to {@code n}. */
+    private void computeSplits(int n) {
+      int[] found = new int[16];
+      int count = 0;
+      for (int i = from + 1; i < n; i++) {
+        if (isWordSpace(text, i)) {
+          if (count == found.length) {
+            found = Arrays.copyOf(found, count * 2);
+          }
+          found[count++] = i;
+        }
+      }
+      splits = Arrays.copyOf(found, count);
+      countsFrom = new int[count];
+      for (int k = count - 1; k >= 0; k--) {
+        int end = k + 1 < count ? splits[k + 1] : n;
+        countsFrom[k] = TokenBudget.this.count(text.substring(splits[k], end)) + (k + 1 < count ? countsFrom[k + 1] : 0);
+      }
+    }
   }
 
   /** maximal runs of non-whitespace code points. */
   public static int words(CharSequence s) {
     int count = 0;
     boolean inWord = false;
-    for (int i = 0; i < s.length(); ) {
+    int i = 0;
+    while (i < s.length()) {
       int cp = Character.codePointAt(s, i);
       boolean whitespace = Character.isWhitespace(cp);
       if (!whitespace && !inWord) {

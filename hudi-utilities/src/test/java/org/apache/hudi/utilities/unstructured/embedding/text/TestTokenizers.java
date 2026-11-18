@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code openai-bpe} as the default, the word-count definition and the default cut helpers.
  * The OpenAI counts and the inclusive 181→182 index are pinned in {@link TestOpenAiBpeTokenizer}.
  */
-public class TestTokenizers {
+class TestTokenizers {
 
   /** Counts characters; a deliberately non-word unit for the default cut helpers. */
   static final class CharTokenizer implements Tokenizer {
@@ -56,7 +56,7 @@ public class TestTokenizers {
   }
 
   @Test
-  public void selectsByType() {
+  void selectsByType() {
     TypedProperties props = new TypedProperties();
     Tokenizer byDefault = TokenizerFactory.create(props);
     assertTrue(byDefault instanceof OpenAiBpeTokenizer, "openai-bpe is the default");
@@ -78,7 +78,7 @@ public class TestTokenizers {
   }
 
   @Test
-  public void wordCountDefinition() {
+  void wordCountDefinition() {
     Tokenizer words = new WordCountTokenizer();
     assertEquals(4, words.countTokens("a  b\tc\n\nd"));
     assertEquals(4, words.countTokens("  one two\tthree\nfour "));
@@ -89,7 +89,7 @@ public class TestTokenizers {
   }
 
   @Test
-  public void interfaceContract() {
+  void interfaceContract() {
     Tokenizer chars = new CharTokenizer();
     String text = "ab\uD83D\uDE00cd\uD83D\uDE00\uD83D\uDE00e";   // 8 code points, 11 chars
     for (int max = 0; max <= 9; max++) {
@@ -103,7 +103,7 @@ public class TestTokenizers {
   }
 
   @Test
-  public void defaultHelpersAgreeWithOpenAiOnRandomText() {
+  void defaultHelpersAgreeWithOpenAiOnRandomText() {
     Tokenizer bpe = new OpenAiBpeTokenizer();
     Random random = new Random(42);
     String alphabet = "ab cd. ef\n\u00E9\u4E2D\uD83D\uDE00";  // escaped non-ASCII test data

@@ -605,7 +605,6 @@ public final class PdfFixtures {
     }
   }
 
-  /** Pages 2 and 3 of 4 use one font whose /ToUnicode is the oversized stream (outcome cache). */
   /**
    * Three pages sharing one stream that fails to decode (a /Crypt filter naming an unsupported crypt filter): as every
    * page's /Contents, or as the /FontFile2 of a font every page uses.

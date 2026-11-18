@@ -80,7 +80,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * order; a read ahead that fails hands the file back to the task, which opens it as before; closing the iterator stops a read in
  * flight.
  */
-public class TestPreprocessingIteratorPrefetch {
+class TestPreprocessingIteratorPrefetch {
 
   private static final StructType BLOB = (StructType) BlobType.dataType();
   private static final StructType REFERENCE = (StructType) BLOB.apply(HoodieSchema.Blob.EXTERNAL_REFERENCE).dataType();
@@ -100,7 +100,7 @@ public class TestPreprocessingIteratorPrefetch {
   private String embeddingTable;
 
   @BeforeEach
-  public void createTable() throws IOException {
+  void createTable() throws IOException {
     embeddingTable = temp.resolve("embedding").toUri().toString();
     HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
         .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
@@ -109,7 +109,7 @@ public class TestPreprocessingIteratorPrefetch {
   }
 
   @AfterEach
-  public void clear() {
+  void clear() {
     SourceOpenHooks.clear();
     CountingObjectFileSystem.clear();
   }
@@ -120,7 +120,7 @@ public class TestPreprocessingIteratorPrefetch {
    * one shorter than listed, a row without a blob, an extension no preprocessor takes, an inline file and a ranged reference.
    */
   @Test
-  public void rowsAndSideOutputsAreThoseOfARunWithoutReadAhead() throws IOException {
+  void rowsAndSideOutputsAreThoseOfARunWithoutReadAhead() throws IOException {
     List<Row> corpus = corpus();
     Run without = run(props(0L), corpus);
     Run with = run(props(100_000L), corpus);
@@ -140,7 +140,7 @@ public class TestPreprocessingIteratorPrefetch {
    * file larger than the bound are opened by the task itself.
    */
   @Test
-  public void theNextFileIsReadOnTheReadAheadThread() throws IOException {
+  void theNextFileIsReadOnTheReadAheadThread() throws IOException {
     byte[] png = ImageFixtures.image("png", 30, 20);
     byte[] big = ImageFixtures.image("bmp", 300, 200);
     Row[] rows = {
@@ -163,7 +163,7 @@ public class TestPreprocessingIteratorPrefetch {
 
   /** A read ahead that fails hands the file back to the task, which opens it itself, exactly as without a read ahead. */
   @Test
-  public void failedReadAheadHandsTheFileBackToTheTask() throws IOException {
+  void failedReadAheadHandsTheFileBackToTheTask() throws IOException {
     byte[] png = ImageFixtures.image("png", 30, 20);
     Row[] rows = {
         objectRow("sha-1", "png", object("first.png", png), png.length),
@@ -183,7 +183,7 @@ public class TestPreprocessingIteratorPrefetch {
 
   /** A storage failure the task meets itself still fails the round, after the rows of the files before it. */
   @Test
-  public void persistentStorageFailureStillFailsTheRound() throws IOException {
+  void persistentStorageFailureStillFailsTheRound() throws IOException {
     byte[] png = ImageFixtures.image("png", 30, 20);
     Row[] rows = {
         objectRow("sha-1", "png", object("good.png", png), png.length),
@@ -201,7 +201,7 @@ public class TestPreprocessingIteratorPrefetch {
 
   /** Closing the iterator interrupts a read ahead in flight. */
   @Test
-  public void closingStopsAReadInFlight() throws Exception {
+  void closingStopsAReadInFlight() throws Exception {
     byte[] png = ImageFixtures.image("png", 30, 20);
     Row[] rows = {
         objectRow("sha-1", "png", object("now.png", png), png.length),
@@ -211,6 +211,7 @@ public class TestPreprocessingIteratorPrefetch {
     SourceOpenHooks.beforeOpen(local("slow.png").toAbsolutePath().toString(), () -> {
       started.countDown();
       try {
+        // by design: simulates a slow read that the iterator's close interrupts; not a wait
         Thread.sleep(30_000L);
       } catch (InterruptedException e) {
         interrupted.countDown();
@@ -230,7 +231,7 @@ public class TestPreprocessingIteratorPrefetch {
    * interrupted and the task is not left blocked on it.
    */
   @Test
-  public void closingOnAnotherThreadEndsAWaitForAReadAhead() throws Exception {
+  void closingOnAnotherThreadEndsAWaitForAReadAhead() throws Exception {
     byte[] png = ImageFixtures.image("png", 30, 20);
     Row[] rows = {
         objectRow("sha-1", "png", object("first.png", png), png.length),
@@ -243,6 +244,7 @@ public class TestPreprocessingIteratorPrefetch {
       }
       started.countDown();
       try {
+        // by design: simulates a slow read that the iterator's close interrupts; not a wait
         Thread.sleep(30_000L);
       } catch (InterruptedException e) {
         interrupted.countDown();
@@ -252,11 +254,13 @@ public class TestPreprocessingIteratorPrefetch {
     PreprocessingIterator iterator = iterator(props(100_000L), Arrays.asList(rows));
     assertNotNull(iterator.next());
     assertTrue(started.await(10, TimeUnit.SECONDS), "the next file is being read ahead");
+    Thread caller = Thread.currentThread();
     Thread closer = new Thread(() -> {
-      try {
-        Thread.sleep(200L);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
+      // closes once the caller is blocked in hasNext, waiting for the read ahead
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (caller.getState() != Thread.State.WAITING && caller.getState() != Thread.State.TIMED_WAITING
+          && System.nanoTime() < deadline) {
+        Thread.onSpinWait();
       }
       iterator.close();
     });
@@ -271,11 +275,12 @@ public class TestPreprocessingIteratorPrefetch {
 
   /** The bound is a byte count in [0, one array]. */
   @Test
-  public void theBoundIsValidated() {
+  void theBoundIsValidated() {
     assertEquals(EmbeddingTableConfig.DEFAULT_PREP_PREFETCH_MAX_BYTES, EmbeddingTableConfig.from(props()).prepPrefetchMaxBytes());
-    assertThrows(IllegalArgumentException.class, () -> EmbeddingTableConfig.from(props(-1L)).prepPrefetchMaxBytes());
-    assertThrows(IllegalArgumentException.class,
-        () -> EmbeddingTableConfig.from(props(EmbeddingTableConfig.MAX_PREP_PREFETCH_MAX_BYTES + 1)).prepPrefetchMaxBytes());
+    EmbeddingTableConfig negative = EmbeddingTableConfig.from(props(-1L));
+    assertThrows(IllegalArgumentException.class, negative::prepPrefetchMaxBytes);
+    EmbeddingTableConfig overOneArray = EmbeddingTableConfig.from(props(EmbeddingTableConfig.MAX_PREP_PREFETCH_MAX_BYTES + 1));
+    assertThrows(IllegalArgumentException.class, overOneArray::prepPrefetchMaxBytes);
   }
 
   private List<Row> corpus() throws IOException {
@@ -310,7 +315,7 @@ public class TestPreprocessingIteratorPrefetch {
    * on the task), and every payload file a row references exists when the iterator first reports its end.
    */
   @Test
-  public void videosReadAheadWithBackgroundFrameWritesMatchARunWithoutReadAhead() throws IOException {
+  void videosReadAheadWithBackgroundFrameWritesMatchARunWithoutReadAhead() throws IOException {
     byte[] first = resource("/video/h264-aac-speech-12s.mp4");
     byte[] second = resource("/video/h264-aac-bframes-12s.mp4");
     List<Row> corpus = Arrays.asList(
@@ -388,14 +393,19 @@ public class TestPreprocessingIteratorPrefetch {
       });
     }
     Configuration conf = new Configuration();
-    CountingObjectFileSystem.install(conf, temp.resolve("buckets"));
+    CountingObjectFileSystem.installCounting(conf, temp.resolve("buckets"));
     BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(conf), TransientRetry.NONE)
         .withReadahead(BlobBytesSource.PREP_SOURCE_READAHEAD_BYTES);
     PrepCounters counters = new PrepCounters(new LongAccumulator(), new LongAccumulator(), new LongAccumulator(),
         new LongAccumulator(), new LongAccumulator());
     PayloadDestination destination = new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), embeddingTable, props);
-    PreprocessingIterator iterator = new PreprocessingIterator(rows.iterator(), EmbeddingTableConfig.from(props), "001", source,
-        new PreprocessorRegistry(props), new WordCountTokenizer(), counters, null, destination);
+    PreprocessingIterator iterator = PreprocessingIterator.builder(rows.iterator(), EmbeddingTableConfig.from(props), "001")
+        .bytesSource(source)
+        .registry(new PreprocessorRegistry(props))
+        .tokenizer(new WordCountTokenizer())
+        .counters(counters)
+        .destination(destination)
+        .build();
     StoredRun run = new StoredRun();
     List<Row> prepared = new ArrayList<>();
     try {
@@ -520,11 +530,15 @@ public class TestPreprocessingIteratorPrefetch {
     PrepCounters counters = new PrepCounters(new LongAccumulator(), new LongAccumulator(), new LongAccumulator(),
         new LongAccumulator(), new LongAccumulator());
     Configuration conf = new Configuration();
-    CountingObjectFileSystem.install(conf, temp.resolve("buckets"));
+    CountingObjectFileSystem.installCounting(conf, temp.resolve("buckets"));
     BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(conf), TransientRetry.NONE)
         .withReadahead(BlobBytesSource.PREP_SOURCE_READAHEAD_BYTES);
-    return new PreprocessingIterator(rows.iterator(), EmbeddingTableConfig.from(props), "001", source,
-        new PreprocessorRegistry(props), new WordCountTokenizer(), counters, null);
+    return PreprocessingIterator.builder(rows.iterator(), EmbeddingTableConfig.from(props), "001")
+        .bytesSource(source)
+        .registry(new PreprocessorRegistry(props))
+        .tokenizer(new WordCountTokenizer())
+        .counters(counters)
+        .build();
   }
 
   private TypedProperties props() {

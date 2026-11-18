@@ -75,24 +75,30 @@ final class WhisperContextPool {
       }
     }
     if (toFree != null) {
-      Throwable firstFailure = null;
-      for (WhisperEngine engine : toFree) {
-        try {
-          engine.close();
-        } catch (RuntimeException | Error failure) {
-          if (firstFailure == null) {
-            firstFailure = failure;
-          } else if (firstFailure != failure) {
-            firstFailure.addSuppressed(failure);
-          }
+      closeAll(toFree);
+    }
+  }
+
+  /** Closes every engine, then rethrows the first failure with the later ones suppressed. Called outside the lock. */
+  private static void closeAll(Deque<WhisperEngine> toFree) {
+    Throwable firstFailure = null;
+    for (WhisperEngine engine : toFree) {
+      try {
+        engine.close();
+        // by design: closes every engine even after an Error; the first failure is rethrown, the rest suppressed
+      } catch (RuntimeException | Error failure) {
+        if (firstFailure == null) {
+          firstFailure = failure;
+        } else if (firstFailure != failure) {
+          firstFailure.addSuppressed(failure);
         }
       }
-      if (firstFailure instanceof RuntimeException) {
-        throw (RuntimeException) firstFailure;
-      }
-      if (firstFailure != null) {
-        throw (Error) firstFailure;
-      }
+    }
+    if (firstFailure instanceof RuntimeException) {
+      throw (RuntimeException) firstFailure;
+    }
+    if (firstFailure != null) {
+      throw (Error) firstFailure;
     }
   }
 

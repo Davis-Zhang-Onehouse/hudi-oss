@@ -29,6 +29,7 @@ import org.apache.hudi.utilities.unstructured.embedding.text.WordCountTokenizer;
 
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -64,7 +65,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The chunker over real PDFs built with PDFBox's writer: staging, loading, page
  * isolation, the decoded-size guard on every oversizedInput construction, the glyph/text and depth caps, and the static rules.
  */
-public class TestPdfBoxChunker {
+class TestPdfBoxChunker {
 
   private static final Tokenizer BPE = new OpenAiBpeTokenizer();
   private static final Tokenizer WORDS = new WordCountTokenizer();
@@ -75,7 +76,7 @@ public class TestPdfBoxChunker {
   private final List<String> warnings = new ArrayList<>();
 
   @BeforeAll
-  public static void fontCache(@TempDir Path cache) {
+  static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
   }
 
@@ -157,7 +158,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void validPdfControl() throws IOException {
+  void validPdfControl() throws IOException {
     List<PdfChunk> chunks = chunk(PdfFixtures.text("Readable control page."), config(WORDS));
     assertEquals(1, chunks.size());
     assertEquals(PdfChunk.Status.OK, chunks.get(0).status());
@@ -167,7 +168,7 @@ public class TestPdfBoxChunker {
   // ------------------------------------------------------------------ records and order
 
   @Test
-  public void chunkIdOrderMatchesPageOrder() throws IOException {
+  void chunkIdOrderMatchesPageOrder() throws IOException {
     List<PdfChunk> chunks = chunk(textPdf(3, 40), defaults());
     assertTrue(chunks.size() > 3);
     int lastPageSeen = 0;
@@ -185,7 +186,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void pageSpansMatchPrintedPageNumbers() throws IOException {
+  void pageSpansMatchPrintedPageNumbers() throws IOException {
     for (PdfChunk chunk : chunk(textPdf(5, 30), defaults())) {
       Matcher m = PAGE_TOKEN.matcher(chunk.text());
       while (m.find()) {
@@ -197,7 +198,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void sameInputTwiceSameRecords() throws IOException {
+  void sameInputTwiceSameRecords() throws IOException {
     byte[] pdf = textPdf(4, 30);
     List<PdfChunk> first = chunk(pdf, defaults());
     List<PdfChunk> second = chunk(pdf, defaults());
@@ -212,7 +213,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void sequentialFilesReuseChunker() throws IOException {
+  void sequentialFilesReuseChunker() throws IOException {
     PdfBoxChunker chunker = chunker();
     byte[] valid = textPdf(2, 20);
     List<PdfChunk> first = chunk(chunker, valid, defaults());
@@ -224,19 +225,19 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void validCorruptValid() throws IOException {
+  void validCorruptValid() throws IOException {
     sequentialFilesReuseChunker();
   }
 
   @Test
-  public void sentenceAcrossPagesStaysOneSentence() throws IOException {
+  void sentenceAcrossPagesStaysOneSentence() throws IOException {
     byte[] pdf = PdfFixtures.text("Page one starts here. The quick brown", "fox jumps over the lazy dog. Page two ends.");
     List<PdfChunk> chunks = chunk(pdf, defaults());
     assertTrue(chunks.stream().anyMatch(c -> c.text().contains("The quick brown fox jumps over the lazy dog.")), all(chunks));
   }
 
   @Test
-  public void multiColumnOrderIsContentOrder() throws IOException {
+  void multiColumnOrderIsContentOrder() throws IOException {
     byte[] pdf = PdfFixtures.multiColumn("Left column words come second in content order.",
         "Right column words come first in content order.");
     String text = all(chunk(pdf, defaults()));
@@ -244,13 +245,13 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void specialTokenTextChunked() throws IOException {
+  void specialTokenTextChunked() throws IOException {
     List<PdfChunk> chunks = chunk(PdfFixtures.text("Model text with <|endoftext|> inside a sentence."), defaults());
     assertTrue(all(chunks).contains("<|endoftext|>"));
   }
 
   @Test
-  public void statsMatchKnownFixture() throws IOException {
+  void statsMatchKnownFixture() throws IOException {
     byte[] pdf = PdfFixtures.text("First page. Some text.", "", "Third page. More text.");
     PdfChunkIterator iterator = chunker().open(() -> new ByteArrayInputStream(pdf), new PdfFileMeta("source_path_sha", "t", pdf.length),
         defaults(), warnings::add);
@@ -273,7 +274,7 @@ public class TestPdfBoxChunker {
   // ------------------------------------------------------------------ markers and isolation
 
   @Test
-  public void scannedPdfYieldsOneNoTextRow() throws IOException {
+  void scannedPdfYieldsOneNoTextRow() throws IOException {
     List<PdfChunk> chunks = chunk(PdfFixtures.imageOnly(2, 40), defaults());
     assertEquals(1, chunks.size());
     assertEquals(PdfChunk.Status.NO_TEXT, chunks.get(0).status());
@@ -281,12 +282,12 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void imageOnlyPdfYieldsNoText() throws IOException {
+  void imageOnlyPdfYieldsNoText() throws IOException {
     scannedPdfYieldsOneNoTextRow();
   }
 
   @Test
-  public void corruptPdfYieldsOneFailedRow() throws IOException {
+  void corruptPdfYieldsOneFailedRow() throws IOException {
     byte[] garbage = new byte[100_000];
     new Random(1).nextBytes(garbage);
     List<PdfChunk> chunks = chunk(garbage, defaults());
@@ -297,7 +298,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void undecodablePageContentRetainsOtherPagesAndRecordsLoss() throws IOException {
+  void undecodablePageContentRetainsOtherPagesAndRecordsLoss() throws IOException {
     // PDFBox leaves out the undecodable page, and the last surviving chunk records the loss
     byte[] pdf = PdfFixtures.brokenPage2("PGTOKEN1 page one text. It is here.", "PGTOKEN2 page two text.",
         "PGTOKEN3 page three text. It is here.");
@@ -311,7 +312,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void partialFailureYieldsNoMarker() throws IOException {
+  void partialFailureYieldsNoMarker() throws IOException {
     // page 2 fails PAGE_ERROR (a Type3 font above the CharProc cap); pages 1 and 3 still yield OK chunks
     List<PdfChunk> chunks = chunk(PdfFixtures.type3WithCharProcs(StreamDecodeGuard.MAX_CHAR_PROCS_PER_FONT + 1), defaults());
     String text = all(chunks);
@@ -323,7 +324,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void hugePageTruncatedWithWarning() throws IOException {
+  void hugePageTruncatedWithWarning() throws IOException {
     StringBuilder page = new StringBuilder();
     while (page.length() < 300_000) {
       page.append("Words fill a very long page. ");
@@ -340,7 +341,7 @@ public class TestPdfBoxChunker {
   // ------------------------------------------------------------------ staging and loading
 
   @Test
-  public void oversizeDeclaredRejectedWithoutRead() {
+  void oversizeDeclaredRejectedWithoutRead() {
     AtomicInteger opened = new AtomicInteger();
     List<PdfChunk> chunks = new ArrayList<>();
     // the input size is uncapped by default; an explicit cap refuses a larger declared size before any read
@@ -359,7 +360,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void largeDeclaredSizeIsPreparedByDefault() throws IOException {
+  void largeDeclaredSizeIsPreparedByDefault() throws IOException {
     // 1 GiB declared, above the former 512 MiB default: no cap unless one is set
     byte[] pdf = textPdf(3, 30);
     List<PdfChunk> chunks = new ArrayList<>();
@@ -376,7 +377,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void oversizeUndeclaredAbortsDuringCopy() throws IOException {
+  void oversizeUndeclaredAbortsDuringCopy() throws IOException {
     byte[] pdf = textPdf(3, 30);
     PdfChunkerConfig config = config(BPE, EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "1000");
     List<PdfChunk> chunks = new ArrayList<>();
@@ -392,7 +393,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void unreadableSourceMarkedSourceIo() throws IOException {
+  void unreadableSourceMarkedSourceIo() throws IOException {
     // the supplier (blob bytes) fails -> FAILED SOURCE_IO naming the root cause, staging dir cleaned
     List<PdfChunk> chunks = new ArrayList<>();
     try (PdfChunkIterator iterator = chunker().open(() -> {
@@ -424,7 +425,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void sourceReadFailureOpeningTheSourceFailsTheRound() throws IOException {
+  void sourceReadFailureOpeningTheSourceFailsTheRound() throws IOException {
     // the framework's blob stream throws an unchecked SourceReadException for a throttled, reset or denied open
     SourceReadException read = new SourceReadException("Failed to read the blob source", new IOException("503 slow down"));
     RuntimeException e = failureOf(chunker(), () -> {
@@ -435,7 +436,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void sourceReadFailureWhileCopyingFailsTheRound() throws IOException {
+  void sourceReadFailureWhileCopyingFailsTheRound() throws IOException {
     byte[] pdf = textPdf(3, 30);
     SourceReadException read = new SourceReadException("Failed to read the blob source", new IOException("connection reset"));
     RuntimeException e = failureOf(chunker(), () -> new InputStream() {
@@ -454,7 +455,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void stagingDirThatCannotBeCreatedIsAPlatformFailure() throws IOException {
+  void stagingDirThatCannotBeCreatedIsAPlatformFailure() throws IOException {
     Path notADir = Files.write(staging.resolve("plain-file"), new byte[1]);
     PdfBoxChunker chunker = new PdfBoxChunker((s, m, c) -> new PdfBoxPageSource(s, m, c, notADir.toFile(), true));
     byte[] pdf = textPdf(1, 3);
@@ -463,7 +464,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void stagedFileThatCannotBeWrittenIsAPlatformFailure() throws IOException {
+  void stagedFileThatCannotBeWrittenIsAPlatformFailure() throws IOException {
     // the local staging dir goes away between its creation and the copy (a scratch disk failure): not the file's fault
     byte[] pdf = textPdf(1, 3);
     RuntimeException e = failureOf(chunker(), () -> {
@@ -478,7 +479,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void missingSourceStaysTheFilesOwnSourceIo() throws IOException {
+  void missingSourceStaysTheFilesOwnSourceIo() {
     // a source that is gone (FileNotFoundException passed through as an IOException) is the file's: SOURCE_IO, no round failure
     List<PdfChunk> chunks = new ArrayList<>();
     try (PdfChunkIterator iterator = chunker().open(() -> {
@@ -493,19 +494,20 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void guardSpoolThatCannotBeCreatedIsAPlatformFailure() throws IOException {
+  void guardSpoolThatCannotBeCreatedIsAPlatformFailure() throws IOException {
     // a multi-filter chain spools its intermediate to the scratch dir; a scratch dir that cannot take it is the platform's
     byte[] pdf = PdfFixtures.oversizedInput(PdfFixtures.OversizedInput.OVERSIZED_FILTER_CHAIN, 1000);
     File gone = staging.resolve("no-such-dir").toFile();
     try (PDDocument doc = Loader.loadPDF(pdf)) {
       StreamDecodeGuard guard = new StreamDecodeGuard(EmbeddingTableConfig.DEFAULT_PDF_MAX_DECODED_STREAM_BYTES, gone);
-      RuntimeException e = assertThrows(RuntimeException.class, () -> guard.checkPage(doc.getPage(1)));
+      PDPage page = doc.getPage(1);
+      RuntimeException e = assertThrows(RuntimeException.class, () -> guard.checkPage(page));
       assertTrue(e instanceof PrepPlatformException, String.valueOf(e));
     }
   }
 
   @Test
-  public void stagedFileDeletedOnCloseAndOnFailure() throws IOException {
+  void stagedFileDeletedOnCloseAndOnFailure() throws IOException {
     chunk(textPdf(2, 10), defaults());
     assertTrue(stagingContents().isEmpty(), "after a normal end");
     chunk("%PDF-1.7 broken".getBytes(StandardCharsets.US_ASCII), defaults());
@@ -513,7 +515,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void closeMidFileDeletesStagedFileAndStops() throws IOException {
+  void closeMidFileDeletesStagedFileAndStops() throws IOException {
     byte[] pdf = textPdf(6, 60);
     PdfChunkIterator iterator = chunker().open(() -> new ByteArrayInputStream(pdf), new PdfFileMeta("m", "m.pdf",
         pdf.length), defaults(), warnings::add);
@@ -526,7 +528,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void scratchInStagingDirAndDeleted() throws IOException {
+  void scratchInStagingDirAndDeleted() throws IOException {
     byte[] pdf = PdfFixtures.encrypted("Decrypted streams go to scratch.");   // encrypted: PDFBox writes decrypted streams to scratch
     PdfChunkIterator iterator = chunker().open(() -> new ByteArrayInputStream(pdf), new PdfFileMeta("s", "s.pdf",
         pdf.length), defaults(), warnings::add);
@@ -538,7 +540,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void encryptedPdfMarkedEncrypted() throws IOException {
+  void encryptedPdfMarkedEncrypted() throws IOException {
     List<PdfChunk> chunks = chunk(PdfFixtures.encrypted("Secret text."), defaults());
     assertEquals(1, chunks.size());
     assertEquals(PdfChunk.Status.FAILED, chunks.get(0).status());
@@ -546,7 +548,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void truncatedPdfMarkedLoadError() throws IOException {
+  void truncatedPdfMarkedLoadError() throws IOException {
     byte[] pdf = textPdf(5, 40);
     byte[] cut = Arrays.copyOf(pdf, pdf.length * 6 / 10);
     List<PdfChunk> chunks = chunk(cut, defaults());
@@ -558,7 +560,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void pagesExtractedOneAtATime() throws IOException {
+  void pagesExtractedOneAtATime() throws IOException {
     byte[] pdf = textPdf(50, 40);
     AtomicInteger extracted = new AtomicInteger();
     PdfBoxChunker spying = new PdfBoxChunker((s, m, c) -> new CountingSource(new PdfBoxPageSource(s, m, c, staging.toFile(),
@@ -626,7 +628,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void flateOversizedInputPageSkipped() throws IOException {
+  void flateOversizedInputPageSkipped() throws IOException {
     assertOnlyPage2Failed(chunk(PdfFixtures.oversizedInput(PdfFixtures.OversizedInput.OVERSIZED_STREAM, 8192), config(BPE, EmbeddingTableConfig.PDF_MAX_DECODED_STREAM_BYTES.key(), "4096")),
         "decode_limited");
     assertTrue(warnings.stream().anyMatch(w -> w.contains("page=2 code=DECODE_LIMIT")));
@@ -634,17 +636,17 @@ public class TestPdfBoxChunker {
 
   @ParameterizedTest
   @EnumSource(PdfFixtures.OversizedInput.class)
-  public void everyOversizedInputConstructionFailsOnlyItsPage(PdfFixtures.OversizedInput kind) throws IOException {
+  void everyOversizedInputConstructionFailsOnlyItsPage(PdfFixtures.OversizedInput kind) throws IOException {
     assertOnlyPage2Failed(chunk(PdfFixtures.oversizedInput(kind, 8192), config(BPE, EmbeddingTableConfig.PDF_MAX_DECODED_STREAM_BYTES.key(), "4096")), "decode_limited");
   }
 
   @Test
-  public void highObjectNumberOversizedInputFailsOnlyItsPage() throws IOException {
+  void highObjectNumberOversizedInputFailsOnlyItsPage() throws IOException {
     assertOnlyPage2Failed(chunk(PdfFixtures.highObjectNumberOversizedStream(8192), config(BPE, EmbeddingTableConfig.PDF_MAX_DECODED_STREAM_BYTES.key(), "4096")), "decode_limited");
   }
 
   @Test
-  public void type1ShapesAreScannedAsPdfboxSplitsThem() throws IOException {
+  void type1ShapesAreScannedAsPdfboxSplitsThem() throws IOException {
     for (PdfFixtures.Type1Shape shape : PdfFixtures.Type1Shape.values()) {
       assertOnlyPage2Failed(chunk(PdfFixtures.largeType1Subrs(100_000, shape), defaults()), "decode_limited");
       List<PdfChunk> legit = chunk(PdfFixtures.largeType1Subrs(200, shape), defaults());   // neighbours: 200 Subrs pass in every shape
@@ -654,13 +656,13 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void unfilteredOperandPileIsScannedToo() throws IOException {
+  void unfilteredOperandPileIsScannedToo() throws IOException {
     // an unfiltered content stream is scanned like a filtered one (100 000 operands before an operator)
     assertOnlyPage2Failed(chunk(PdfFixtures.operandPile(400_000, false), defaults()), "decode_limited");
   }
 
   @Test
-  public void operandPileAcrossContentsArrayFailsPage() throws IOException {
+  void operandPileAcrossContentsArrayFailsPage() throws IOException {
     // PDFBox parses a /Contents array as one sequence, so operands left pending at the end of one stream add up
     assertOnlyPage2Failed(chunk(PdfFixtures.contentsArray(3, 30_000, "", false), defaults()), "decode_limited");
     // the same stream object three times: scanned once, its summary replayed for the other two
@@ -680,7 +682,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void contentsStreamBoundaryEndsCommentsAndInlineImages() throws IOException {
+  void contentsStreamBoundaryEndsCommentsAndInlineImages() throws IOException {
     // PDFBox puts a newline between /Contents streams, so a comment or an inline image ending a stream ends there
     assertOnlyPage2Failed(chunk(PdfFixtures.contentsStreams("%", ones(100_000)), defaults()), "decode_limited");
     assertOnlyPage2Failed(chunk(PdfFixtures.contentsStreams("q BI /W 1 /H 1 /BPC 8 /CS /G ID x EI", ones(100_000) + "Q\n"),
@@ -692,20 +694,20 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void formReusedAsPageContentPasses() throws IOException {
+  void formReusedAsPageContentPasses() throws IOException {
     // a stream first checked as a form, then met in a later page's /Contents, is scanned again in sequence (no failure)
     List<PdfChunk> chunks = chunk(PdfFixtures.formReusedAsContents(), defaults());
     assertNull(last(chunks).statusDetail(), String.valueOf(last(chunks).statusDetail()));
   }
 
   @Test
-  public void streamPassedAsOpaqueIsStillScannedAsCMap() throws IOException {
+  void streamPassedAsOpaqueIsStillScannedAsCMap() throws IOException {
     // the PASSED cache is per kind: a stream first met as an unscanned /FontFile2 is scanned when reused as a /ToUnicode
     assertOnlyPage2Failed(chunk(PdfFixtures.largeBfrange(true), defaults()), "decode_limited");
   }
 
   @Test
-  public void hugeTjArrayFailsPage() throws IOException {
+  void hugeTjArrayFailsPage() throws IOException {
     StringBuilder ops = new StringBuilder("BT /F1 10 Tf 50 700 Td [");
     for (int i = 0; i < 70_000; i++) {
       ops.append("(a) -10 ");
@@ -715,7 +717,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void legitimateStructuresPassThePreScans() throws IOException {
+  void legitimateStructuresPassThePreScans() throws IOException {
     // controls: a full two-byte ToUnicode range (65 536 codes), a 200-entry Subrs, a 30 000-element TJ array, inline image
     List<PdfChunk> range = chunk(PdfFixtures.bfrangeOf("<0000> <FFFF> <0000>"), defaults());
     assertFalse(last(range).statusDetail() != null && last(range).statusDetail().contains("decode_limited=1"),
@@ -733,7 +735,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void failedChainLeavesNoGuardTempFile() throws IOException {
+  void failedChainLeavesNoGuardTempFile() throws IOException {
     // a multi-filter chain writes an intermediate temp file; a DECODE_LIMIT on it must not leave it behind
     byte[] pdf = PdfFixtures.oversizedInput(PdfFixtures.OversizedInput.OVERSIZED_FILTER_CHAIN, 8192);
     Path guardTemp = Files.createDirectories(staging.resolve("guard-temp"));
@@ -755,13 +757,13 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void imageCodecsRefusedWithoutDecoding() throws IOException {
+  void imageCodecsRefusedWithoutDecoding() throws IOException {
     assertOnlyPage2Failed(chunk(PdfFixtures.dctForm(), defaults()), "decode_limited");
     assertOnlyPage2Failed(chunk(PdfFixtures.ccittToUnicode(), defaults()), "decode_limited");
   }
 
   @Test
-  public void type3CharProcCapFailsPage() throws IOException {
+  void type3CharProcCapFailsPage() throws IOException {
     List<PdfChunk> over = chunk(PdfFixtures.type3WithCharProcs(1025), defaults());
     assertTrue(last(over).statusDetail().contains("failed=1"), last(over).statusDetail());
     List<PdfChunk> atCap = chunk(PdfFixtures.type3WithCharProcs(1024), defaults());
@@ -769,7 +771,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void sharedOversizedInputFailsFastOnSecondPage() throws IOException {
+  void sharedOversizedInputFailsFastOnSecondPage() throws IOException {
     byte[] pdf = PdfFixtures.sharedOversizedStream(8192);
     List<PdfChunk> chunks = chunk(pdf, config(BPE, EmbeddingTableConfig.PDF_MAX_DECODED_STREAM_BYTES.key(), "4096"));
     assertTrue(last(chunks).statusDetail().contains("decode_limited=2"), last(chunks).statusDetail());
@@ -788,7 +790,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void undecodableStreamIsDecodedOncePerDocument() throws IOException {
+  void undecodableStreamIsDecodedOncePerDocument() throws IOException {
     // a stream that fails to decode is remembered like a capped one, not decoded again on every page
     try (PDDocument doc = Loader.loadPDF(PdfFixtures.undecodableSharedStream(false))) {
       StreamDecodeGuard guard = new StreamDecodeGuard(EmbeddingTableConfig.DEFAULT_PDF_MAX_DECODED_STREAM_BYTES,
@@ -811,7 +813,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void unfilteredStreamsAreScannedButNotCapped() throws IOException {
+  void unfilteredStreamsAreScannedButNotCapped() throws IOException {
     // the decoded-size cap is about decoding; an unfiltered stream stays a view on the staged file, so only its
     // structure is checked
     StringBuilder ops = new StringBuilder();
@@ -826,7 +828,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void unfilteredFontFilesAndCMapsKeepTheCap() throws IOException {
+  void unfilteredFontFilesAndCMapsKeepTheCap() throws IOException {
     // PDFBox copies a font file and a CMap onto the heap whole (PDType1Font: toByteArray, copyOfRange), so the
     // decoded-size cap applies to them filtered or not; a 200-byte guard refuses a ~700-byte unfiltered font file and CMap
     try (PDDocument font = Loader.loadPDF(PdfFixtures.largeType1Subrs(200));
@@ -837,7 +839,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void unfilteredFontFile2And3KeepTheCap() throws IOException {
+  void unfilteredFontFile2And3KeepTheCap() throws IOException {
     // fontbox copies an embedded TrueType (TTFParser) or CFF (CFFParser) font onto the heap, filtered or not
     PdfFixtures.OversizedInput[] kinds = {PdfFixtures.OversizedInput.LARGE_UNFILTERED_EMBEDDED_FONT, PdfFixtures.OversizedInput.LARGE_UNFILTERED_CFF_FONT};
     for (PdfFixtures.OversizedInput kind : kinds) {
@@ -849,7 +851,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void unfilteredCidToGidMapKeepsTheCap() throws IOException {
+  void unfilteredCidToGidMapKeepsTheCap() throws IOException {
     // an unfiltered CIDToGIDMap is copied onto the heap whole (PDCIDFont.readCIDToGIDMap), like a font file
     try (PDDocument map = Loader.loadPDF(PdfFixtures.oversizedInput(PdfFixtures.OversizedInput.LARGE_UNFILTERED_CID_TO_GID_MAP, 1000))) {
       assertPageFails(new StreamDecodeGuard(999, staging.toFile()), map, 1, PdfFailureCode.DECODE_LIMIT);
@@ -868,7 +870,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void glyphCapStopsPage() throws IOException {
+  void glyphCapStopsPage() throws IOException {
     assertOnlyPage2Failed(chunk(PdfFixtures.manyGlyphs(5000), smallCaps()), "glyph_limited");
     assertTrue(warnings.stream().anyMatch(w -> w.contains("page=2 code=PAGE_GLYPH_LIMIT")));
     warnings.clear();
@@ -877,18 +879,18 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void formRepetitionCapped() throws IOException {
+  void formRepetitionCapped() throws IOException {
     assertOnlyPage2Failed(chunk(PdfFixtures.repeatedForm(100, 50), smallCaps()), "glyph_limited");
   }
 
   @Test
-  public void actualTextRepetitionCapped() throws IOException {
+  void actualTextRepetitionCapped() throws IOException {
     // 3 glyphs carrying 3 x 2 000 chars of /ActualText: above the 1 000 glyph-text cap, while the glyph count stays at 3
     assertOnlyPage2Failed(chunk(PdfFixtures.repeatedActualText(2000, 3), smallCaps()), "glyph_limited");
   }
 
   @Test
-  public void pageBetweenCharAndGlyphCapsIsTruncatedNotFailed() throws IOException {
+  void pageBetweenCharAndGlyphCapsIsTruncatedNotFailed() throws IOException {
     // 800 glyphs of text with max.page.chars 600 and max.page.glyphs 1 000 → truncated to 600 chars, page kept
     PdfChunkerConfig config = config(BPE, EmbeddingTableConfig.CHUNK_WINDOW_MAX_CHARS.key(), "256",
         EmbeddingTableConfig.PDF_MAX_PAGE_CHARS.key(), "600", EmbeddingTableConfig.PDF_MAX_PAGE_GLYPHS.key(), "1000");
@@ -901,7 +903,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void graphicsStateStackCapped() throws IOException {
+  void graphicsStateStackCapped() throws IOException {
     assertOnlyPage2Failed(chunk(PdfFixtures.graphicsStateStack(2000), defaults()), "graphics_limited");
     List<PdfChunk> control = chunk(PdfFixtures.graphicsStateStack(500), defaults());
     assertNull(last(control).statusDetail());
@@ -909,13 +911,13 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void bmcStackCapped() throws IOException {
+  void bmcStackCapped() throws IOException {
     assertOnlyPage2Failed(chunk(PdfFixtures.bmcStack(2000), defaults()), "graphics_limited");
     assertNull(last(chunk(PdfFixtures.bmcStack(500), defaults())).statusDetail());
   }
 
   @Test
-  public void unbalancedBdcPerPageBounded() throws IOException {
+  void unbalancedBdcPerPageBounded() throws IOException {
     List<PdfChunk> chunks = chunk(PdfFixtures.unbalancedBdc(10, 1000), defaults());
     assertNull(last(chunks).statusDetail(), "a fresh stripper per page: 1 000 open spans per page never reach 1 024");
     for (int p = 1; p <= 10; p++) {
@@ -924,7 +926,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void taggedPdfUnaffected() throws IOException {
+  void taggedPdfUnaffected() throws IOException {
     List<PdfChunk> chunks = chunk(PdfFixtures.tagged(3, 2000), defaults());
     assertNull(last(chunks).statusDetail());
   }
@@ -945,7 +947,7 @@ public class TestPdfBoxChunker {
 
   /** The PDF chunker's main sources import nothing from the separate unstructured helpers and transform packages. */
   @Test
-  public void noImportsFromUnstructuredHelpers() throws IOException {
+  void noImportsFromUnstructuredHelpers() throws IOException {
     for (Path source : mainSources()) {
       String code = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
       for (String forbidden : Arrays.asList("helpers.unstructured", "transform.embedding", "transform.unstructured")) {
@@ -955,7 +957,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void noForbiddenWholeDocumentCalls() throws IOException {
+  void noForbiddenWholeDocumentCalls() throws IOException {
     List<Path> sources = mainSources();
     assertTrue(sources.size() > 10);
     for (Path source : sources) {
@@ -968,7 +970,7 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void wordCountConfigChunksRealPdf() throws IOException {
+  void wordCountConfigChunksRealPdf() throws IOException {
     List<PdfChunk> chunks = chunk(textPdf(2, 30), config(WORDS, EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "40"));
     assertTrue(chunks.stream().allMatch(c -> c.wordCount() <= 40 && c.tokenCount() == c.wordCount()));
     assertEquals("word-count", chunks.get(0).tokenizerId());

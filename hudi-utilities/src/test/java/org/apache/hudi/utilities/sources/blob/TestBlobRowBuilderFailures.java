@@ -132,7 +132,9 @@ class TestBlobRowBuilderFailures {
   void presentOrUnconfirmedAbsenceFailsTheRoundInsteadOfProducingNullBlob(String mode) throws Exception {
     String source = put(8);
     conf.set(BlobUnhappyFileSystem.MODE, mode);
-    assertThrows(HoodieException.class, () -> builder().buildRow(object(source, 8L)));
+    BlobRowBuilder builder = builder();
+    CloudObjectMetadata object = object(source, 8L);
+    assertThrows(HoodieException.class, () -> builder.buildRow(object));
     Path file = BucketFolderFileSystem.file(temp.resolve("buckets"), "bucket", "docs/a.pdf");
     assertArrayEquals(bytes(8), Files.readAllBytes(file), "a platform failure must not mutate source bytes");
   }
@@ -161,7 +163,9 @@ class TestBlobRowBuilderFailures {
     Files.setPosixFilePermissions(file, Collections.emptySet());
     try {
       assumeFalse(Files.isReadable(file), "root can read files with no permission bits");
-      assertThrows(HoodieException.class, () -> builder().buildRow(object(file.toUri().toString(), 8L)));
+      BlobRowBuilder builder = builder();
+      CloudObjectMetadata object = object(file.toUri().toString(), 8L);
+      assertThrows(HoodieException.class, () -> builder.buildRow(object));
     } finally {
       Files.setPosixFilePermissions(file, permissions);
     }

@@ -289,6 +289,7 @@ public final class ImageProviderLeakSpies implements AutoCloseable {
 
     @Override
     public void write(IIOMetadata streamMetadata, IIOImage image, ImageWriteParam param) {
+      // writes nothing: this writer only records whether it was disposed
     }
   }
 }

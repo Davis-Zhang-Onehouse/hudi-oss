@@ -47,6 +47,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -77,6 +78,7 @@ import java.util.function.LongSupplier;
 public abstract class BedrockEmbeddingClient implements EmbeddingClient {
 
   private static final Logger LOG = LoggerFactory.getLogger(BedrockEmbeddingClient.class);
+  private static final String PREPARED_IMAGE_IS = "the prepared image is ";
   /** Provider id of the Bedrock clients ({@code hoodie.unstructured.embedding.model.<alias>.provider}). */
   public static final String PROVIDER = "bedrock";
   static final String EMPTY_INPUT = "empty input";
@@ -137,7 +139,7 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
 
   /** Production wiring: the SDK invoker, the system clock, real sleeps. */
   protected BedrockEmbeddingClient() {
-    this(SdkBedrockInvoker::create, System::currentTimeMillis, Thread::sleep, new Random());
+    this(SdkBedrockInvoker::create, System::currentTimeMillis, Thread::sleep, new SecureRandom());
   }
 
   /** Test seam: the invoker factory, the clock and sleeper of the retry loop and rate limiter, the backoff jitter. */
@@ -203,26 +205,7 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
     try {
       List<Integer> texts = new ArrayList<>();
       List<Integer> images = new ArrayList<>();
-      for (int i = 0; i < inputs.size(); i++) {
-        EmbeddingInput input = inputs.get(i);
-        if (EmbeddingTableSchema.MODALITY_TEXT.equals(input.getModality())) {
-          if (input.getText() == null || input.getText().trim().isEmpty()) {
-            call.results[i] = EmbeddingResult.permanent(EMPTY_INPUT);
-          } else {
-            texts.add(i);
-          }
-        } else if (EmbeddingTableSchema.MODALITY_IMAGE.equals(input.getModality())
-            && family().modalities().contains(EmbeddingTableSchema.MODALITY_IMAGE)) {
-          if (input.image() == null) {
-            // compute builds every image input of a model that declares image with its preparation: a missing one is a broken invariant
-            throw new EmbeddingComputePlatformException(IMAGE_WITHOUT_PREPARED_INPUT + " (model " + spec.getName() + ")");
-          }
-          images.add(i);
-        } else {
-          call.results[i] = EmbeddingResult.permanent("modality " + input.getModality() + " is not supported by " + PROVIDER
-              + " " + family());
-        }
-      }
+      route(inputs, call, texts, images);
       for (List<Integer> request : packTexts(inputs, texts)) {
         sendTexts(call, inputs, request);
       }
@@ -233,6 +216,35 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
       lastCallStats = loop.stats(call.isolationRequests, call.tokens);
     }
     return Arrays.asList(call.results);
+  }
+
+  /**
+   * Sorts the inputs of a call into the text and image requests; an empty text or a modality the model family does not take
+   * gets its PERMANENT result here.
+   *
+   * @throws EmbeddingComputePlatformException for an image input without its preparation (a broken compute invariant)
+   */
+  private void route(List<EmbeddingInput> inputs, Call call, List<Integer> texts, List<Integer> images) {
+    for (int i = 0; i < inputs.size(); i++) {
+      EmbeddingInput input = inputs.get(i);
+      if (EmbeddingTableSchema.MODALITY_TEXT.equals(input.getModality())) {
+        if (input.getText() == null || input.getText().trim().isEmpty()) {
+          call.results[i] = EmbeddingResult.permanent(EMPTY_INPUT);
+        } else {
+          texts.add(i);
+        }
+      } else if (EmbeddingTableSchema.MODALITY_IMAGE.equals(input.getModality())
+          && family().modalities().contains(EmbeddingTableSchema.MODALITY_IMAGE)) {
+        if (input.image() == null) {
+          // compute builds every image input of a model that declares image with its preparation: a missing one is a broken invariant
+          throw new EmbeddingComputePlatformException(IMAGE_WITHOUT_PREPARED_INPUT + " (model " + spec.getName() + ")");
+        }
+        images.add(i);
+      } else {
+        call.results[i] = EmbeddingResult.permanent("modality " + input.getModality() + " is not supported by " + PROVIDER
+            + " " + family());
+      }
+    }
   }
 
   /** Text requests: consecutive texts up to the per-request input limit and, for Cohere, its token budget. */
@@ -318,24 +330,8 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
         payload = envelope;
         tokens = 0;
       }
-      String notSent = loop.notSentReason();
-      if (notSent != null) {
-        call.results[index] = EmbeddingResult.retryable(notSent);
-        continue;
-      }
-      EmbeddingInput input = inputs.get(index);
-      PreparedImage image;
-      try {
-        image = input.image().get();
-      } catch (IOException | RuntimeException e) {
-        // a malformed stored-input reference throws EmbeddingComputePlatformException from here
-        call.results[index] = ImageFailures.result(input, e);
-        continue;
-      }
-      String refused = imageRefusal(image);
-      if (refused != null) {
-        // the row is named, so alike refusals of rows of several files are never read as the provider rejecting the request
-        call.results[index] = EmbeddingResult.permanent(input.describeIdentity() + ": " + refused);
+      PreparedImage image = sendable(call, inputs.get(index), index);
+      if (image == null) {
         continue;
       }
       // the URI's two quotes, plus a comma after the first
@@ -357,6 +353,33 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
     if (!request.isEmpty()) {
       sendImageRequest(call, request, prepared);
     }
+  }
+
+  /**
+   * The prepared image of input {@code index} when it can be sent; else null, with the input's result set: RETRYABLE when the
+   * loop sends nothing now, the image failure's result when it cannot be prepared, PERMANENT when the model refuses it.
+   */
+  private PreparedImage sendable(Call call, EmbeddingInput input, int index) {
+    String notSent = loop.notSentReason();
+    if (notSent != null) {
+      call.results[index] = EmbeddingResult.retryable(notSent);
+      return null;
+    }
+    PreparedImage image;
+    try {
+      image = input.image().get();
+    } catch (IOException | RuntimeException e) {
+      // a malformed stored-input reference throws EmbeddingComputePlatformException from here
+      call.results[index] = ImageFailures.result(input, e);
+      return null;
+    }
+    String refused = imageRefusal(image);
+    if (refused != null) {
+      // the row is named, so alike refusals of rows of several files are never read as the provider rejecting the request
+      call.results[index] = EmbeddingResult.permanent(input.describeIdentity() + ": " + refused);
+      return null;
+    }
+    return image;
   }
 
   /** One image request; a rejected request of several images is isolated, each image alone. */
@@ -407,15 +430,15 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
   private String imageRefusal(PreparedImage image) {
     BedrockModelFamily family = family();
     if (!family.imageMimeTypes().contains(image.getMimeType())) {
-      return "the prepared image is " + image.getMimeType() + ", which " + family + " does not accept (it accepts "
+      return PREPARED_IMAGE_IS + image.getMimeType() + ", which " + family + " does not accept (it accepts "
           + new TreeSet<>(family.imageMimeTypes()) + ")";
     }
     if (image.getEncoded().length > family.maxImageBytes()) {
-      return "the prepared image is " + image.getEncoded().length + " bytes, over the " + family.maxImageBytes() + " bytes "
+      return PREPARED_IMAGE_IS + image.getEncoded().length + " bytes, over the " + family.maxImageBytes() + " bytes "
           + family + " accepts; lower " + EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key();
     }
     if (family.maxImageSide() > 0 && Math.max(image.getWidth(), image.getHeight()) > family.maxImageSide()) {
-      return "the prepared image is " + image.getWidth() + "x" + image.getHeight() + " pixels, over the " + family.maxImageSide()
+      return PREPARED_IMAGE_IS + image.getWidth() + "x" + image.getHeight() + " pixels, over the " + family.maxImageSide()
           + " pixels per side " + family + " accepts; lower " + EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key();
     }
     return null;
@@ -523,8 +546,10 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
     for (Map.Entry<Integer, String> rejected : call.rejected.entrySet()) {
       call.results[rejected.getKey()] = EmbeddingResult.permanent(rejected.getValue());
     }
-    LOG.warn("EMBED-BEDROCK-INPUT-REJECTED model={} rejected={}: {}", spec.getName(), call.rejected.size(),
-        call.rejected.values().iterator().next());
+    if (LOG.isWarnEnabled()) {
+      LOG.warn("EMBED-BEDROCK-INPUT-REJECTED model={} rejected={}: {}", spec.getName(), call.rejected.size(),
+          call.rejected.values().iterator().next());
+    }
   }
 
   private EmbeddingClientConfigException configFailure(String error) {
@@ -633,22 +658,27 @@ public abstract class BedrockEmbeddingClient implements EmbeddingClient {
     }
     float[][] out = new float[expected][];
     for (int i = 0; i < expected; i++) {
-      JsonNode vector = vectors.get(i);
-      if (!vector.isArray() || vector.size() == 0) {
-        throw new IOException("embedding " + i + " is not a non-empty array");
-      }
-      out[i] = new float[vector.size()];
-      for (int j = 0; j < out[i].length; j++) {
-        if (!vector.get(j).isNumber()) {
-          throw new IOException("embedding " + i + " holds a non-number");
-        }
-        out[i][j] = (float) vector.get(j).asDouble();
-        if (!Float.isFinite(out[i][j])) {
-          throw new IOException("embedding " + i + " holds a non-finite float");
-        }
-      }
+      out[i] = floatVector(vectors.get(i), i);
     }
     return out;
+  }
+
+  /** Converts embedding {@code i}, a non-empty JSON array of numbers, to finite floats. */
+  private static float[] floatVector(JsonNode vector, int i) throws IOException {
+    if (!vector.isArray() || vector.size() == 0) {
+      throw new IOException("embedding " + i + " is not a non-empty array");
+    }
+    float[] floats = new float[vector.size()];
+    for (int j = 0; j < floats.length; j++) {
+      if (!vector.get(j).isNumber()) {
+        throw new IOException("embedding " + i + " holds a non-number");
+      }
+      floats[j] = (float) vector.get(j).asDouble();
+      if (!Float.isFinite(floats[j])) {
+        throw new IOException("embedding " + i + " holds a non-finite float");
+      }
+    }
+    return floats;
   }
 
   /** Titan's {@code inputTextTokenCount}, -1 when absent or for Cohere. */

@@ -22,6 +22,7 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.LogCapture;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioInput;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioRows;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioSegment;
@@ -74,10 +75,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * round, configuration error of the task) and that every way out, an {@link Error} included, closes the open utterance iterator
  * and the segments, and the real packer's chunk iterator exactly once.
  */
-public class TestVideoSpeechChunks {
+class TestVideoSpeechChunks {
 
   @Test
-  public void cycleInSpeechFailureDetailsTerminates() {
+  void cycleInSpeechFailureDetailsTerminates() {
     IOException first = new IOException("first");
     IOException second = new IOException("second", first);
     first.initCause(second);
@@ -92,7 +93,7 @@ public class TestVideoSpeechChunks {
   private TranscriptChunker chunker;
 
   @BeforeEach
-  public void setUp() {
+  void setUp() {
     props = new TypedProperties();
     // one utterance line ("[speaker-1] words of segment k", 5 words) per chunk
     props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "6");
@@ -103,7 +104,7 @@ public class TestVideoSpeechChunks {
   }
 
   @Test
-  public void eachTranscriptChunkIsATextChunkWithItsOrdinalAndTranscriptAux() {
+  void eachTranscriptChunkIsATextChunkWithItsOrdinalAndTranscriptAux() {
     source.segments = Arrays.asList(segment(0, 0, 1000), segment(1, 1500, 2500), segment(2, 4000, 5000));
     List<Chunk> chunks = drain(speech());
     assertEquals(3, chunks.size(), chunks.toString());
@@ -130,7 +131,7 @@ public class TestVideoSpeechChunks {
 
   /** Nothing sorts or buffers the segments; the source runs at most one segment ahead of what is emitted. */
   @Test
-  public void segmentsArePulledOneAtATimeWithOneUtteranceIteratorOpen() {
+  void segmentsArePulledOneAtATimeWithOneUtteranceIteratorOpen() {
     List<AudioSegment> many = new ArrayList<>();
     for (int k = 0; k < 50; k++) {
       many.add(segment(k, 1000L * k, 1000L * k + 800));
@@ -139,7 +140,7 @@ public class TestVideoSpeechChunks {
     VideoSpeechChunks speech = speech();
     long ordinal = 0;
     while (speech.hasNext()) {
-      Chunk chunk = speech.next();
+      speech.next();
       // the chunker looks at the next utterance to end a chunk: at most that one segment beyond the emitted one
       assertTrue(source.produced <= ordinal + 2, "segments produced " + source.produced + " at chunk " + ordinal);
       ordinal++;
@@ -149,7 +150,7 @@ public class TestVideoSpeechChunks {
   }
 
   @Test
-  public void silenceGapsAreAllowedAndASegmentWithoutUtterancesWritesNothing() {
+  void silenceGapsAreAllowedAndASegmentWithoutUtterancesWritesNothing() {
     source.segments = Arrays.asList(segment(0, 0, 1000), segment(1, 60_000, 61_000), segment(2, 61_000, 62_000));
     transcriber.silent = 1;
     List<Chunk> chunks = drain(speech());
@@ -160,7 +161,7 @@ public class TestVideoSpeechChunks {
 
   /** The segment guard: each breach is the video's content failure, after the rows before it. */
   @Test
-  public void segmentsOutOfOrderRepeatedGappedOrOverlappingFailTheVideo() {
+  void segmentsOutOfOrderRepeatedGappedOrOverlappingFailTheVideo() {
     assertGuard("index out of order", Arrays.asList(segment(0, 0, 1000), segment(2, 2000, 3000)), "segment 2 where 1 was due");
     assertGuard("index repeated", Arrays.asList(segment(0, 0, 1000), segment(0, 2000, 3000)), "segment 0 where 1 was due");
     assertGuard("index not from 0", Collections.singletonList(segment(1, 0, 1000)), "segment 1 where 0 was due");
@@ -172,7 +173,7 @@ public class TestVideoSpeechChunks {
 
   /** The utterance guard: a start outside its segment's span or before the previous start fails the video. */
   @Test
-  public void utterancesStartingOutOfTheirSegmentOrDecreasingFailTheVideo() {
+  void utterancesStartingOutOfTheirSegmentOrDecreasingFailTheVideo() {
     assertUtteranceGuard("decreasing in a segment", Arrays.asList(utterance(500, 900), utterance(400, 900)),
         "starting at 400 ms, before the previous utterance's start at 500 ms");
     assertUtteranceGuard("before the segment", Collections.singletonList(utterance(1500, 1900)),
@@ -215,7 +216,7 @@ public class TestVideoSpeechChunks {
    * of the round, an Error mid-track, and an early close (twice).
    */
   @Test
-  public void theRealPackersIteratorIsClosedExactlyOnceOnEachWayOut() {
+  void theRealPackersIteratorIsClosedExactlyOnceOnEachWayOut() {
     List<AudioSegment> three = Arrays.asList(segment(0, 0, 1000), segment(1, 1000, 2000), segment(2, 2000, 3000));
     props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "16");
     // exhaustion
@@ -226,13 +227,15 @@ public class TestVideoSpeechChunks {
     counting = useCountingPacker(three);
     transcriber.failAt = 1;
     transcriber.failure = new IllegalStateException("engine refused the audio");
-    assertThrows(PreprocessingException.class, () -> drain(speech()));
+    VideoSpeechChunks contentFailure = speech();
+    assertThrows(PreprocessingException.class, () -> drain(contentFailure));
     assertEquals(1, counting.closes, "closed once on a content failure");
     // an interruption of the round (a retryable transcriber failure)
     counting = useCountingPacker(three);
     transcriber.failAt = 1;
     transcriber.failure = new IOException("engine unavailable");
-    assertThrows(SourceReadException.class, () -> drain(speech()));
+    VideoSpeechChunks interruption = speech();
+    assertThrows(SourceReadException.class, () -> drain(interruption));
     assertEquals(1, counting.closes, "closed once on an interruption");
     // an Error mid-track
     counting = useCountingPacker(three);
@@ -259,11 +262,12 @@ public class TestVideoSpeechChunks {
 
   /** An invalid chunk setting the packer reads is a configuration error of the task, never a FAILED row of each video. */
   @Test
-  public void invalidPackerSettingsFailTheTaskNotTheVideo() {
+  void invalidPackerSettingsFailTheTaskNotTheVideo() {
     useCountingPacker(Arrays.asList(segment(0, 0, 1000), segment(1, 1000, 2000)));
     props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "16");
     props.setProperty(EmbeddingTableConfig.CHUNK_WINDOW_MAX_CHARS.key(), "10");
-    PreprocessorConfigurationException config = assertThrows(PreprocessorConfigurationException.class, () -> drain(speech()));
+    VideoSpeechChunks speech = speech();
+    PreprocessorConfigurationException config = assertThrows(PreprocessorConfigurationException.class, () -> drain(speech));
     assertTrue(config.getCause() instanceof IllegalArgumentException, String.valueOf(config.getCause()));
     assertTrue(config.getCause().getMessage().contains(EmbeddingTableConfig.CHUNK_WINDOW_MAX_CHARS.key()), config.getCause().getMessage());
     assertEquals(1, source.closes, "the segments are closed");
@@ -295,7 +299,7 @@ public class TestVideoSpeechChunks {
 
   /** The fault semantics: what fails the video, what interrupts the round, what fails the task. */
   @Test
-  public void failuresAreTheVideosOrTheRoundsOrTheTasks() {
+  void failuresAreTheVideosOrTheRoundsOrTheTasks() {
     // the source: a storage failure a later run may not see interrupts; the file's own fault or undecodable audio fails it
     assertSourceFailure(new UncheckedIOException("read", new BlobReadException(new IOException("connection reset"))),
         SourceReadException.class);
@@ -311,12 +315,14 @@ public class TestVideoSpeechChunks {
     assertTranscriberFailure(new IllegalArgumentException("model file missing"), PreprocessorConfigurationException.class);
     source = new FakeSource();
     source.openFailure = new IllegalArgumentException("bad sample rate");
-    PreprocessorConfigurationException config = assertThrows(PreprocessorConfigurationException.class, () -> drain(speech()));
+    VideoSpeechChunks badRate = speech();
+    PreprocessorConfigurationException config = assertThrows(PreprocessorConfigurationException.class, () -> drain(badRate));
     assertSame(source.openFailure, config.getCause());
 
     source = new FakeSource();
     source.openFailure = new VideoDecodeException("video v cannot be opened");
-    PreprocessingException undecodable = assertThrows(PreprocessingException.class, () -> drain(speech()));
+    VideoSpeechChunks unopenable = speech();
+    PreprocessingException undecodable = assertThrows(PreprocessingException.class, () -> drain(unopenable));
     assertEquals(VideoSpeechChunks.SPEECH_PREFIX + "VideoDecodeException: video v cannot be opened", undecodable.getMessage());
   }
 
@@ -325,7 +331,7 @@ public class TestVideoSpeechChunks {
    * failure after its bounded retry — met anywhere under the speech is never turned into the video's quarantine entry.
    */
   @Test
-  public void roundFailuresUnderTheSpeechFailTheRoundNotTheVideo() {
+  void roundFailuresUnderTheSpeechFailTheRoundNotTheVideo() {
     assertTranscriberFailure(new PrepPlatformException("whisper full() returned -7", null), PrepPlatformException.class);
     assertSourceFailure(new SourceReadException("Failed to read the blob source", new IOException("503 slow down")),
         SourceReadException.class);
@@ -340,8 +346,8 @@ public class TestVideoSpeechChunks {
       }
     };
     // the real packer under its default chunk keys (this class's 6-token cap is for the stub chunker)
-    VideoSpeechChunks speech = new VideoSpeechChunks(source, transcriber, new TranscriptPacker(), input(), failing,
-        new TypedProperties(), LOGIC, SpeakerLabels.SCOPE_FILE);
+    VideoSpeechChunks.Engines engines = new VideoSpeechChunks.Engines(source, transcriber, new TranscriptPacker());
+    VideoSpeechChunks speech = new VideoSpeechChunks(engines, input(), failing, new TypedProperties(), LOGIC, SpeakerLabels.SCOPE_FILE);
     RuntimeException failure = assertThrows(RuntimeException.class, () -> drain(speech));
     assertTrue(failure instanceof TokenizerException, failure.toString());
     assertEquals(TokenizerException.Kind.RETRYABLE, ((TokenizerException) failure).kind());
@@ -350,7 +356,7 @@ public class TestVideoSpeechChunks {
 
   /** an Error mid-track closes the open utterance iterator and the segments, then propagates as it is. */
   @Test
-  public void anErrorMidTrackClosesTheUtterancesAndTheSegments() {
+  void anErrorMidTrackClosesTheUtterancesAndTheSegments() {
     source.segments = Arrays.asList(segment(0, 0, 1000), segment(1, 1000, 2000), segment(2, 2000, 3000));
     UnsatisfiedLinkError error = new UnsatisfiedLinkError("native engine");
     transcriber.failAt = 1;
@@ -364,7 +370,7 @@ public class TestVideoSpeechChunks {
   }
 
   @Test
-  public void closeBeforeTheEndClosesWhatIsOpen() {
+  void closeBeforeTheEndClosesWhatIsOpen() {
     source.segments = Arrays.asList(segment(0, 0, 1000), segment(1, 1000, 2000), segment(2, 2000, 3000));
     VideoSpeechChunks speech = speech();
     speech.next();
@@ -375,6 +381,31 @@ public class TestVideoSpeechChunks {
     assertFalse(speech.hasNext());
   }
 
+  /**
+   * Closing mid-track when both the open utterance iterator and the segments fail to close: the utterance iterator's failure is
+   * the one kept, with the segments' failure suppressed on it, as every other close of the stack does.
+   */
+  @Test
+  void bothCloseFailuresAreKeptTheFirstWithTheSecondSuppressed() {
+    source.segments = Arrays.asList(segment(0, 0, 1000), segment(1, 1000, 2000), segment(2, 2000, 3000));
+    VideoSpeechChunks speech = speech();
+    speech.next();
+    assertTrue(transcriber.opened > transcriber.closed, "an utterance iterator is open mid-track");
+    IllegalStateException utterancesFailure = new IllegalStateException("utterance iterator close (injected)");
+    IllegalStateException segmentsFailure = new IllegalStateException("segments close (injected)");
+    transcriber.closeFailure = utterancesFailure;
+    source.closeFailure = segmentsFailure;
+    try (LogCapture logs = LogCapture.of(VideoSpeechChunks.class)) {
+      speech.close();
+      List<Throwable> thrown = logs.thrown();
+      assertEquals(1, thrown.size(), logs.lines().toString());
+      assertSame(utterancesFailure, thrown.get(0).getCause(), "the first close failure is the one kept: " + thrown.get(0));
+      assertEquals(1, thrown.get(0).getSuppressed().length, "the segments' close failure is suppressed on it");
+      assertSame(segmentsFailure, thrown.get(0).getSuppressed()[0].getCause());
+    }
+    assertEquals(1, source.closes, "the segments are still closed");
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private void assertSourceFailure(RuntimeException thrown, Class<? extends RuntimeException> expected) {
@@ -382,7 +413,8 @@ public class TestVideoSpeechChunks {
     source.segments = Arrays.asList(segment(0, 0, 1000), segment(1, 1000, 2000));
     source.failAfter = 1;
     source.failure = thrown;
-    RuntimeException failure = assertThrows(expected, () -> drain(speech()), thrown.toString());
+    VideoSpeechChunks speech = speech();
+    RuntimeException failure = assertThrows(expected, () -> drain(speech), thrown.toString());
     assertEquals(expected, failure.getClass(), thrown.toString());
     assertEquals(1, source.closes, thrown + ": the segments are closed");
   }
@@ -393,7 +425,8 @@ public class TestVideoSpeechChunks {
     transcriber = new FakeTranscriber();
     transcriber.failAt = 1;
     transcriber.failure = thrown;
-    RuntimeException failure = assertThrows(expected, () -> drain(speech()), thrown.toString());
+    VideoSpeechChunks speech = speech();
+    RuntimeException failure = assertThrows(expected, () -> drain(speech), thrown.toString());
     assertEquals(expected, failure.getClass(), thrown.toString());
     if (failure instanceof PreprocessingException) {
       assertTrue(failure.getMessage().startsWith(VideoSpeechChunks.SPEECH_PREFIX + thrown.getClass().getSimpleName()),
@@ -403,8 +436,8 @@ public class TestVideoSpeechChunks {
   }
 
   private VideoSpeechChunks speech() {
-    return new VideoSpeechChunks(source, transcriber, chunker, input(), new WordCountTokenizer(), props, LOGIC,
-        SpeakerLabels.SCOPE_FILE);
+    return new VideoSpeechChunks(new VideoSpeechChunks.Engines(source, transcriber, chunker), input(), new WordCountTokenizer(), props,
+        LOGIC, SpeakerLabels.SCOPE_FILE);
   }
 
   private static List<Chunk> drain(VideoSpeechChunks speech) {
@@ -555,6 +588,7 @@ public class TestVideoSpeechChunks {
     private RuntimeException openFailure;
     private int failAfter = -1;
     private RuntimeException failure;
+    private RuntimeException closeFailure;
     private int produced;
     private int closes;
 
@@ -565,6 +599,7 @@ public class TestVideoSpeechChunks {
 
     @Override
     public void validate(TypedProperties props) {
+      // the fake takes no configuration
     }
 
     @Override
@@ -594,6 +629,9 @@ public class TestVideoSpeechChunks {
         @Override
         public void close() {
           closes++;
+          if (closeFailure != null) {
+            throw closeFailure;
+          }
         }
       };
     }
@@ -610,6 +648,7 @@ public class TestVideoSpeechChunks {
     private final Map<Long, List<TranscriptSegment>> scripted = new HashMap<>();
     private Exception failure;
     private Error failInIterator;
+    private RuntimeException closeFailure;
     private int opened;
     private int closed;
     private int maxOpen;
@@ -626,6 +665,7 @@ public class TestVideoSpeechChunks {
 
     @Override
     public void validate(TypedProperties props) {
+      // the fake takes no configuration
     }
 
     @Override
@@ -668,6 +708,9 @@ public class TestVideoSpeechChunks {
           if (!done) {
             done = true;
             closed++;
+            if (closeFailure != null) {
+              throw closeFailure;
+            }
           }
         }
       };

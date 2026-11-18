@@ -32,11 +32,12 @@ import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** {@link Type1FontCheck.SubrsFinder}: /Subrs counts as fontbox 3.0.8's Type1Lexer reads them. */
-public class TestType1FontCheck {
+class TestType1FontCheck {
 
   private static void scan(String plain) {
     scan(plain, Type1FontCheck.MAX_SUBRS);
@@ -51,7 +52,7 @@ public class TestType1FontCheck {
   }
 
   @Test
-  public void refusesWhatFontboxWouldAllocate() {
+  void refusesWhatFontboxWouldAllocate() {
     String[] over = {
         "/Subrs 65537 array",
         "/Subrs 2000000000abc",                       // tryReadNumber stops at the first non-digit: INTEGER 2000000000
@@ -83,17 +84,17 @@ public class TestType1FontCheck {
   private static byte[] pfb(int emptyBinaryRecords) {
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     byte[] clear = "%!PS-AdobeFont-1.0: T 001.000\ncurrentfile eexec\n".getBytes(StandardCharsets.US_ASCII);
-    record(out, 1, clear);
+    writeRecord(out, 1, clear);
     for (int i = 0; i < emptyBinaryRecords; i++) {
-      record(out, 2, new byte[0]);
+      writeRecord(out, 2, new byte[0]);
     }
-    record(out, 2, PdfFixtures.eexecEncrypt("abcd /Subrs 10 array".getBytes(StandardCharsets.US_ASCII)));
+    writeRecord(out, 2, PdfFixtures.eexecEncrypt("abcd /Subrs 10 array".getBytes(StandardCharsets.US_ASCII)));
     out.write(0x80);
     out.write(3);
     return out.toByteArray();
   }
 
-  private static void record(ByteArrayOutputStream out, int type, byte[] data) {
+  private static void writeRecord(ByteArrayOutputStream out, int type, byte[] data) {
     out.write(0x80);
     out.write(type);
     for (int shift = 0; shift < 32; shift += 8) {
@@ -117,11 +118,12 @@ public class TestType1FontCheck {
    * ({@link PrepPlatformException}, the round fails), never an undecodable font that is skipped past the /Subrs check.
    */
   @Test
-  public void unreadableSpoolIsAPlatformFailure() throws IOException {
+  void unreadableSpoolIsAPlatformFailure() throws IOException {
     File directory = Files.createTempDirectory("type1-check").toFile();
     try {
       assertThrows(PrepPlatformException.class, () -> Type1FontCheck.check(directory, -1, -1, "test"));
-      assertThrows(PrepPlatformException.class, () -> Type1FontCheck.check(new File(directory, "gone.bin"), -1, -1, "test"));
+      File gone = new File(directory, "gone.bin");
+      assertThrows(PrepPlatformException.class, () -> Type1FontCheck.check(gone, -1, -1, "test"));
     } finally {
       Files.delete(directory.toPath());
     }
@@ -132,7 +134,7 @@ public class TestType1FontCheck {
    * data; a byte the file still holds reads as written.
    */
   @Test
-  public void shortReadOfAShrunkSpoolIsAPlatformFailure() throws IOException {
+  void shortReadOfAShrunkSpoolIsAPlatformFailure() throws IOException {
     File file = Files.createTempFile("type1-window", ".bin").toFile();
     try {
       byte[] data = new byte[1000];
@@ -154,26 +156,27 @@ public class TestType1FontCheck {
   }
 
   @Test
-  public void manyRecordPfbIsRefusedBeforeCollecting() throws IOException {
+  void manyRecordPfbIsRefusedBeforeCollecting() throws IOException {
     // the record count is checked before any per-record state is kept; a normal PFB has three records
-    assertThrows(StreamStructureScanner.Refusal.class, () -> check(pfb(100_000)));
+    byte[] manyRecords = pfb(100_000);
+    assertThrows(StreamStructureScanner.Refusal.class, () -> check(manyRecords));
     check(pfb(0));                                     // neighbour: a three-record PFB with 10 Subrs passes
   }
 
   @Test
-  public void zeroSizeRecordAtEofIsDamagedAsPfbParserSeesIt() throws IOException {
+  void zeroSizeRecordAtEofIsDamagedAsPfbParserSeesIt() throws IOException {
     // PfbParser reads a zero-size record at EOF as -1 bytes (EOFException), so PDFBox never parses the font
     ByteArrayOutputStream out = new ByteArrayOutputStream();
-    record(out, 1, "%!PS-AdobeFont-1.0: T 001.000\ncurrentfile eexec\n".getBytes(StandardCharsets.US_ASCII));
-    record(out, 2, PdfFixtures.eexecEncrypt("abcd /Subrs 100000 array".getBytes(StandardCharsets.US_ASCII)));
+    writeRecord(out, 1, "%!PS-AdobeFont-1.0: T 001.000\ncurrentfile eexec\n".getBytes(StandardCharsets.US_ASCII));
+    writeRecord(out, 2, PdfFixtures.eexecEncrypt("abcd /Subrs 100000 array".getBytes(StandardCharsets.US_ASCII)));
     byte[] complete = out.toByteArray();
-    record(out, 2, new byte[0]);
+    writeRecord(out, 2, new byte[0]);
     check(out.toByteArray());
     assertThrows(StreamStructureScanner.Refusal.class, () -> check(complete));   // neighbour: EOF after the record
   }
 
   @Test
-  public void acceptsWhatAllocatesLittle() {
+  void acceptsWhatAllocatesLittle() {
     String[] fine = {
         "/Subrs 65536 array",
         "/Subrs 0000000000000000000000000000000000000000000000000000000065536 array",   // padded, at the cap
@@ -195,7 +198,7 @@ public class TestType1FontCheck {
         "/Subrs #100000 array",                        // an empty radix
     };
     for (String plain : fine) {
-      scan(plain);
+      assertDoesNotThrow(() -> scan(plain), plain);
     }
   }
 
@@ -206,7 +209,7 @@ public class TestType1FontCheck {
    * Subr below that number and pass at it.
    */
   @Test
-  public void parsesTheCountAsFontboxDoes() throws IOException {
+  void parsesTheCountAsFontboxDoes() throws IOException {
     Object[][] catalogue = {
         {" 300", 300L},
         {" 000000000000000000000000000000000000000000000000000000000000000000300", 300L},   // zero padding
@@ -259,7 +262,7 @@ public class TestType1FontCheck {
    * each private dict below is parsed by fontbox, which must allocate {@code subrs}, and the guard pins that count.
    */
   @Test
-  public void reachesEveryKeyFontboxReads() throws IOException {
+  void reachesEveryKeyFontboxReads() throws IOException {
     String[][] dicts = {
         {PdfFixtures.MASK_ENTRY, " 300"},                          // a string holding "/Subrs %" before the key
         {"/Mask (/Subrs%) def ", " 300"},
@@ -288,7 +291,7 @@ public class TestType1FontCheck {
       " % /Subrs\n300",                                   // the literal ends with the comment: one count for both
       " % /Subrs % x\n300",
   })
-  public void subrsLiteralInsideACommentKeepsTheCountOfTheKeyBeforeIt(String afterKey) throws IOException {
+  void subrsLiteralInsideACommentKeepsTheCountOfTheKeyBeforeIt(String afterKey) throws IOException {
     String plain = PdfFixtures.type1Private(afterKey);
     assertEquals(300, fontbox(plain).getSubrsArray().size(), afterKey);
     scan(plain, 300);

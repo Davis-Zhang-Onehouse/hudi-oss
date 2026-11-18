@@ -25,6 +25,7 @@ import org.apache.hudi.utilities.unstructured.embedding.text.PackedChunk;
 import org.apache.hudi.utilities.unstructured.embedding.text.TextNormalizer;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenBudget;
 
+import java.io.IOException;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 
@@ -47,6 +48,8 @@ import java.util.NoSuchElementException;
  * truncated behind a loss summary is committed for it. Everything else a PDFBox call throws on an input is the input's own failure.
  */
 public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
+
+  private static final String PATH_EQUALS = " path=";
 
   /** Receives the iterator's WARN lines; the production sink is the chunker's logger. */
   @FunctionalInterface
@@ -157,7 +160,7 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
     }
   }
 
-  private void start() throws Exception {
+  private void start() throws IOException {
     started = true;
     startNanos = System.nanoTime();
     pageSource = factory.create(source, meta, config);
@@ -236,8 +239,9 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
   private void accept(PackedChunk cut) {
     stats.chunksEmitted++;
     stats.forcedSplits = packer.forcedSplits();
-    PdfChunk chunk = new PdfChunk(meta.sourcePathSha(), ordinal++, cut.text(), cut.tokenCount(), tokenizerId, cut.wordCount(),
-        cut.overlapChars(), cut.firstMark(), cut.lastMark(), PdfChunk.Status.OK, null);
+    PdfChunk.Measures measures = new PdfChunk.Measures(cut.tokenCount(), tokenizerId, cut.wordCount(), cut.overlapChars(), cut.firstMark(),
+        cut.lastMark());
+    PdfChunk chunk = new PdfChunk(meta.sourcePathSha(), ordinal++, cut.text(), measures, PdfChunk.Status.OK, null);
     if (held != null) {
       ready = held;                                    // a chunk is returned once the next one is cut
     }
@@ -289,8 +293,9 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
     stats.elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000;
     // the summary also follows suppressed page WARNs on an OK, loss-free file
     if (lost() || last.status() != PdfChunk.Status.OK || pageWarnings > MAX_PAGE_WARNINGS) {
-      warnings.warn("PDF-FILE source_path_sha=" + meta.sourcePathSha() + " path=" + meta.sourcePath() + " status=" + last.status() + " "
-          + (lost() ? lossSummary() : "pages=" + stats.pagesSeen + (last.status() == PdfChunk.Status.OK ? "" : " (no text)"))
+      String pages = "pages=" + stats.pagesSeen + (last.status() == PdfChunk.Status.OK ? "" : " (no text)");
+      warnings.warn("PDF-FILE source_path_sha=" + meta.sourcePathSha() + PATH_EQUALS + meta.sourcePath() + " status=" + last.status() + " "
+          + (lost() ? lossSummary() : pages)
           + " pageWarnings=" + pageWarnings
           + (fileErrorDetail == null ? "" : " error=" + fileErrorDetail));
     }
@@ -315,7 +320,7 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
   private void pageWarning(PdfFailureCode code, long page, String detail, Throwable cause) {
     pageWarnings++;
     if (pageWarnings <= MAX_PAGE_WARNINGS) {
-      warnings.warn("PDF-PAGE source_path_sha=" + meta.sourcePathSha() + " path=" + meta.sourcePath() + " page=" + page
+      warnings.warn("PDF-PAGE source_path_sha=" + meta.sourcePathSha() + PATH_EQUALS + meta.sourcePath() + " page=" + page
           + (code == null ? "" : " code=" + code) + (detail == null ? "" : " " + detail)
           + (cause == null ? "" : " " + cause.getClass().getName() + ": " + cause.getMessage()));
     }
@@ -362,7 +367,7 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
       try {
         toClose.close();
       } catch (RuntimeException e) {
-        warnings.warn("PDF-FILE source_path_sha=" + meta.sourcePathSha() + " path=" + meta.sourcePath() + " closing the page source failed: "
+        warnings.warn("PDF-FILE source_path_sha=" + meta.sourcePathSha() + PATH_EQUALS + meta.sourcePath() + " closing the page source failed: "
             + e.getClass().getName() + ": " + e.getMessage());
       }
     }

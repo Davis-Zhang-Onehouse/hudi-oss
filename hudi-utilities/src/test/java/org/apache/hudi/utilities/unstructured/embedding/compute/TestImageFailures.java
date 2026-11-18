@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * reference fails the run; a missing or short stored file is PERMANENT naming the row; a storage failure's recorded text names
  * the root cause below a wrapper and is cut to {@link EmbeddingTableSchema#MAX_ERROR_CHARS} on a code-point boundary.
  */
-public class TestImageFailures {
+class TestImageFailures {
 
   private static final String PREFIX = "cannot read the image: ";
   private static final EmbeddingInput INPUT = new EmbeddingInput("f", 0, EmbeddingTableSchema.MODALITY_IMAGE, null);
@@ -118,7 +118,7 @@ public class TestImageFailures {
    * platform failure, naming the row and the reference's message, and gives no result.
    */
   @Test
-  public void referenceFaultFailsTheRunAsAPlatformFailure() {
+  void referenceFaultFailsTheRunAsAPlatformFailure() {
     for (Exception failure : new Exception[] {
         new BlobReferenceException("OUT_OF_LINE blob has null reference"),
         new UncheckedIOException(new BlobReferenceException("OUT_OF_LINE blob has null reference")),
@@ -136,7 +136,7 @@ public class TestImageFailures {
    * instead of a PERMANENT result that commits a null vector past it.
    */
   @Test
-  public void jvmFailureUnderTheDecoderFailsTheRunNotTheImage() {
+  void jvmFailureUnderTheDecoderFailsTheRunNotTheImage() {
     for (Exception failure : new Exception[] {
         new IIOException("Caught exception during read: ", new OutOfMemoryError("Java heap space")),
         new UncheckedIOException(new IIOException("read failed", new OutOfMemoryError("Java heap space"))),
@@ -160,7 +160,7 @@ public class TestImageFailures {
    * fault: PERMANENT, its text naming the row, so two files never share one text.
    */
   @Test
-  public void missingOrShortStoredFileIsPermanentNamingTheRow() {
+  void missingOrShortStoredFileIsPermanentNamingTheRow() {
     EmbeddingResult missing = ImageFailures.result(INPUT, new FileNotFoundException("File /t/a.bin does not exist"));
     assertEquals(EmbeddingResult.Status.PERMANENT_FAILURE, missing.getStatus());
     assertEquals("stored input of " + ROW + " cannot be read: FileNotFoundException: File /t/a.bin does not exist",
@@ -183,14 +183,14 @@ public class TestImageFailures {
 
   /** An access denial carrying a FileNotFoundException (the file is there and unreadable) stays a storage failure. */
   @Test
-  public void accessDeniedFileIsNotAMissingFile() {
+  void accessDeniedFileIsNotAMissingFile() {
     AccessDeniedException denied = new AccessDeniedException("/t/a.bin", null, "exists but cannot be opened");
     denied.initCause(new FileNotFoundException("/t/a.bin (Permission denied)"));
     assertEquals(EmbeddingResult.Status.RETRYABLE_FAILURE, ImageFailures.result(INPUT, new BlobReadException(denied)).getStatus());
   }
 
   @Test
-  public void wrappedOpenFailureNamesItsRootCause() {
+  void wrappedOpenFailureNamesItsRootCause() {
     EmbeddingResult result = ImageFailures.result(INPUT, new BlobReadException(
         new HoodieIOException("Exception creating input stream from file: x", new EOFException("Premature EOF"))));
     assertEquals(EmbeddingResult.Status.RETRYABLE_FAILURE, result.getStatus());
@@ -199,27 +199,27 @@ public class TestImageFailures {
   }
 
   @Test
-  public void directCauseTextIsUnchanged() {
+  void directCauseTextIsUnchanged() {
     EmbeddingResult result = ImageFailures.result(INPUT, new BlobReadException(new IOException("Connection reset (simulated)")));
     assertEquals(PREFIX + "IOException: Connection reset (simulated)", result.getError());
   }
 
   @Test
-  public void rootMessageAlreadyInTheWrapperIsNotRepeated() {
+  void rootMessageAlreadyInTheWrapperIsNotRepeated() {
     EmbeddingResult result = ImageFailures.result(INPUT, new BlobReadException(
         new HoodieIOException("open failed: timeout (simulated)", new IOException("timeout (simulated)"))));
     assertEquals(PREFIX + "HoodieIOException: open failed: timeout (simulated)", result.getError());
   }
 
   @Test
-  public void rootWithoutAMessageAddsNothing() {
+  void rootWithoutAMessageAddsNothing() {
     EmbeddingResult result = ImageFailures.result(INPUT, new BlobReadException(new HoodieIOException("open failed", new EOFException())));
     assertEquals(PREFIX + "HoodieIOException: open failed", result.getError());
   }
 
   /** A surrogate pair straddling the bound is dropped whole: the text ends one char short, never on a lone high surrogate. */
   @Test
-  public void composedTextIsCutBeforeAPairStraddlingTheBound() {
+  void composedTextIsCutBeforeAPairStraddlingTheBound() {
     String error = ImageFailures.result(INPUT, longRootFailure(EmbeddingTableSchema.MAX_ERROR_CHARS - 1)).getError();
     assertEquals(EmbeddingTableSchema.MAX_ERROR_CHARS - 1, error.length());
     assertFalse(Character.isHighSurrogate(error.charAt(error.length() - 1)), "no lone high surrogate at the end");
@@ -227,7 +227,7 @@ public class TestImageFailures {
 
   /** A surrogate pair ending exactly at the bound is kept whole. */
   @Test
-  public void composedTextKeepsAPairEndingAtTheBound() {
+  void composedTextKeepsAPairEndingAtTheBound() {
     String error = ImageFailures.result(INPUT, longRootFailure(EmbeddingTableSchema.MAX_ERROR_CHARS - 2)).getError();
     assertEquals(EmbeddingTableSchema.MAX_ERROR_CHARS, error.length());
     assertTrue(error.endsWith("😀"), "the pair ending at the bound is kept");
@@ -235,7 +235,7 @@ public class TestImageFailures {
 
   /** A cause chain that loops on itself below the storage failure still ends, naming the failure once. */
   @Test
-  public void selfCausedChainEnds() {
+  void selfCausedChainEnds() {
     EmbeddingResult result = ImageFailures.result(INPUT, new BlobReadException(new SelfCausedIOException()));
     assertEquals(EmbeddingResult.Status.RETRYABLE_FAILURE, result.getStatus());
     assertEquals(PREFIX + "SelfCausedIOException: self-caused (simulated)", result.getError());
@@ -243,7 +243,7 @@ public class TestImageFailures {
 
   /** A cause chain that loops through two links (a → b → a) still ends, bare or under a storage failure. */
   @Test
-  public void twoLinkCauseLoopEnds() {
+  void twoLinkCauseLoopEnds() {
     IOException b = new IOException("b");
     IOException a = new IOException("a", b);
     b.initCause(a);

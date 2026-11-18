@@ -25,7 +25,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
+import java.util.function.ToLongFunction;
 
 /**
  * How many prep tasks each group gets, from its {@link GroupStats} alone (driver math, no Spark). For group g with budget
@@ -63,7 +63,7 @@ public final class TaskPlan implements Serializable {
    * @throws IllegalArgumentException if {@code p} or a group's budget is not positive
    * @throws IllegalStateException    if a group or the whole plan would need more than {@code Integer.MAX_VALUE} partitions
    */
-  public static TaskPlan plan(List<GroupStats> stats, Function<String, Long> budget, int p) {
+  public static TaskPlan plan(List<GroupStats> stats, ToLongFunction<String> budget, int p) {
     if (p <= 0) {
       throw new IllegalArgumentException("parallelism must be positive, got " + p);
     }
@@ -77,24 +77,9 @@ public final class TaskPlan implements Serializable {
       if (group.files() <= 0) {
         continue;
       }
-      long groupTasks;
-      long solo;
-      if (BalanceGroups.UNMAPPED.equals(group.group())) {
-        groupTasks = 1;
-        solo = 0;
-      } else {
-        long groupBudget = budget.apply(group.group());
-        if (groupBudget <= 0) {
-          throw new IllegalArgumentException("budget of group " + group.group() + " must be positive, got " + groupBudget);
-        }
-        long rest = Math.max(0, group.bytes() - group.soloBytes());
-        // the files under the budget need at least one dealt task even when they weigh 0 in all
-        long dealt = Math.max(group.files() > group.soloFiles() ? 1 : 0, rest / groupBudget + (rest % groupBudget == 0 ? 0 : 1));
-        long byBytes = group.soloFiles() + dealt;
-        long floor = Math.min(group.files(), p);
-        groupTasks = Math.min(group.files(), Math.max(1, Math.max(byBytes, floor)));
-        solo = Math.min(group.soloFiles(), groupTasks);
-      }
+      boolean unmapped = BalanceGroups.UNMAPPED.equals(group.group());
+      long groupTasks = unmapped ? 1 : mappedTasks(group, budget.applyAsLong(group.group()), p);
+      long solo = unmapped ? 0 : Math.min(group.soloFiles(), groupTasks);
       if (groupTasks > Integer.MAX_VALUE || next + groupTasks > Integer.MAX_VALUE) {
         throw new IllegalStateException("group " + group.group() + " would need " + groupTasks + " prep tasks after "
             + next + " others, more than " + Integer.MAX_VALUE + " partitions; raise its budget");
@@ -106,6 +91,19 @@ public final class TaskPlan implements Serializable {
     }
     return new TaskPlan(Collections.unmodifiableMap(offsets), Collections.unmodifiableMap(tasks),
         Collections.unmodifiableMap(soloTasks), (int) Math.max(1, next));
+  }
+
+  /** The tasks of a mapped group: its solo files plus enough dealt tasks for its other bytes, at least min(files, p). */
+  private static long mappedTasks(GroupStats group, long groupBudget, int p) {
+    if (groupBudget <= 0) {
+      throw new IllegalArgumentException("budget of group " + group.group() + " must be positive, got " + groupBudget);
+    }
+    long rest = Math.max(0, group.bytes() - group.soloBytes());
+    // the files under the budget need at least one dealt task even when they weigh 0 in all
+    long dealt = Math.max(group.files() > group.soloFiles() ? 1 : 0, rest / groupBudget + (rest % groupBudget == 0 ? 0 : 1));
+    long byBytes = group.soloFiles() + dealt;
+    long floor = Math.min(group.files(), p);
+    return Math.min(group.files(), Math.max(1, Math.max(byBytes, floor)));
   }
 
   public int numPartitions() {

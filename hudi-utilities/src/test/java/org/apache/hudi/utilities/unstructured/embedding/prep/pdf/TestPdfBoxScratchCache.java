@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link PdfBoxScratchCache} over PDFBox's real scratch file: a local disk failure beneath PDFBox is the platform's, PDFBox's own
  * storage cap stays the file's failure, and data written reads back unchanged.
  */
-public class TestPdfBoxScratchCache {
+class TestPdfBoxScratchCache {
 
   private static final int PAGE = 4096;
 
@@ -49,7 +49,7 @@ public class TestPdfBoxScratchCache {
   Path dir;
 
   @Test
-  public void writtenDataReadsBack() throws IOException {
+  void writtenDataReadsBack() throws IOException {
     PdfBoxScratchCache scratch = new PdfBoxScratchCache(PdfBoxPageSource.PDFBOX_SCRATCH_FILE.create(dir.toFile(), 1L << 20));
     byte[] data = new byte[3 * PAGE + 17];
     for (int i = 0; i < data.length; i++) {
@@ -67,7 +67,7 @@ public class TestPdfBoxScratchCache {
   }
 
   @Test
-  public void storageCapStaysTheFilesFailure() throws IOException {
+  void storageCapStaysTheFilesFailure() throws IOException {
     // the cap is max.input.bytes: what the file asks PDFBox to keep beyond it is the file's failure, never the platform's.
     // PDFBox grows its scratch file 16 pages at a time and checks the cap before each growth, so 2 pages cap it at 16.
     PdfBoxScratchCache scratch = new PdfBoxScratchCache(PdfBoxPageSource.PDFBOX_SCRATCH_FILE.create(dir.toFile(), 2 * PAGE));
@@ -79,7 +79,7 @@ public class TestPdfBoxScratchCache {
   }
 
   @Test
-  public void scratchDirGoneBeforeTheFirstBufferIsAPlatformFailure() throws IOException {
+  void scratchDirGoneBeforeTheFirstBufferIsAPlatformFailure() throws IOException {
     Path scratchDir = Files.createDirectory(dir.resolve("scratch"));
     PdfBoxScratchCache scratch = new PdfBoxScratchCache(PdfBoxPageSource.PDFBOX_SCRATCH_FILE.create(scratchDir.toFile(), 1L << 20));
     try (RandomAccessStreamCache cache = scratch.create()) {
@@ -91,7 +91,7 @@ public class TestPdfBoxScratchCache {
   }
 
   @Test
-  public void cacheThatCannotBeCreatedIsAPlatformFailure() {
+  void cacheThatCannotBeCreatedIsAPlatformFailure() {
     // PDFBox's document would swallow an IOException here and fall back to an unbounded heap cache
     Path missing = dir.resolve("missing");
     PdfBoxScratchCache scratch = new PdfBoxScratchCache(PdfBoxPageSource.PDFBOX_SCRATCH_FILE.create(missing.toFile(), 1L << 20));
@@ -101,7 +101,7 @@ public class TestPdfBoxScratchCache {
   }
 
   @Test
-  public void injectedDiskFullIsAPlatformFailureAndTheFirstIsKept() throws IOException {
+  void injectedDiskFullIsAPlatformFailureAndTheFirstIsKept() throws IOException {
     FailingScratchCache failing = new FailingScratchCache();
     PdfBoxScratchCache scratch = new PdfBoxScratchCache(failing.create(dir.toFile(), 1L << 20));
     try (RandomAccessStreamCache cache = scratch.create(); RandomAccess buffer = cache.createBuffer()) {

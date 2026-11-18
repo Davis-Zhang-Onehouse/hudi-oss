@@ -22,8 +22,8 @@ import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientC
 import org.apache.hudi.utilities.unstructured.embedding.compute.RequestRateLimiter;
 import org.apache.hudi.utilities.unstructured.embedding.compute.SingleTokenReader;
 
-import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 /**
  * Where {@link VertexMultimodalEmbeddingClient} gets its bearer token, per {@value VertexClientConfig#CREDENTIAL_SOURCE_SUFFIX}:
@@ -46,7 +46,7 @@ abstract class VertexAccessTokens {
    *     request ({@link #current()}), and is the configuration too
    */
   static VertexAccessTokens of(VertexClientConfig config, LongSupplier clock, RequestRateLimiter.Sleeper sleeper,
-                               Function<String, String> environment) {
+                               UnaryOperator<String> environment) {
     return VertexClientConfig.CREDENTIAL_SOURCE_GOOGLE.equals(config.credentialSource())
         ? new GoogleAccessTokens(config, clock, sleeper, environment) : new TokenSource(config, environment);
   }
@@ -77,10 +77,10 @@ abstract class VertexAccessTokens {
   private static final class TokenSource extends VertexAccessTokens {
 
     private final VertexClientConfig config;
-    private final Function<String, String> environment;
+    private final UnaryOperator<String> environment;
     private String token;
 
-    TokenSource(VertexClientConfig config, Function<String, String> environment) {
+    TokenSource(VertexClientConfig config, UnaryOperator<String> environment) {
       this.config = config;
       this.environment = environment;
       this.token = read();

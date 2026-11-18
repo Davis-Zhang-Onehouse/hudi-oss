@@ -114,8 +114,8 @@ public class TestUnstructuredSourceTransformers {
   void explicitGuardAndOtherModesSubclassAreRejected() {
     UnstructuredSourceContract source = source(UnstructuredMode.BLOB);
     assertThrows(HoodieTransformPlanException.class, () -> source.transformerChain(Collections.singletonList("guard:" + GUARD)));
-    assertThrows(HoodieTransformPlanException.class,
-        () -> source.transformerChain(Collections.singletonList("other:" + EmbeddingSubclass.class.getName())));
+    List<String> otherModesSubclass = Collections.singletonList("other:" + EmbeddingSubclass.class.getName());
+    assertThrows(HoodieTransformPlanException.class, () -> source.transformerChain(otherModesSubclass));
   }
 
 }

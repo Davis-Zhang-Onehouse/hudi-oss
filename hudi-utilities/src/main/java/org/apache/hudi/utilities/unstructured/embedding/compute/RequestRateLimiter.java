@@ -193,7 +193,7 @@ public final class RequestRateLimiter {
     } catch (NumberFormatException e) {
       throw new EmbeddingClientConfigException("Config " + rateKey + "=" + rawRate + " is not a number");
     }
-    if (!(rate > 0d) || Double.isInfinite(rate)) {
+    if (Double.isNaN(rate) || rate <= 0d || Double.isInfinite(rate)) {
       throw new EmbeddingClientConfigException("Config " + rateKey + "=" + rawRate + " must be a number > 0");
     }
     int burst = DEFAULT_BURST;

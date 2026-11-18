@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code -Dhudi.test.whisper.cache.dir} names a directory filled by fetch-inputs.sh (CI does not set it).
  */
 @EnabledIfSystemProperty(named = WhisperTestClips.CACHE_DIR_PROPERTY, matches = ".+")
-public class TestWhisperTranscriberModel {
+class TestWhisperTranscriberModel {
 
   private static final Logger LOG = LoggerFactory.getLogger(TestWhisperTranscriberModel.class);
 
@@ -52,12 +52,12 @@ public class TestWhisperTranscriberModel {
   private static final double MAX_WER = 0.10;
 
   @Test
-  public void baseEnTranscribesThirtySeconds() throws IOException {
+  void baseEnTranscribesThirtySeconds() throws IOException {
     transcribeAndCheck("base.en");
   }
 
   @Test
-  public void smallEnTranscribesThirtySeconds() throws IOException {
+  void smallEnTranscribesThirtySeconds() throws IOException {
     Assumptions.assumeTrue(WhisperTestClips.hasModel("small.en"), "small.en not in the cache");
     transcribeAndCheck("small.en");
   }
@@ -68,7 +68,7 @@ public class TestWhisperTranscriberModel {
    * byte count breaks the segment source's invariant and must fail as a {@link PrepPlatformException} (class P).
    */
   @Test
-  public void corruptInputIsNeverAnIllegalArgumentException() throws IOException {
+  void corruptInputIsNeverAnIllegalArgumentException() throws IOException {
     assertTrue(WhisperTestClips.hasModel("base.en"), "missing " + WhisperTestClips.model("base.en"));
     TypedProperties props = new TypedProperties();
     props.setProperty(WhisperConfig.MODEL.key(), "base.en");

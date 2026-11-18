@@ -89,7 +89,7 @@ import static org.mockito.Mockito.mock;
  * and only what becomes of the selected objects is the blob table's.
  */
 @Tag("functional")
-public class TestUnstructuredDataSource extends UtilitiesTestBase {
+class TestUnstructuredDataSource extends UtilitiesTestBase {
 
   private static final String BUCKET = "landing";
   private static final Instant T0 = Instant.parse("2026-01-02T10:00:00.000Z");
@@ -99,17 +99,17 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   Path tempDir;
 
   @BeforeAll
-  public static void initClass() throws Exception {
+  static void initClass() throws Exception {
     UtilitiesTestBase.initTestServices();
   }
 
   @AfterAll
-  public static void cleanupClass() throws Exception {
+  static void cleanupClass() {
     UtilitiesTestBase.cleanUpUtilitiesTestServices();
   }
 
   @BeforeEach
-  public void mapBuckets() {
+  void mapBuckets() {
     BucketFolderFileSystem.install(jsc.hadoopConfiguration(), objects());
   }
 
@@ -211,14 +211,15 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void completionTimeCheckpointIsRefusedBeforeReadingEvents() {
-    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-        () -> source(props()).fetchNext(Option.of(new StreamerCheckpointV2("20240101000000#folder/object.pdf")), Long.MAX_VALUE));
+  void completionTimeCheckpointIsRefusedBeforeReadingEvents() {
+    UnstructuredDataSource source = source(props());
+    Option<Checkpoint> completionTimeCheckpoint = Option.of(new StreamerCheckpointV2("20240101000000#folder/object.pdf"));
+    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> source.fetchNext(completionTimeCheckpoint, Long.MAX_VALUE));
     assertTrue(failure.getMessage().contains("only StreamerCheckpointV1"), failure.getMessage());
   }
 
   @Test
-  public void numInstantsCommitsFromTheCheckpointsCommitInRequestedTimeOrder() {
+  void numInstantsCommitsFromTheCheckpointsCommitInRequestedTimeOrder() {
     commit(put(BUCKET, "a.pdf", 10));
     commit(put(BUCKET, "b.pdf", 20));
     commit(put(BUCKET, "c.pdf", 30));
@@ -245,7 +246,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
    * nothing in it follows the key.
    */
   @Test
-  public void numInstantsOfOneStallsAtTheLastKeyOfACommit() {
+  void numInstantsOfOneStallsAtTheLastKeyOfACommit() {
     commit(put(BUCKET, "a.pdf", 10));
     commit(put(BUCKET, "b.pdf", 20));
     List<String> commits = commits();
@@ -258,7 +259,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void firstRoundWithoutACheckpointUnsetOrUptoLatestSnapshotsTheWholeEventsTable() {
+  void firstRoundWithoutACheckpointUnsetOrUptoLatestSnapshotsTheWholeEventsTable() {
     commit(put(BUCKET, "a.pdf", 10));
     commit(put(BUCKET, "b.pdf", 20));
     commit(put(BUCKET, "c.pdf", 30));
@@ -275,7 +276,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void firstRoundWithoutACheckpointReadLatestReadsTheFirstCommitsFromTheStart() {
+  void firstRoundWithoutACheckpointReadLatestReadsTheFirstCommitsFromTheStart() {
     commit(put(BUCKET, "a.pdf", 10));
     commit(put(BUCKET, "b.pdf", 20));
     commit(put(BUCKET, "c.pdf", 30));
@@ -294,7 +295,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void anEarlierEventsCommitStillInFlightBlocksTheRoundUnderTheDefaultPolicy() throws IOException {
+  void anEarlierEventsCommitStillInFlightBlocksTheRoundUnderTheDefaultPolicy() throws IOException {
     commit(put(BUCKET, "a.pdf", 10));
     commit(put(BUCKET, "b.pdf", 20));
     List<String> commits = commits();
@@ -331,7 +332,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void sameKeyInTwoBucketsIsTwoObjectsUnlessASplitFallsBetweenThem() {
+  void sameKeyInTwoBucketsIsTwoObjectsUnlessASplitFallsBetweenThem() {
     commit(put("bucket-a", "same.pdf", 10), put("bucket-b", "same.pdf", 10), put(BUCKET, "z.pdf", 10));
     Round whole = round(source(props()), Option.empty(), Long.MAX_VALUE);
     assertEquals(Arrays.asList("bucket-a/same.pdf", "bucket-b/same.pdf", BUCKET + "/z.pdf"), keys(whole));
@@ -349,7 +350,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void zeroByteObjectsAndThePathFiltersAreApplied() {
+  void zeroByteObjectsAndThePathFiltersAreApplied() {
     commit(put(BUCKET, "docs/a.pdf", 10), put(BUCKET, "docs/empty.pdf", 0), put(BUCKET, "img/b.png", 20),
         put(BUCKET, "docs/tmp/c.pdf", 30));
     TypedProperties props = props();
@@ -361,7 +362,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void theRegexIgnorePrefixAndLegacyKeyPrefixPathKeysAreApplied() {
+  void theRegexIgnorePrefixAndLegacyKeyPrefixPathKeysAreApplied() {
     commit(put(BUCKET, "in/a.pdf", 10), put(BUCKET, "in/skip/b.pdf", 20), put(BUCKET, "in/c.png", 30), put(BUCKET, "out/d.pdf", 40));
     TypedProperties regex = props();
     regex.setProperty(CloudSourceConfig.SELECT_RELATIVE_PATH_PREFIX.key(), "in/");
@@ -376,7 +377,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void extensionsAreMatchedCaseSensitivelyWithTheirDot() {
+  void extensionsAreMatchedCaseSensitivelyWithTheirDot() {
     commit(put(BUCKET, "a.pdf", 10), put(BUCKET, "IMG.JPG", 20), put(BUCKET, "c.jpg", 30), put(BUCKET, "report_pdf", 40),
         put(BUCKET, "notes.txt", 50));
     assertEquals(keys("a.pdf", "c.jpg"), keys(round(source(props()), Option.empty(), Long.MAX_VALUE)));
@@ -387,7 +388,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
 
   /** S3EventsHoodieIncrSource's behaviour: a key holding a bare {@code %} cannot be decoded again, so the round fails. */
   @Test
-  public void keyHoldingABarePercentFailsTheRound() {
+  void keyHoldingABarePercentFailsTheRound() {
     commit(put(BUCKET, "docs/q3 report 100%.pdf", 10));
     Exception failure = assertThrows(Exception.class, () -> round(source(props()), Option.empty(), Long.MAX_VALUE));
     assertTrue(chain(failure).contains("Failed to generate path to cloud file"), chain(failure));
@@ -402,7 +403,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void anFsPrefixWithoutAFileSystemFailsTheRound() {
+  void anFsPrefixWithoutAFileSystemFailsTheRound() {
     commit(put(BUCKET, "a.pdf", 10));
     TypedProperties props = props();
     props.setProperty(S3EventsHoodieIncrSourceConfig.S3_FS_PREFIX.key(), "nosuchfs");
@@ -410,7 +411,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void defaultExtensionsReadRawBytesAndExcludeStructuredEvents() {
+  void defaultExtensionsReadRawBytesAndExcludeStructuredEvents() {
     String[] names = Arrays.stream(BlobTableConfig.FILE_EXTENSIONS.defaultValue().split(","))
         .map(extension -> "raw/file." + extension).toArray(String[]::new);
     for (String name : names) {
@@ -428,7 +429,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void fileCapKeepsTheStockDefaultAndExplicitBudgetSplits() {
+  void fileCapKeepsTheStockDefaultAndExplicitBudgetSplits() {
     TypedProperties defaults = props();
     source(defaults);
     assertFalse(defaults.containsKey(CloudSourceConfig.SOURCE_MAX_FILES_PER_SYNC.key()));
@@ -446,7 +447,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void repeatedEventsOfOnePathBuildOneRowWhateverTheirSizes() {
+  void repeatedEventsOfOnePathBuildOneRowWhateverTheirSizes() {
     Event same = put(BUCKET, "same.pdf", 10);
     commit(same.withSequencer("01"), same.withSequencer("02"),
         put(BUCKET, "changed.pdf", 5).withSequencer("01"),
@@ -461,7 +462,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void existenceCheckTrueSkipsMissingAndFalseAttemptsRead() throws Exception {
+  void existenceCheckTrueSkipsMissingAndFalseAttemptsRead() throws Exception {
     commit(put(BUCKET, "exists.pdf", 10), created(BUCKET, "missing.pdf", 10, T0));
     TypedProperties checked = props();
     checked.setProperty(CloudSourceConfig.ENABLE_EXISTS_CHECK.key(), "true");
@@ -489,7 +490,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void configuredPathPartitionFieldsPreserveMetadata() {
+  void configuredPathPartitionFieldsPreserveMetadata() {
     commit(put(BUCKET, "country=US/source_file_name=ignored/a.pdf", 10));
     TypedProperties props = props();
     props.setProperty(CloudSourceConfig.PATH_BASED_PARTITION_FIELDS.key(), "country,missing,source_file_name");
@@ -502,7 +503,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void caseVariantPathPartitionsPreserveFixedMetadata() {
+  void caseVariantPathPartitionsPreserveFixedMetadata() {
     assertFalse(Boolean.parseBoolean(sparkSession.conf().get("spark.sql.caseSensitive", "false")));
     String key = "SOURCE_PATH_SHA=directory-key/SOURCE_FILE_NAME=directory-name/a.pdf";
     commit(put(BUCKET, key, 10));
@@ -520,7 +521,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void disjointExtensionConstraintsSelectNothing() {
+  void disjointExtensionConstraintsSelectNothing() {
     commit(put(BUCKET, "a.pdf", 10), put(BUCKET, "b.png", 10));
     TypedProperties props = props();
     props.setProperty(BlobTableConfig.FILE_EXTENSIONS.key(), "pdf");
@@ -529,10 +530,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   private static final String INJECTOR = HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key();
-  private static final String CODEC = HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME.key();
-  private static final String BLOOM = HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED.key();
   private static final String RECORD_KEY = KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key();
-  private static final String KEY_GENERATOR = HoodieWriteConfig.KEYGENERATOR_CLASS_NAME.key();
   private static final String BLOB_KEY = "source_path_sha,source_modification_time,source_file_size";
   private static final String EMBEDDING_KEY = BLOB_KEY + ",modality,chunk_id";
 
@@ -548,7 +546,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
 
   /** The source reads its job and cloud; the settings and transformers are its contract's (TestUnstructuredSourceContract). */
   @Test
-  public void modeAndCloud() {
+  void modeAndCloud() {
     UnstructuredDataSource blob = source(props());
     assertEquals(UnstructuredMode.BLOB, blob.mode());
     assertEquals(UnstructuredCloud.S3, blob.cloud());
@@ -579,7 +577,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
   }
 
   @Test
-  public void datafileFormatStillRefused() {
+  void datafileFormatStillRefused() {
     TypedProperties props = props();
     props.setProperty(CloudSourceConfig.DATAFILE_FORMAT.key(), "parquet");
     assertEquals(CloudSourceConfig.DATAFILE_FORMAT.key() + " must be empty for UnstructuredDataSource (mode blob); the source reads raw "
@@ -591,7 +589,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
    * merged properties, but the source does not depend on them.
    */
   @Test
-  public void invariantRequiredKeysNotReadThroughSourceProps() {
+  void invariantRequiredKeysNotReadThroughSourceProps() {
     commit(put(BUCKET, "a.pdf", 10), put(BUCKET, "b.pdf", INLINE_MAX + 1));
     for (TypedProperties jobProps : Arrays.asList(props(), embeddingProps())) {
       // the keys the merge adds to a job that sets only its mode and cloud: every key the contract declares

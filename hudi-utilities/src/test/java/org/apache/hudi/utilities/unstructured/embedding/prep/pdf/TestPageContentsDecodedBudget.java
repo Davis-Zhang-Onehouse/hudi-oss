@@ -50,7 +50,9 @@ class TestPageContentsDecodedBudget {
   @ValueSource(ints = {2, 1000})
   void repeatedStreamAboveTheBudgetTogetherIsRefused(int listings) throws Exception {
     try (PDDocument document = reload(600, COSName.FLATE_DECODE, listings)) {
-      PageFailure failure = assertThrows(PageFailure.class, () -> guard().checkPage(document.getPage(0)));
+      StreamDecodeGuard guard = guard();
+      PDPage page = document.getPage(0);
+      PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(page));
       assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
       assertTrue(failure.getMessage().contains("together"), failure.getMessage());
     }

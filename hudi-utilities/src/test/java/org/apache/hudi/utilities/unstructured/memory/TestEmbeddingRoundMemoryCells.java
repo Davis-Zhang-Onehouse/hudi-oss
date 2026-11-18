@@ -95,7 +95,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *   {@link #PDF_OVER_HEAP_BULK_MIB}.</li>
  * </ul>
  */
-public class TestEmbeddingRoundMemoryCells extends EmbeddingRoundTestBase {
+class TestEmbeddingRoundMemoryCells extends EmbeddingRoundTestBase {
 
   static final String REFERENCE_HEAP = "576m";
   private static final long CELL_TIMEOUT_MINUTES = 15;
@@ -134,7 +134,7 @@ public class TestEmbeddingRoundMemoryCells extends EmbeddingRoundTestBase {
 
   @ParameterizedTest(name = "cell {0}")
   @ValueSource(strings = {"small", "4instants", "skew-light", "skew", "1k", "prep-only", "pdf-over-heap-light", "pdf-over-heap"})
-  public void cellPassesAtTheReferenceHeap(String cell) throws Exception {
+  void cellPassesAtTheReferenceHeap(String cell) throws Exception {
     // a report of an earlier run must not stand for this one
     Files.deleteIfExists(Paths.get("target", "memory-cells", cell + ".txt"));
     assumeTrue(selectedCells().contains(cell), "memory cell " + cell + " not selected (-Dembedding.memory.cells)");

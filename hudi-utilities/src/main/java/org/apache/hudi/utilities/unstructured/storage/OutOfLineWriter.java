@@ -25,7 +25,6 @@ import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.IOType;
 import org.apache.hudi.common.table.HoodieTableVersion;
 import org.apache.hudi.common.table.marker.MarkerType;
-import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.VisibleForTesting;
@@ -202,10 +201,6 @@ public final class OutOfLineWriter {
     }
   }
 
-  private static boolean markersEnabled(Properties props) {
-    return ConfigUtils.getBooleanWithAltKeys(props, HoodieWriteConfig.BLOB_MARKERS_ENABLE);
-  }
-
   /** A bounded streaming operation; callers classify source and target failures using their existing contracts. */
   @FunctionalInterface
   public interface StreamingWrite {
@@ -231,14 +226,10 @@ public final class OutOfLineWriter {
    */
   public String newPath(String partition) {
     validatePartition(partition);
-    String directory;
-    switch (layoutVersion) {
-      case "1":
-        directory = ManagedBlobPaths.FOLDER + (StringUtils.isNullOrEmpty(partition) ? "" : "/" + partition);
-        break;
-      default:
-        throw new UnsupportedOperationException("Unknown blob layout version " + layoutVersion);
+    if (!"1".equals(layoutVersion)) {
+      throw new UnsupportedOperationException("Unknown blob layout version " + layoutVersion);
     }
+    String directory = ManagedBlobPaths.FOLDER + (StringUtils.isNullOrEmpty(partition) ? "" : "/" + partition);
     String name = FSUtils.makeBaseFileName(instantTime, FSUtils.makeWriteToken(taskContextSupplier),
         FSUtils.createNewFileId(FSUtils.createNewFileIdPfx(), 0), FILE_EXTENSION);
     return directory + "/" + name;
@@ -261,6 +252,7 @@ public final class OutOfLineWriter {
     try (OutputStream out = storage.create(target, false)) {
       created = true;
       stream.write(out);
+      // by design: on any failure, an Error included, the partial file is removed before the failure propagates
     } catch (Throwable failure) {
       // an Error too (a codec class missing on the executor): the partial file must not outlive the write that failed
       if (created) {

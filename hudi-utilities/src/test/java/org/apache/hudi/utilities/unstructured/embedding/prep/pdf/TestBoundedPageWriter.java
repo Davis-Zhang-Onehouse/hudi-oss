@@ -27,12 +27,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** {@link BoundedPageWriter} keeps at most its char budget and never half of a surrogate pair. */
-public class TestBoundedPageWriter {
+class TestBoundedPageWriter {
 
   private static final String EMOJI = new String(Character.toChars(0x1F600));
 
   @Test
-  public void stringCutBeforeAHighSurrogateDropsTheWholePair() throws IOException {
+  void stringCutBeforeAHighSurrogateDropsTheWholePair() throws IOException {
     BoundedPageWriter writer = new BoundedPageWriter(3);
     writer.write("ab" + EMOJI);
     assertEquals("ab", writer.text());
@@ -40,7 +40,7 @@ public class TestBoundedPageWriter {
   }
 
   @Test
-  public void charArrayCutBeforeAHighSurrogateDropsTheWholePair() throws IOException {
+  void charArrayCutBeforeAHighSurrogateDropsTheWholePair() {
     BoundedPageWriter writer = new BoundedPageWriter(3);
     char[] chars = ("x" + "ab" + EMOJI + "y").toCharArray();
     writer.write(chars, 1, 4);
@@ -49,7 +49,7 @@ public class TestBoundedPageWriter {
   }
 
   @Test
-  public void pairEndingAtTheBudgetIsKeptWhole() throws IOException {
+  void pairEndingAtTheBudgetIsKeptWhole() throws IOException {
     BoundedPageWriter string = new BoundedPageWriter(4);
     string.write("ab" + EMOJI + "c");
     assertEquals("ab" + EMOJI, string.text());
@@ -62,7 +62,7 @@ public class TestBoundedPageWriter {
   }
 
   @Test
-  public void noRoomLeftKeepsTheTextAndMarksTruncation() throws IOException {
+  void noRoomLeftKeepsTheTextAndMarksTruncation() throws IOException {
     BoundedPageWriter string = new BoundedPageWriter(2);
     string.write("ab");
     assertFalse(string.truncated(), "text that fits exactly is not truncated");
@@ -78,7 +78,7 @@ public class TestBoundedPageWriter {
   }
 
   @Test
-  public void writesAfterTruncationAreDropped() throws IOException {
+  void writesAfterTruncationAreDropped() throws IOException {
     BoundedPageWriter writer = new BoundedPageWriter(3);
     writer.write("abcd");
     writer.write("e");

@@ -64,7 +64,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * a cell without audio has no speech row and its segments end with {@link FfmpegAudioSegmentSource#REASON_NO_AUDIO_STREAM}. The
  * frame columns are checked by the video codec matrix.
  */
-public class TestAudioCodecMatrix {
+class TestAudioCodecMatrix {
 
   private static final String RESOURCES = "/video/codec-matrix/";
   /**
@@ -96,7 +96,7 @@ public class TestAudioCodecMatrix {
   }
 
   @BeforeAll
-  public static void copyClips() throws IOException {
+  static void copyClips() throws IOException {
     for (String[] cell : cells()) {
       try (InputStream in = TestAudioCodecMatrix.class.getResourceAsStream(RESOURCES + cell[0])) {
         assertNotNull(in, cell[0]);
@@ -107,8 +107,8 @@ public class TestAudioCodecMatrix {
 
   @ParameterizedTest(name = "{index} {0}")
   @MethodSource("cells")
-  public void cellSpeechThroughPrep(String file, String cell, String container, String video, String audio, String startMs,
-                                    String keyframesMs) throws IOException {
+  void cellSpeechThroughPrep(String file, String cell, String container, String video, String audio, String startMs,
+                             String keyframesMs) throws IOException {
     Path clip = dir.resolve(file);
     TypedProperties props = new TypedProperties();
     props.setProperty(AudioConfigKeys.ENABLED.key(), "true");

@@ -40,8 +40,10 @@ import org.apache.spark.sql.types.StructType;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * The {@code prepared_image} value of a derived payload (a video frame), built while the embedding round preprocesses (the
@@ -72,7 +74,7 @@ public final class PreparedInputs implements Serializable, Closeable {
   public static final StructType REFERENCE_STRUCT =
       (StructType) BLOB_STRUCT.apply(HoodieSchema.Blob.EXTERNAL_REFERENCE).dataType();
   /** The largest payload a row can carry: one Java array. */
-  static final long MAX_PAYLOAD_BYTES = Integer.MAX_VALUE - 8;
+  static final long MAX_PAYLOAD_BYTES = Integer.MAX_VALUE - 8L;
 
   private final long inlineMaxBytes;
   private final double inlineMaxHeapFraction;
@@ -85,7 +87,7 @@ public final class PreparedInputs implements Serializable, Closeable {
    * once closed, so a write after {@link #close} is refused rather than given new threads. Volatile: the task's completion may
    * close it from another thread.
    */
-  private transient volatile OutOfLineWritePool writes;
+  private transient AtomicReference<OutOfLineWritePool> writes = new AtomicReference<>();
   /** Set by {@link #close}: a write after it is refused, never given a new pool. */
   private transient volatile boolean closed;
 
@@ -132,7 +134,7 @@ public final class PreparedInputs implements Serializable, Closeable {
       byte[] bytes = readWhole(payload, sizeBytes, contentType);
       return outOfLine(PayloadWriter.write(writer(target), writes(), target, bytes), sizeBytes);
     }
-    OutOfLineWritePool pool = writes;
+    OutOfLineWritePool pool = writes.get();
     if (pool != null) {
       // a background write already failed (or was dropped by close): the round fails now, as it would at its barrier
       try {
@@ -152,8 +154,9 @@ public final class PreparedInputs implements Serializable, Closeable {
    * the task reports its end, so the task succeeds only with every file of its rows.
    */
   public void awaitWrites() {
-    if (writes != null) {
-      writes.awaitAll();
+    OutOfLineWritePool pool = writes.get();
+    if (pool != null) {
+      pool.awaitAll();
     }
   }
 
@@ -165,19 +168,25 @@ public final class PreparedInputs implements Serializable, Closeable {
   @Override
   public void close() {
     closed = true;
-    OutOfLineWritePool pool = writes;
+    OutOfLineWritePool pool = writes.get();
     if (pool != null) {
       pool.close();
     }
   }
 
+  /** A deserialized copy starts with no write pool, as a transient field did. */
+  private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+    in.defaultReadObject();
+    writes = new AtomicReference<>();
+  }
+
   /** The task's write pool, started on its first background write. */
   private OutOfLineWritePool writes() {
-    OutOfLineWritePool pool = writes;
+    OutOfLineWritePool pool = writes.get();
     if (pool == null) {
       pool = new OutOfLineWritePool();
       // published before closed is read: a close racing this either sees the pool or is seen here
-      writes = pool;
+      writes.set(pool);
       if (closed) {
         // closed before its first background write: the refusal comes from a closed pool, as for any write after close
         pool.close();

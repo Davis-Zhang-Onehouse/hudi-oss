@@ -80,6 +80,7 @@ final class PinnedWhisperModel {
   private static void backOff(int attempt) throws IOException {
     if (attempt < ATTEMPTS) {
       try {
+        // by design: a fixed retry backoff (not a wait for a condition), so a transient mirror failure gets time to clear
         Thread.sleep(5_000L * attempt);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();

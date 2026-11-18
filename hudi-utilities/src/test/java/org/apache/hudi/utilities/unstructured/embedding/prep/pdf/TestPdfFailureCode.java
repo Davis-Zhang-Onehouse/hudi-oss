@@ -29,10 +29,10 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** {@link PdfFailureCode#format}. */
-public class TestPdfFailureCode {
+class TestPdfFailureCode {
 
   @Test
-  public void cycleInPdfFailureDetailsTerminates() {
+  void cycleInPdfFailureDetailsTerminates() {
     IOException first = new IOException("first");
     IOException second = new IOException("second", first);
     first.initCause(second);
@@ -42,7 +42,7 @@ public class TestPdfFailureCode {
   private static final String EMOJI = new String(Character.toChars(0x1F600));
 
   @Test
-  public void formatNeverSplitsASurrogatePair() {
+  void formatNeverSplitsASurrogatePair() {
     // the 1024-char cut lands between the two halves of a supplementary character
     String prefix = "PAGE_ERROR: java.io.IOException: ";
     String pad = repeat('a', PdfFailureCode.MAX_DETAIL_CHARS - prefix.length() - 1);

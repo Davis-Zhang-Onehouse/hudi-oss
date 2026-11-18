@@ -140,16 +140,9 @@ final class BlockBufferedBlob implements SeekableBlob {
    */
   private int fill(long pos) throws IOException {
     long start = pos - pos % blockBytes;
-    int slot = oldest;
-    for (int i = 0; i < BLOCKS; i++) {
-      if (starts[i] == start) {
-        slot = i;
-      }
-    }
+    int slot = slotFor(start);
     int size = (int) Math.min(blockBytes, length - start);
-    if (data[slot] == null) {
-      data[slot] = new byte[blockBytes];
-    }
+    byte[] block = blockOf(slot);
     starts[slot] = -1;
     valid[slot] = 0;
     int read = 0;
@@ -158,7 +151,7 @@ final class BlockBufferedBlob implements SeekableBlob {
         source.seek(start);
       }
       while (read < size) {
-        int n = source.read(data[slot], read, size - read);
+        int n = source.read(block, read, size - read);
         if (n <= 0) {
           // the end, or a source that returned nothing: the caller's read goes to the source unbuffered
           break;
@@ -183,6 +176,25 @@ final class BlockBufferedBlob implements SeekableBlob {
     keep(slot, start, read);
     // nothing at pos was read (the fill failed, or the source ended, before it): the caller reads unbuffered
     return start + read > pos ? slot : -1;
+  }
+
+  /** The slot that holds part of the block at {@code start} already (a fill that failed part way), else the oldest. */
+  private int slotFor(long start) {
+    int slot = oldest;
+    for (int i = 0; i < BLOCKS; i++) {
+      if (starts[i] == start) {
+        slot = i;
+      }
+    }
+    return slot;
+  }
+
+  /** The buffer of {@code slot}, allocated at its first fill. */
+  private byte[] blockOf(int slot) {
+    if (data[slot] == null) {
+      data[slot] = new byte[blockBytes];
+    }
+    return data[slot];
   }
 
   /** Records what a fill read; a block refilled in place keeps the other slot's age, so it does not evict the other block. */

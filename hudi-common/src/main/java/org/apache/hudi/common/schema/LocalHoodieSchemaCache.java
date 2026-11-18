@@ -82,14 +82,13 @@ public class LocalHoodieSchemaCache implements Serializable {
       }
       return nullSchemaVersionId;
     }
-    Integer versionId = this.schemaToVersionId.get(schema);
-    if (versionId == null) {
-      versionId = nextVersionId++;
-      // publish id -> schema first, so any thread that can see the id can resolve it
-      this.versionIdToSchema.put(versionId, schema);
-      this.schemaToVersionId.put(schema, versionId);
-    }
-    return versionId;
+    // computeIfAbsent installs schema -> id only after the function returns: id -> schema is published first, so any thread that
+    // can see the id can resolve it
+    return this.schemaToVersionId.computeIfAbsent(schema, s -> {
+      Integer versionId = nextVersionId++;
+      this.versionIdToSchema.put(versionId, s);
+      return versionId;
+    });
   }
 
   /**

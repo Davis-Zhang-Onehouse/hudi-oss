@@ -23,16 +23,17 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Content-stream element bounds count nested containers as well as scalar values. */
-public class TestStreamStructureScanner {
+class TestStreamStructureScanner {
 
   @ParameterizedTest
   @ValueSource(strings = {"[]", "<<>>", "[[]]"})
-  public void nestedContainersAboveElementCapAreRefused(String child) {
+  void nestedContainersAboveElementCapAreRefused(String child) {
     int elementsPerChild = "[[]]".equals(child) ? 2 : 1;
     String content = "[" + child.repeat(StreamStructureScanner.MAX_OPERANDS / elementsPerChild + 1) + "] n";
     StreamStructureScanner.Refusal failure = assertThrows(StreamStructureScanner.Refusal.class, () -> scan(content));
@@ -42,20 +43,21 @@ public class TestStreamStructureScanner {
 
   @ParameterizedTest
   @ValueSource(strings = {"[]", "<<>>", "[[]]"})
-  public void nestedContainersAtElementCapAreAccepted(String child) throws Exception {
+  void nestedContainersAtElementCapAreAccepted(String child) {
     int elementsPerChild = "[[]]".equals(child) ? 2 : 1;
-    scan("[" + child.repeat(StreamStructureScanner.MAX_OPERANDS / elementsPerChild) + "] n");
+    String content = "[" + child.repeat(StreamStructureScanner.MAX_OPERANDS / elementsPerChild) + "] n";
+    assertDoesNotThrow(() -> scan(content));
   }
 
   @ParameterizedTest
   @ValueSource(strings = {"[0]", "<</A 0>>"})
-  public void childContainersAndScalarsShareTheElementCap(String child) {
+  void childContainersAndScalarsShareTheElementCap(String child) {
     int elementsPerChild = "[0]".equals(child) ? 2 : 3;
     String content = "[" + child.repeat(StreamStructureScanner.MAX_OPERANDS / elementsPerChild + 1) + "] n";
     assertThrows(StreamStructureScanner.Refusal.class, () -> scan(content));
   }
 
-  private static void scan(String content) throws Exception {
+  private static void scan(String content) {
     try (StreamStructureScanner.Operands scanner = new StreamStructureScanner.Operands("test content stream", Long.MAX_VALUE)) {
       byte[] bytes = content.getBytes(StandardCharsets.US_ASCII);
       scanner.write(bytes, 0, bytes.length);

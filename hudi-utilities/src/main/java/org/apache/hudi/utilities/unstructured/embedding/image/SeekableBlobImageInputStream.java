@@ -189,26 +189,45 @@ public class SeekableBlobImageInputStream extends ImageInputStreamImpl {
       return 0;
     }
     if (served != null) {
-      if (tracking && served.ranges() > MAX_DISTINCT_RANGES) {
-        // too scattered to track: from here the bound counts bytes served, re-reads included, never stricter than that
-        tracking = false;
-        served.clear();
-      }
-      // the end of the blob, not the bound, ends a read past it: only bytes the blob has count against the bound
-      long requestedEnd = Math.max(streamPos + 1, Math.min(streamPos + len, blob.length()));
-      long allowedEnd = tracking ? served.allowedEnd(streamPos, requestedEnd, maxBytesRead - served.total())
-          : requestedEnd - streamPos <= Math.max(0L, maxBytesRead - servedTotal) ? requestedEnd
-          : streamPos + Math.max(0L, maxBytesRead - servedTotal);
-      // a primitive read (readShort, readInt, readLong) cut short is an EOFException of the reader, which would hide the bound
-      if (allowedEnd <= streamPos || (allowedEnd < requestedEnd && len <= PRIMITIVE_READ_MAX_BYTES)
-          || servedTotal >= maxServedBytes) {
-        throw new ImageHeaderException("image header not found within " + maxBytesRead + " bytes read");
-      }
-      if (allowedEnd < requestedEnd) {
-        len = (int) (allowedEnd - streamPos);
-      }
-      fetchPrefix();
+      len = boundedLength(len);
     }
+    return fill(buffer, offset, len);
+  }
+
+  /**
+   * For a bounded stream: fails once the bound is reached, returns {@code len} shortened to what the bound still allows, and
+   * fetches the prefix.
+   */
+  private int boundedLength(int len) throws IOException {
+    if (tracking && served.ranges() > MAX_DISTINCT_RANGES) {
+      // too scattered to track: from here the bound counts bytes served, re-reads included, never stricter than that
+      tracking = false;
+      served.clear();
+    }
+    // the end of the blob, not the bound, ends a read past it: only bytes the blob has count against the bound
+    long requestedEnd = Math.max(streamPos + 1, Math.min(streamPos + len, blob.length()));
+    long allowedEnd;
+    if (tracking) {
+      allowedEnd = served.allowedEnd(streamPos, requestedEnd, maxBytesRead - served.total());
+    } else {
+      long room = Math.max(0L, maxBytesRead - servedTotal);
+      allowedEnd = requestedEnd - streamPos <= room ? requestedEnd : streamPos + room;
+    }
+    // a primitive read (readShort, readInt, readLong) cut short is an EOFException of the reader, which would hide the bound
+    if (allowedEnd <= streamPos || (allowedEnd < requestedEnd && len <= PRIMITIVE_READ_MAX_BYTES)
+        || servedTotal >= maxServedBytes) {
+      throw new ImageHeaderException("image header not found within " + maxBytesRead + " bytes read");
+    }
+    int bounded = len;
+    if (allowedEnd < requestedEnd) {
+      bounded = (int) (allowedEnd - streamPos);
+    }
+    fetchPrefix();
+    return bounded;
+  }
+
+  /** Fills {@code len} bytes from the prefix and then the blob, counting them against the bound; -1 at once at the end. */
+  private int fill(byte[] buffer, int offset, int len) throws IOException {
     // ImageInputStreamImpl's primitive reads expect their bytes in one call. Storage may return
     // a partial read (for example at an S3 response boundary), so fill the existing caller buffer.
     int total = 0;
@@ -216,7 +235,7 @@ public class SeekableBlobImageInputStream extends ImageInputStreamImpl {
       long pos = streamPos;
       int n;
       if (pos < prefixLength) {
-        n = (int) Math.min(len - total, prefixLength - pos);
+        n = (int) Math.min((long) len - total, prefixLength - pos);
         System.arraycopy(prefix, (int) pos, buffer, offset + total, n);
       } else {
         n = readBlob(pos, buffer, offset + total, len - total);

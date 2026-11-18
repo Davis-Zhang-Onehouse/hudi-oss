@@ -38,7 +38,7 @@ import java.util.regex.Pattern;
  * The resolved settings of {@link WhisperSegmentTranscriber}. Its keys live under the transcriber's implementation-owned prefix
  * {@code hoodie.unstructured.embedding.audio.transcriber.whisper.}; they are not style keys: the settings that change the text
  * (model, language, task) are folded into {@link #id()}, which the audio logic line records as {@code asr=<id>}, so changing one
- * of them is a new preprocessing style. {@link #threads()} only changes speed (whisper.cpp's greedy decoding gives the same
+ * of them is a new preprocessing style. {@link #threadCount()} only changes speed (whisper.cpp's greedy decoding gives the same
  * transcript for any thread count), so it stays out of the id.
  */
 @ConfigClassProperty(name = "Whisper Transcription Configs",
@@ -47,48 +47,50 @@ import java.util.regex.Pattern;
     description = "Configurations selecting the whisper.cpp model, language, task and transcription threads.")
 public final class WhisperConfig implements Serializable {
 
+  private static final String SINCE_VERSION = "1.3.0";
+
   private static final long serialVersionUID = 1L;
 
   /** Prefix of every whisper key. */
   public static final String PREFIX = AudioConfigKeys.RUNTIME_PREFIX + "transcriber.whisper.";
 
+  /** base.en: the smaller native footprint of the two benchmarked models (about 0.38 GB of whisper.cpp memory against 0.82 GB). */
+  public static final String DEFAULT_MODEL = "base.en";
   /**
    * The ggml model: a name such as {@code base.en} or {@code small.en}, resolved to {@code <model.dir>/ggml-<name>.bin}, or an
    * absolute path to a {@code .bin} file; default {@link #DEFAULT_MODEL}. Models whose name ends {@code .en} are English-only.
    */
   public static final ConfigProperty<String> MODEL = ConfigProperty
       .key(PREFIX + "model")
-      .defaultValue("base.en")
-      .sinceVersion("1.3.0")
+      .defaultValue(DEFAULT_MODEL)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("The ggml model: a name such as base.en or small.en, resolved to <model.dir>/ggml-<name>.bin, or an absolute "
           + "path to a .bin file; default base.en. Models whose name ends .en are English-only.");
-  /** base.en: the smaller native footprint of the two benchmarked models (about 0.38 GB of whisper.cpp memory against 0.82 GB). */
-  public static final String DEFAULT_MODEL = "base.en";
 
   /** Directory holding {@code ggml-<name>.bin} for a named model; it must exist on every executor. */
   public static final ConfigProperty<String> MODEL_DIR = ConfigProperty
       .key(PREFIX + "model.dir")
       .defaultValue("")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Directory holding ggml-<name>.bin for a named model; it must exist on every executor. required for named "
           + "model; not required for absolute model path.");
 
+  public static final String DEFAULT_LANGUAGE = "en";
   /** Spoken language: one of whisper's language codes, or {@code auto} to detect it (multilingual models only); default {@code en}. */
   public static final ConfigProperty<String> LANGUAGE = ConfigProperty
       .key(PREFIX + "language")
-      .defaultValue("en")
-      .sinceVersion("1.3.0")
+      .defaultValue(DEFAULT_LANGUAGE)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Spoken language: one of whisper's language codes, or auto to detect it (multilingual models only); default "
           + "en.");
-  public static final String DEFAULT_LANGUAGE = "en";
 
+  public static final String TASK_TRANSCRIBE = "transcribe";
   /** {@code transcribe} (text in the spoken language) or {@code translate} (English text; multilingual models only). */
   public static final ConfigProperty<String> TASK = ConfigProperty
       .key(PREFIX + "task")
-      .defaultValue("transcribe")
-      .sinceVersion("1.3.0")
+      .defaultValue(TASK_TRANSCRIBE)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("transcribe (text in the spoken language) or translate (English text; multilingual models only).");
-  public static final String TASK_TRANSCRIBE = "transcribe";
   public static final String TASK_TRANSLATE = "translate";
 
   /** Threads of one transcription; default 1, one per Spark task core. */
@@ -96,7 +98,7 @@ public final class WhisperConfig implements Serializable {
       .key(PREFIX + "threads")
       .defaultValue(1)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Threads of one transcription; default 1, one per Spark task core.");
   public static final int DEFAULT_THREADS = 1;
 
@@ -127,17 +129,17 @@ public final class WhisperConfig implements Serializable {
 
   private final String modelName;
   private final String modelPath;
-  private final String language;
-  private final String task;
-  private final int threads;
+  private final String languageCode;
+  private final String taskName;
+  private final int threadCount;
   private final long segmentMaxBytes;
 
   private WhisperConfig(String modelName, String modelPath, String language, String task, int threads, long segmentMaxBytes) {
     this.modelName = modelName;
     this.modelPath = modelPath;
-    this.language = language;
-    this.task = task;
-    this.threads = threads;
+    this.languageCode = language;
+    this.taskName = task;
+    this.threadCount = threads;
     this.segmentMaxBytes = segmentMaxBytes;
   }
 
@@ -191,7 +193,7 @@ public final class WhisperConfig implements Serializable {
 
   /** Engine, model, language and task: {@code whisper-cpp-<version>-<model>/<language>/<task>}. */
   public String id() {
-    return "whisper-cpp-" + ENGINE_VERSION + "-" + modelName + "/" + language + "/" + task;
+    return "whisper-cpp-" + ENGINE_VERSION + "-" + modelName + "/" + languageCode + "/" + taskName;
   }
 
   public String modelName() {
@@ -202,20 +204,20 @@ public final class WhisperConfig implements Serializable {
     return Paths.get(modelPath);
   }
 
-  public String language() {
-    return language;
+  public String languageCode() {
+    return languageCode;
   }
 
-  public String task() {
-    return task;
+  public String taskName() {
+    return taskName;
   }
 
   public boolean translate() {
-    return TASK_TRANSLATE.equals(task);
+    return TASK_TRANSLATE.equals(taskName);
   }
 
-  public int threads() {
-    return threads;
+  public int threadCount() {
+    return threadCount;
   }
 
   /** Largest segment payload accepted ({@link AudioConfigKeys#SEGMENT_MAX_BYTES}). */
@@ -256,17 +258,17 @@ public final class WhisperConfig implements Serializable {
       return false;
     }
     WhisperConfig that = (WhisperConfig) o;
-    return threads == that.threads && segmentMaxBytes == that.segmentMaxBytes && modelName.equals(that.modelName)
-        && modelPath.equals(that.modelPath) && language.equals(that.language) && task.equals(that.task);
+    return threadCount == that.threadCount && segmentMaxBytes == that.segmentMaxBytes && modelName.equals(that.modelName)
+        && modelPath.equals(that.modelPath) && languageCode.equals(that.languageCode) && taskName.equals(that.taskName);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(modelName, modelPath, language, task, threads, segmentMaxBytes);
+    return Objects.hash(modelName, modelPath, languageCode, taskName, threadCount, segmentMaxBytes);
   }
 
   @Override
   public String toString() {
-    return "WhisperConfig{" + id() + ", modelPath=" + modelPath + ", threads=" + threads + ", segmentMaxBytes=" + segmentMaxBytes + "}";
+    return "WhisperConfig{" + id() + ", modelPath=" + modelPath + ", threads=" + threadCount + ", segmentMaxBytes=" + segmentMaxBytes + "}";
   }
 }

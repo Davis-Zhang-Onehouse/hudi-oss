@@ -48,6 +48,8 @@ import java.util.List;
  */
 final class Type1FontCheck {
 
+  private static final String FAILED = " failed";
+
   /** Declared /Subrs entries of one Type1 font. */
   static final long MAX_SUBRS = 65_536;
   private static final int EEXEC_KEY = 55665;
@@ -64,7 +66,7 @@ final class Type1FontCheck {
    * @param length1 the stream's {@code /Length1} ({@code -1} when absent, as {@code COSStream.getInt} returns)
    * @throws StreamStructureScanner.Refusal when the font declares too many Subrs
    */
-  static void check(File font, int length1, int length2, String where) throws IOException {
+  static void check(File font, int length1, int length2, String where) {
     try (Window bytes = new Window(font)) {
       long size = bytes.size();
       if (size == 0 || size > Integer.MAX_VALUE) {
@@ -99,7 +101,7 @@ final class Type1FontCheck {
   }
 
   /** {@code PDType1Font.repairLength1} on the spooled bytes. */
-  private static int repairLength1(Window bytes, int n, int length1) throws IOException {
+  private static int repairLength1(Window bytes, int n, int length1) {
     int offset = Math.max(0, length1 - 4);
     if (offset <= 0 || offset > n - 4) {
       offset = n - 4;
@@ -115,10 +117,10 @@ final class Type1FontCheck {
   }
 
   /** {@code PDType1Font.findBinaryOffsetAfterExec}. */
-  private static int findBinaryOffsetAfterExec(Window bytes, int n, int startOffset) throws IOException {
+  private static int findBinaryOffsetAfterExec(Window bytes, int n, int startOffset) {
     int offset = startOffset;
     while (offset > 0) {
-      if (bytes.get(offset) == 'e' && bytes.get(offset + 1) == 'x' && bytes.get(offset + 2) == 'e' && bytes.get(offset + 3) == 'c') {
+      if (bytes.get(offset) == 'e' && bytes.get(offset + 1L) == 'x' && bytes.get(offset + 2L) == 'e' && bytes.get(offset + 3L) == 'c') {
         offset += 4;
         while (offset < n) {
           int b = bytes.get(offset);
@@ -139,45 +141,26 @@ final class Type1FontCheck {
    * {@code binary} is not null, adds the {offset, length} of each binary record to it (called only once the count is
    * known to be at most {@link #MAX_PFB_RECORDS}).
    */
-  private static int walkPfb(Window bytes, int n, List<long[]> binary) throws IOException {
+  private static int walkPfb(Window bytes, int n, List<long[]> binary) {
     if (n < PFB_HEADER_LENGTH) {
       return -1;
     }
     int records = 0;
     long position = 0;
     long total = 0;
-    while (true) {
-      if (position >= n && total > 0) {
-        break;                                         // EOF after at least one record
-      }
-      if (position >= n || bytes.get(position) != PFB_START) {
-        return -1;                                   // "Start marker missing"
-      }
-      if (position + 1 >= n) {
+    while (position < n || total == 0) {               // until EOF after at least one record
+      int type = pfbRecordType(bytes, n, position);
+      if (type < 0) {
         return -1;
       }
-      int type = bytes.get(position + 1);
       if (type == 3) {
         break;
       }
-      if (type != 1 && type != 2) {
+      long size = pfbRecordSize(bytes, n, position);
+      if (size < 0) {
         return -1;
       }
-      if (position + 6 > n) {
-        return -1;                                   // PfbParser would read -1 bytes into the size and fail
-      }
-      long size = bytes.get(position + 2) | (bytes.get(position + 3) << 8) | (bytes.get(position + 4) << 16)
-          | ((long) bytes.get(position + 5) << 24);
-      size = (int) size;                               // PfbParser sums ints: a set top bit is a negative size
-      if (size < 0 || size > n || position + 6 + size > n) {
-        return -1;                                   // negative, larger than the input, or EOF inside the record
-      }
-      if (size == 0 && position + 6 >= n) {
-        return -1;                                   // reading 0 bytes at EOF returns -1: "EOF while reading"
-      }
-      if (type == 2 && binary != null) {
-        binary.add(new long[] {position + 6, size});
-      }
+      addBinaryRecord(binary, type, position, size);
       if (++records > MAX_PFB_RECORDS && binary == null) {
         return records;                                // over the bound: no need to read further
       }
@@ -187,8 +170,55 @@ final class Type1FontCheck {
     return total > n ? -1 : records;
   }
 
+  /** The type of the PFB record at {@code position} (1, 2, or 3 for EOF), or -1 where PfbParser throws. */
+  private static int pfbRecordType(Window bytes, int n, long position) {
+    if (position >= n || bytes.get(position) != PFB_START) {
+      return -1;                                     // "Start marker missing"
+    }
+    if (position + 1 >= n) {
+      return -1;
+    }
+    int type = bytes.get(position + 1);
+    if (type == 3) {
+      return type;
+    }
+    if (type != 1 && type != 2) {
+      return -1;
+    }
+    return type;
+  }
+
+  /** The size of the type 1 or 2 PFB record at {@code position}, or -1 where PfbParser throws. */
+  private static long pfbRecordSize(Window bytes, int n, long position) {
+    if (position + 6 > n) {
+      return -1;                                     // PfbParser would read -1 bytes into the size and fail
+    }
+    long size = bytes.get(position + 2) | (bytes.get(position + 3) << 8) | (bytes.get(position + 4) << 16)
+        | ((long) bytes.get(position + 5) << 24);
+    size = (int) size;                               // PfbParser sums ints: a set top bit is a negative size
+    if (size < 0 || size > n || position + 6 + size > n) {
+      return -1;                                     // negative, larger than the input, or EOF inside the record
+    }
+    if (size == 0 && position + 6 >= n) {
+      return -1;                                     // reading 0 bytes at EOF returns -1: "EOF while reading"
+    }
+    return size;
+  }
+
+  /** Adds the {offset, length} of a binary (type 2) record to {@code binary}, when it is not null. */
+  private static void addBinaryRecord(List<long[]> binary, int type, long position, long size) {
+    if (type == 2 && binary != null) {
+      binary.add(new long[] {position + 6, size});
+    }
+  }
+
   /** {@code Type1Parser.parseBinary}: hex detection, hex decoding, eexec decryption, fed to {@code finder}. */
-  private static void eexecSection(Window bytes, List<long[]> ranges, SubrsFinder finder) throws IOException {
+  private static void eexecSection(Window bytes, List<long[]> ranges, SubrsFinder finder) {
+    decrypt(bytes, ranges, isBinary(bytes, ranges), finder);
+  }
+
+  /** {@code Type1Parser.parseBinary}'s test: binary unless the first 4 bytes are all whitespace or hex digits. */
+  private static boolean isBinary(Window bytes, List<long[]> ranges) {
     long length = 0;
     for (long[] range : ranges) {
       length += range[1];
@@ -198,32 +228,68 @@ final class Type1FontCheck {
       int b = at(bytes, ranges, i);
       binary = b != 0x0a && b != 0x0d && b != 0x20 && b != '\t' && hexDigit(b) == -1;
     }
-    int r = EEXEC_KEY;
-    long cipherIndex = 0;
-    int high = -1;
+    return binary;
+  }
+
+  /** Hex-decodes (unless {@code binary}) and eexec-decrypts the ranges, feeding the plain bytes after the first 4 to {@code finder}. */
+  private static void decrypt(Window bytes, List<long[]> ranges, boolean binary, SubrsFinder finder) {
+    Eexec eexec = new Eexec(finder);
+    HexPairs hex = new HexPairs();
     for (long[] range : ranges) {
       for (long p = range[0]; p < range[0] + range[1]; p++) {
         int b = bytes.get(p);
-        if (!binary) {
-          int digit = hexDigit(b);
-          if (digit < 0) {
-            continue;
-          }
-          if (high < 0) {
-            high = digit;
-            continue;
-          }
-          b = high * 16 + digit;
-          high = -1;
-        }
-        int plain = (b ^ (r >> 8)) & 0xFF;
-        r = ((b + r) * 52845 + 22719) & 0xFFFF;
-        if (cipherIndex++ >= 4) {
-          finder.accept(plain);
+        if (binary) {
+          eexec.accept(b);
+        } else if (hex.accept(b)) {
+          eexec.accept(hex.value());
         }
       }
     }
     finder.end();
+  }
+
+  /** eexec decryption: the plain byte of each cipher byte after the first 4 goes to {@code finder}. */
+  private static final class Eexec {
+    private final SubrsFinder finder;
+    private int r = EEXEC_KEY;
+    private long cipherIndex;
+
+    Eexec(SubrsFinder finder) {
+      this.finder = finder;
+    }
+
+    void accept(int b) {
+      int plain = (b ^ (r >> 8)) & 0xFF;
+      r = ((b + r) * 52845 + 22719) & 0xFFFF;
+      if (cipherIndex++ >= 4) {
+        finder.accept(plain);
+      }
+    }
+  }
+
+  /** Hex decoding: a non-hex byte is skipped; a first hex digit waits for its pair. */
+  private static final class HexPairs {
+    private int high = -1;
+    private int value;
+
+    /** True when {@code b} completes a pair, whose byte is then {@link #value()}. */
+    boolean accept(int b) {
+      int digit = hexDigit(b);
+      if (digit < 0) {
+        return false;
+      }
+      if (high < 0) {
+        high = digit;
+        return false;
+      }
+      value = high * 16 + digit;
+      high = -1;
+      return true;
+    }
+
+    int value() {
+      return value;
+    }
   }
 
   /** {@code Character.digit((char) byte, 16)} as fontbox computes it on a signed byte. */
@@ -231,7 +297,7 @@ final class Type1FontCheck {
     return Character.digit((char) (byte) b, 16);
   }
 
-  private static int at(Window bytes, List<long[]> ranges, long index) throws IOException {
+  private static int at(Window bytes, List<long[]> ranges, long index) {
     for (long[] range : ranges) {
       if (index < range[1]) {
         return bytes.get(range[0] + index);
@@ -264,35 +330,13 @@ final class Type1FontCheck {
     void accept(int b) {
       switch (state) {
         case 1:
-          if (b == '%') {
-            state = 2;
-          } else if (!isFontboxWhitespace(b)) {
-            state = 3;
-            count.reset();
-            accept(b);
-          } else if (b == '\r' || b == '\n') {
-            keyInComment = false;                        // the comment ended: the next token is the count of both
-          }
+          acceptAfterLiteral(b);
           return;
         case 2:
-          if (b == '\r' || b == '\n') {
-            state = 1;
-            keyInComment = false;
-          } else if (literalEndsAt(b)) {                 // a /Subrs inside the comment may be one fontbox reads
-            state = 1;
-            keyInComment = true;                         // fontbox may skip it: the key before the comment still waits
-            accept(b);
-          }
+          acceptInComment(b);
           return;
         case 3:
-          if (count.accept(b)) {
-            return;
-          }
-          checkCount();
-          state = keyInComment ? 2 : 0;                  // back in the comment: the token after its line end is judged too
-          keyInComment = false;
-          matched = 0;
-          accept(b);                                   // fontbox puts the character after a token back
+          acceptInCount(b);
           return;
         default:
           if (literalEndsAt(b)) {
@@ -300,6 +344,43 @@ final class Type1FontCheck {
             accept(b);
           }
       }
+    }
+
+    /** A byte after a /Subrs literal: a comment, the first byte of its count token, or whitespace. */
+    private void acceptAfterLiteral(int b) {
+      if (b == '%') {
+        state = 2;
+      } else if (!isFontboxWhitespace(b)) {
+        state = 3;
+        count.reset();
+        accept(b);
+      } else if (b == '\r' || b == '\n') {
+        keyInComment = false;                          // the comment ended: the next token is the count of both
+      }
+    }
+
+    /** A byte of a comment between a /Subrs literal and its count. */
+    private void acceptInComment(int b) {
+      if (b == '\r' || b == '\n') {
+        state = 1;
+        keyInComment = false;
+      } else if (literalEndsAt(b)) {                   // a /Subrs inside the comment may be one fontbox reads
+        state = 1;
+        keyInComment = true;                           // fontbox may skip it: the key before the comment still waits
+        accept(b);
+      }
+    }
+
+    /** A byte of the count token; the byte that ends it has the count checked against the limit, then is read again. */
+    private void acceptInCount(int b) {
+      if (count.accept(b)) {
+        return;
+      }
+      checkCount();
+      state = keyInComment ? 2 : 0;                    // back in the comment: the token after its line end is judged too
+      keyInComment = false;
+      matched = 0;
+      accept(b);                                       // fontbox puts the character after a token back
     }
 
     /** Advances the "/Subrs" match by {@code b}; true when {@code b} ends a complete literal. */
@@ -310,7 +391,11 @@ final class Type1FontCheck {
           return true;
         }
       }
-      matched = b == SUBRS[matched] ? matched + 1 : (b == '/' ? 1 : 0);
+      if (b == SUBRS[matched]) {
+        matched++;
+      } else {
+        matched = b == '/' ? 1 : 0;
+      }
       return false;
     }
 
@@ -361,7 +446,7 @@ final class Type1FontCheck {
     private int phase;
     private boolean negative;
     private boolean hasDigit;
-    private long integer;                              // the digits before . or #, saturating
+    private long integerPart;                              // the digits before . or #, saturating
     private boolean real;
     private int radix;                                 // 0 until #; -1 for a radix Integer.parseInt rejects
     private long radixValue;
@@ -372,7 +457,7 @@ final class Type1FontCheck {
       phase = START;
       negative = false;
       hasDigit = false;
-      integer = 0;
+      integerPart = 0;
       real = false;
       radix = 0;
       radixValue = 0;
@@ -386,76 +471,104 @@ final class Type1FontCheck {
       boolean e = b == 'e' || b == 'E';
       switch (phase) {
         case START:
-          phase = INTEGER;
-          if (b == '+' || b == '-') {
-            negative = b == '-';
-            return true;
-          }
-          return accept(b);
+          return acceptStart(b);
         case INTEGER:
-          if (digit) {
-            hasDigit = true;
-            integer = Math.min(integer * 10 + (b - '0'), SATURATED);
-            return true;
-          }
-          if (b == '.') {
-            real = true;
-            phase = REQUIRED_DIGIT;
-            return true;
-          }
-          if (b == '#') {
-            radix = hasDigit && !negative && integer >= Character.MIN_RADIX && integer <= Character.MAX_RADIX ? (int) integer : -1;
-            phase = REQUIRED_DIGIT;
-            return true;
-          }
-          if (!hasDigit) {
-            notANumber = true;                         // fontbox re-reads it as a NAME
-            return false;
-          }
-          if (!e) {
-            return false;                              // INTEGER
-          }
-          real = true;                                 // digits then e: fontbox's required-digit test lets e through
-          phase = AFTER_E;
-          return true;
+          return acceptInteger(b, digit, e);
         case REQUIRED_DIGIT:
-          if (!digit && !e) {
-            notANumber = true;
-            return false;
-          }
-          addRadixDigit(b);
-          phase = digit ? DIGITS : AFTER_E;
-          return true;
+          return acceptRequiredDigit(b, digit, e);
         case DIGITS:
-          if (!digit && !e) {
-            return false;
-          }
-          addRadixDigit(b);
-          phase = digit ? DIGITS : AFTER_E;
-          return true;
+          return acceptDigits(b, digit, e);
         case AFTER_E:
-          if (b != '-' && !digit) {
-            notANumber = true;
-            return false;
-          }
-          addRadixDigit(b);
-          phase = digit ? EXPONENT_DIGITS : EXPONENT_DIGIT;
-          return true;
+          return acceptAfterE(b, digit);
         case EXPONENT_DIGIT:
-          if (!digit) {
-            notANumber = true;
-            return false;
-          }
-          addRadixDigit(b);
-          phase = EXPONENT_DIGITS;
-          return true;
+          return acceptExponentDigit(b, digit);
         default:                                       // EXPONENT_DIGITS
-          if (!digit) {
-            return false;
-          }
-          addRadixDigit(b);
-          return true;
+          return acceptExponentDigits(b, digit);
       }
+    }
+
+    private boolean acceptStart(int b) {
+      phase = INTEGER;
+      if (b == '+' || b == '-') {
+        negative = b == '-';
+        return true;
+      }
+      return accept(b);
+    }
+
+    private boolean acceptInteger(int b, boolean digit, boolean e) {
+      if (digit) {
+        hasDigit = true;
+        integerPart = Math.min(integerPart * 10 + (b - '0'), SATURATED);
+        return true;
+      }
+      if (b == '.') {
+        real = true;
+        phase = REQUIRED_DIGIT;
+        return true;
+      }
+      if (b == '#') {
+        radix = hasDigit && !negative && integerPart >= Character.MIN_RADIX && integerPart <= Character.MAX_RADIX ? (int) integerPart : -1;
+        phase = REQUIRED_DIGIT;
+        return true;
+      }
+      if (!hasDigit) {
+        notANumber = true;                             // fontbox re-reads it as a NAME
+        return false;
+      }
+      if (!e) {
+        return false;                                  // INTEGER
+      }
+      real = true;                                     // digits then e: fontbox's required-digit test lets e through
+      phase = AFTER_E;
+      return true;
+    }
+
+    private boolean acceptRequiredDigit(int b, boolean digit, boolean e) {
+      if (!digit && !e) {
+        notANumber = true;
+        return false;
+      }
+      addRadixDigit(b);
+      phase = digit ? DIGITS : AFTER_E;
+      return true;
+    }
+
+    private boolean acceptDigits(int b, boolean digit, boolean e) {
+      if (!digit && !e) {
+        return false;
+      }
+      addRadixDigit(b);
+      phase = digit ? DIGITS : AFTER_E;
+      return true;
+    }
+
+    private boolean acceptAfterE(int b, boolean digit) {
+      if (b != '-' && !digit) {
+        notANumber = true;
+        return false;
+      }
+      addRadixDigit(b);
+      phase = digit ? EXPONENT_DIGITS : EXPONENT_DIGIT;
+      return true;
+    }
+
+    private boolean acceptExponentDigit(int b, boolean digit) {
+      if (!digit) {
+        notANumber = true;
+        return false;
+      }
+      addRadixDigit(b);
+      phase = EXPONENT_DIGITS;
+      return true;
+    }
+
+    private boolean acceptExponentDigits(int b, boolean digit) {
+      if (!digit) {
+        return false;
+      }
+      addRadixDigit(b);
+      return true;
     }
 
     /** Integer.parseInt(digits, radix) one character at a time: '-' inside, a non-digit or overflow makes it throw. */
@@ -483,7 +596,7 @@ final class Type1FontCheck {
       if (real || negative) {
         return 0;
       }
-      return integer;
+      return integerPart;
     }
   }
 
@@ -510,7 +623,7 @@ final class Type1FontCheck {
       try {
         this.length = file.length();
       } catch (IOException | RuntimeException e) {
-        RuntimeException failure = ScratchFiles.failure("reading the scratch file " + path + " failed", e);
+        RuntimeException failure = ScratchFiles.failure("reading the scratch file " + path + FAILED, e);
         try {
           file.close();
         } catch (IOException closeFailure) {
@@ -560,7 +673,7 @@ final class Type1FontCheck {
         }
       } catch (IOException e) {
         start = -1;
-        throw ScratchFiles.failure("reading the scratch file " + path + " failed", e);
+        throw ScratchFiles.failure("reading the scratch file " + path + FAILED, e);
       }
       return total;
     }
@@ -570,7 +683,7 @@ final class Type1FontCheck {
       try {
         file.close();
       } catch (IOException e) {
-        throw ScratchFiles.failure("closing the scratch file " + path + " failed", e);
+        throw ScratchFiles.failure("closing the scratch file " + path + FAILED, e);
       }
     }
   }

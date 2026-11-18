@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the source declares for each job are merged and refused by the streamer: {@code TestUnstructuredSourceContract} for the merge,
  * {@code TestUnstructuredJobSettings} for both jobs through the streamer.
  */
-public class TestBlobSourceSetup {
+class TestBlobSourceSetup {
 
   private static final String INJECTOR_KEY = HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS.key();
 
@@ -69,7 +69,7 @@ public class TestBlobSourceSetup {
   /** Validation changes no property: the writer settings in a full blob job's properties are exactly as the job set them. */
   @ParameterizedTest
   @EnumSource(UnstructuredMode.class)
-  public void validationChangesNoProperty(UnstructuredMode job) {
+  void validationChangesNoProperty(UnstructuredMode job) {
     TypedProperties props = job(job);
     props.setProperty(HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME.key(), "zstd");
     props.setProperty(HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED.key(), "true");
@@ -85,20 +85,22 @@ public class TestBlobSourceSetup {
   /** A copy buffer the blob job's copies cannot use is refused when the source is built, by name, not in each copy task. */
   @ParameterizedTest
   @ValueSource(strings = {"64k", "0"})
-  public void unusableCopyBufferIsRefusedAtStart(String bytes) {
+  void unusableCopyBufferIsRefusedAtStart(String bytes) {
     TypedProperties props = job(UnstructuredMode.BLOB);
     props.setProperty(BlobTableConfig.COPY_BUFFER_BYTES.key(), bytes);
-    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(props, UnstructuredMode.BLOB, UnstructuredDataSource.name(UnstructuredMode.BLOB)));
+    String sourceName = UnstructuredDataSource.name(UnstructuredMode.BLOB);
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(props, UnstructuredMode.BLOB, sourceName));
     assertTrue(refused.getMessage().contains(BlobTableConfig.COPY_BUFFER_BYTES.key()), refused.getMessage());
   }
 
   /** Both jobs' tables are at table version 9 or above: a lower or non-numeric job version is refused before any read. */
   @ParameterizedTest
   @CsvSource({"BLOB,6", "BLOB,8", "BLOB,invalid", "EMBEDDING,6", "EMBEDDING,8", "EMBEDDING,invalid"})
-  public void unsupportedJobTableVersionIsRefused(UnstructuredMode job, String version) {
+  void unsupportedJobTableVersionIsRefused(UnstructuredMode job, String version) {
     TypedProperties props = job(job);
     props.setProperty(HoodieWriteConfig.WRITE_TABLE_VERSION.key(), version);
-    HoodieValidationException failure = assertThrows(HoodieValidationException.class, () -> BlobSourceSetup.validate(props, job, UnstructuredDataSource.name(job)));
+    String sourceName = UnstructuredDataSource.name(job);
+    HoodieValidationException failure = assertThrows(HoodieValidationException.class, () -> BlobSourceSetup.validate(props, job, sourceName));
     assertTrue(failure.getMessage().contains(HoodieWriteConfig.WRITE_TABLE_VERSION.key() + "=" + version), failure.getMessage());
     assertTrue(failure.getMessage().contains("9 or above"), failure.getMessage());
   }
@@ -106,7 +108,7 @@ public class TestBlobSourceSetup {
   /** Version 9 and above, or no version (Hudi's current one), pass for both jobs. */
   @ParameterizedTest
   @EnumSource(UnstructuredMode.class)
-  public void supportedJobTableVersionIsAccepted(UnstructuredMode job) {
+  void supportedJobTableVersionIsAccepted(UnstructuredMode job) {
     BlobSourceSetup.validate(job(job), job, UnstructuredDataSource.name(job));
     TypedProperties nine = job(job);
     nine.setProperty(HoodieWriteConfig.WRITE_TABLE_VERSION.key(), "9");
@@ -117,13 +119,14 @@ public class TestBlobSourceSetup {
   @ParameterizedTest
   @ValueSource(strings = {"hoodie.blob.table.copy.buffer.bytes", "hoodie.blob.table.copy.retry.max.attempts",
       "hoodie.blob.table.copy.retry.backoff.ms"})
-  public void copySettingsAreValidatedForTheBlobJobOnly(String key) {
+  void copySettingsAreValidatedForTheBlobJobOnly(String key) {
     TypedProperties embedding = job(UnstructuredMode.EMBEDDING);
     embedding.setProperty(key, "-1");
     BlobSourceSetup.validate(embedding, UnstructuredMode.EMBEDDING, UnstructuredDataSource.name(UnstructuredMode.EMBEDDING));
     TypedProperties blob = job(UnstructuredMode.BLOB);
     blob.setProperty(key, "-1");
-    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(blob, UnstructuredMode.BLOB, UnstructuredDataSource.name(UnstructuredMode.BLOB)));
+    String sourceName = UnstructuredDataSource.name(UnstructuredMode.BLOB);
+    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(blob, UnstructuredMode.BLOB, sourceName));
     assertEquals("BlobSourceConfigException", failure.getClass().getSimpleName());
     assertTrue(failure.getMessage().contains(key), failure.getMessage());
   }
@@ -131,25 +134,27 @@ public class TestBlobSourceSetup {
   /** The row writer never encodes a row with the table schema, so it would commit a reference the copy transformer missed. */
   @ParameterizedTest
   @EnumSource(UnstructuredMode.class)
-  public void rowWriterIsRefused(UnstructuredMode job) {
+  void rowWriterIsRefused(UnstructuredMode job) {
     TypedProperties props = job(job);
     props.setProperty("hoodie.streamer.write.row.writer.enable", "true");
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(props, job, UnstructuredDataSource.name(job)));
+    String sourceName = UnstructuredDataSource.name(job);
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(props, job, sourceName));
     assertTrue(e.getMessage().startsWith("hoodie.streamer.write.row.writer.enable is not supported by " + UnstructuredDataSource.name(job)),
         e.getMessage());
   }
 
   /** Spark records are not encoded with the table schema either. */
   @Test
-  public void sparkRecordMergerIsRefused() {
+  void sparkRecordMergerIsRefused() {
     TypedProperties props = job(UnstructuredMode.BLOB);
     props.setProperty(HoodieWriteConfig.RECORD_MERGE_IMPL_CLASSES.key(), OverwriteWithLatestSparkRecordMerger.class.getName());
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(props, UnstructuredMode.BLOB, UnstructuredDataSource.name(UnstructuredMode.BLOB)));
+    String sourceName = UnstructuredDataSource.name(UnstructuredMode.BLOB);
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> BlobSourceSetup.validate(props, UnstructuredMode.BLOB, sourceName));
     assertTrue(e.getMessage().startsWith("Spark records are not supported by UnstructuredDataSource (mode blob)"), e.getMessage());
   }
 
   @Test
-  public void avroRecordMergerAndDisabledRowWriterAreAccepted() {
+  void avroRecordMergerAndDisabledRowWriterAreAccepted() {
     TypedProperties props = job(UnstructuredMode.BLOB);
     props.setProperty("hoodie.streamer.write.row.writer.enable", "false");
     props.setProperty(HoodieWriteConfig.RECORD_MERGE_IMPL_CLASSES.key(), OverwriteWithLatestMerger.class.getName());
@@ -169,10 +174,11 @@ public class TestBlobSourceSetup {
       "EMBEDDING|hoodie.blob.table.file.extensions|parquet",
       "EMBEDDING|hoodie.write.table.version|8",
       "EMBEDDING|hoodie.write.record.merge.custom.implementation.classes|org.apache.hudi.OverwriteWithLatestSparkRecordMerger"})
-  public void refusalNamesTheJobsSourceClass(UnstructuredMode job, String key, String value) {
+  void refusalNamesTheJobsSourceClass(UnstructuredMode job, String key, String value) {
     TypedProperties props = job(job);
     props.setProperty(key, value);
-    RuntimeException refused = assertThrows(RuntimeException.class, () -> BlobSourceSetup.validate(props, job, UnstructuredDataSource.name(job)));
+    String sourceName = UnstructuredDataSource.name(job);
+    RuntimeException refused = assertThrows(RuntimeException.class, () -> BlobSourceSetup.validate(props, job, sourceName));
     assertTrue(refused.getMessage().contains(UnstructuredDataSource.name(job)), refused.getMessage());
   }
 }

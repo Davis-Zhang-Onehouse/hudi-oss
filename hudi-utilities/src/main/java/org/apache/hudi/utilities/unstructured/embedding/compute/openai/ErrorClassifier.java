@@ -57,8 +57,7 @@ public final class ErrorClassifier {
       return ProviderResponseKind.OK;
     }
     if (status == 429) {
-      return BILLING_CODES.contains(body.code()) || INSUFFICIENT_QUOTA.equals(body.type())
-          ? ProviderResponseKind.QUOTA : ProviderResponseKind.RETRYABLE;
+      return rateLimited(body);
     }
     // 409 as the official SDK retries it ("408 Request Timeout, 409 Conflict, 429 Rate Limit, and >=500 Internal errors are all
     // retried by default", openai-python _base_client._should_retry)
@@ -70,13 +69,23 @@ public final class ErrorClassifier {
       return ProviderResponseKind.RETRYABLE;
     }
     if (status == 400 || status == 422) {
-      return body.param() != null && REQUEST_PARAMS.contains(body.param())
-          ? ProviderResponseKind.CONFIG : ProviderResponseKind.INPUT;
+      return rejected(body);
     }
     if (status == 413) {
       return ProviderResponseKind.INPUT;
     }
     return ProviderResponseKind.CONFIG;
+  }
+
+  /** A 429: an exhausted quota or billing limit is QUOTA, anything else a rate limit to retry. */
+  private static ProviderResponseKind rateLimited(ErrorBody body) {
+    return BILLING_CODES.contains(body.code()) || INSUFFICIENT_QUOTA.equals(body.type())
+        ? ProviderResponseKind.QUOTA : ProviderResponseKind.RETRYABLE;
+  }
+
+  /** A 400 or 422: naming a request parameter other than input rejects the configuration, else the input. */
+  private static ProviderResponseKind rejected(ErrorBody body) {
+    return body.param() != null && REQUEST_PARAMS.contains(body.param()) ? ProviderResponseKind.CONFIG : ProviderResponseKind.INPUT;
   }
 
   /**

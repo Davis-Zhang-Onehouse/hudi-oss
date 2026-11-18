@@ -32,10 +32,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Consecutive-frame dedup: the difference hash, the threshold, the last-kept reference and the exact methods. */
-public class TestFrameDedup {
+class TestFrameDedup {
 
   @Test
-  public void dhashBitsAreTheLeftRightOrderOfAGreyGrid() {
+  void dhashBitsAreTheLeftRightOrderOfAGreyGrid() {
     // every row brightening to the right: all 64 bits set; a row darkening to the right clears that row's 8 bits
     assertEquals(-1L, FrameDedup.dhash(grid(0)));
     assertEquals(0x00FFFFFFFFFFFFFFL, FrameDedup.dhash(grid(1)));
@@ -45,7 +45,7 @@ public class TestFrameDedup {
   }
 
   @Test
-  public void theThresholdDecidesWhetherANearFrameIsARepeat() {
+  void theThresholdDecidesWhetherANearFrameIsARepeat() {
     // grid(1) is 8 bits from grid(0)
     FrameDedup strict = new FrameDedup(VideoFrameConfig.DedupMethod.DHASH, 4);
     assertNotNull(strict.keepDecoded(grid(0)));
@@ -57,7 +57,7 @@ public class TestFrameDedup {
   }
 
   @Test
-  public void framesAreComparedWithTheLastKeptFrameNotTheLastCandidate() {
+  void framesAreComparedWithTheLastKeptFrameNotTheLastCandidate() {
     // 0 → 1 → 2 drifts 8 bits per step: under threshold 8, 1 repeats 0 (dropped), 2 is 16 bits from the kept 0 (kept)
     FrameDedup dedup = new FrameDedup(VideoFrameConfig.DedupMethod.DHASH, 8);
     assertEquals("ffffffffffffffff", dedup.keepDecoded(grid(0)));
@@ -66,7 +66,7 @@ public class TestFrameDedup {
   }
 
   @Test
-  public void sha256DropsOnlyExactRepeatsAndNoneDropsNothing() {
+  void sha256DropsOnlyExactRepeatsAndNoneDropsNothing() {
     byte[] a = "frame a".getBytes(StandardCharsets.UTF_8);
     byte[] b = "frame b".getBytes(StandardCharsets.UTF_8);
     FrameDedup exact = new FrameDedup(VideoFrameConfig.DedupMethod.SHA256, 4);
@@ -80,16 +80,18 @@ public class TestFrameDedup {
   }
 
   @Test
-  public void missingDigestIsAConfigurationError() {
+  void missingDigestIsAConfigurationError() {
     // a JVM without the digest cannot key any frame: the platform's, never the video's (class P)
     assertThrows(PreprocessorConfigurationException.class, () -> FrameDedup.digestHex(new byte[1], "NO-SUCH-DIGEST"));
     assertEquals(64, FrameDedup.sha256Hex(new byte[1]).length());
   }
 
   @Test
-  public void dhashRefusesFramesItCannotHash() {
-    assertThrows(IllegalArgumentException.class, () -> FrameDedup.dhash(new BufferedImage(90, 80, BufferedImage.TYPE_INT_RGB)));
-    assertThrows(IllegalArgumentException.class, () -> FrameDedup.dhash(new BufferedImage(8, 80, BufferedImage.TYPE_3BYTE_BGR)));
+  void dhashRefusesFramesItCannotHash() {
+    BufferedImage intRgb = new BufferedImage(90, 80, BufferedImage.TYPE_INT_RGB);
+    assertThrows(IllegalArgumentException.class, () -> FrameDedup.dhash(intRgb));
+    BufferedImage narrow = new BufferedImage(8, 80, BufferedImage.TYPE_3BYTE_BGR);
+    assertThrows(IllegalArgumentException.class, () -> FrameDedup.dhash(narrow));
   }
 
   /** A 90x80 grey frame of 9x8 cells of 10x10 pixels; the first {@code darkeningRows} rows darken to the right. */

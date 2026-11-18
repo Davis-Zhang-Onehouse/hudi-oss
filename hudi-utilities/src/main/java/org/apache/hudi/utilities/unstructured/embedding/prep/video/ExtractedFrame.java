@@ -43,31 +43,23 @@ public final class ExtractedFrame {
    * @param timeMs     presentation time from the container's start time, clamped at 0, {@code >= 0}
    * @param frameIndex the dense kept-frame ordinal, {@code >= 0}
    * @param keyframe   whether the frame is a key (sync) frame
-   * @param width      width in pixels of the encoded image, {@code > 0}
-   * @param height     height in pixels of the encoded image, {@code > 0}
-   * @param mimeType   MIME type of the encoded image (e.g. {@code image/jpeg}); not empty
-   * @param sizeBytes  exact size of the encoded image in bytes, {@code >= 0}
    * @param dedupKey   the key the strategy's dedup compared the frame by; not empty
-   * @param image      opens the encoded image; not null
+   * @param image      the encoded image; not null
    */
-  public ExtractedFrame(long timeMs, long frameIndex, boolean keyframe, int width, int height, String mimeType, long sizeBytes,
-                        String dedupKey, BlobBytesSupplier image) {
+  public ExtractedFrame(long timeMs, long frameIndex, boolean keyframe, String dedupKey, EncodedImage image) {
     ValidationUtils.checkArgument(timeMs >= 0, () -> "timeMs must be >= 0: " + timeMs);
     ValidationUtils.checkArgument(frameIndex >= 0, () -> "frameIndex must be >= 0: " + frameIndex);
-    ValidationUtils.checkArgument(width > 0 && height > 0, () -> "frame size must be positive: " + width + "x" + height);
-    ValidationUtils.checkArgument(mimeType != null && !mimeType.isEmpty(), "mimeType must be non-empty");
-    ValidationUtils.checkArgument(sizeBytes >= 0, () -> "sizeBytes must be >= 0: " + sizeBytes);
     ValidationUtils.checkArgument(dedupKey != null && !dedupKey.isEmpty(), "dedupKey must be non-empty");
     ValidationUtils.checkArgument(image != null, "image must not be null");
     this.timeMs = timeMs;
     this.frameIndex = frameIndex;
     this.keyframe = keyframe;
-    this.width = width;
-    this.height = height;
-    this.mimeType = mimeType;
-    this.sizeBytes = sizeBytes;
+    this.width = image.width;
+    this.height = image.height;
+    this.mimeType = image.mimeType;
+    this.sizeBytes = image.sizeBytes;
     this.dedupKey = dedupKey;
-    this.image = image;
+    this.image = image.bytes;
   }
 
   public long getTimeMs() {
@@ -106,5 +98,33 @@ public final class ExtractedFrame {
   /** Opens the encoded image; each call is a new stream the caller closes. */
   public BlobBytesSupplier getImage() {
     return image;
+  }
+
+  /** The encoded image of a frame: its size in pixels, MIME type, exact byte size and the supplier that opens it. */
+  public static final class EncodedImage {
+    private final int width;
+    private final int height;
+    private final String mimeType;
+    private final long sizeBytes;
+    private final BlobBytesSupplier bytes;
+
+    /**
+     * @param width     width in pixels of the encoded image, {@code > 0}
+     * @param height    height in pixels of the encoded image, {@code > 0}
+     * @param mimeType  MIME type of the encoded image (e.g. {@code image/jpeg}); not empty
+     * @param sizeBytes exact size of the encoded image in bytes, {@code >= 0}
+     * @param bytes     opens the encoded image; not null
+     */
+    public EncodedImage(int width, int height, String mimeType, long sizeBytes, BlobBytesSupplier bytes) {
+      ValidationUtils.checkArgument(width > 0 && height > 0, () -> "frame size must be positive: " + width + "x" + height);
+      ValidationUtils.checkArgument(mimeType != null && !mimeType.isEmpty(), "mimeType must be non-empty");
+      ValidationUtils.checkArgument(sizeBytes >= 0, () -> "sizeBytes must be >= 0: " + sizeBytes);
+      ValidationUtils.checkArgument(bytes != null, "image must not be null");
+      this.width = width;
+      this.height = height;
+      this.mimeType = mimeType;
+      this.sizeBytes = sizeBytes;
+      this.bytes = bytes;
+    }
   }
 }

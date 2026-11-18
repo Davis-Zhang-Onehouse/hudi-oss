@@ -75,6 +75,7 @@ public class BlobBytesSource implements Serializable {
 
   private static final long serialVersionUID = 1L;
   private static final int READ_BUFFER_BYTES = 64 * 1024;
+  private static final String BLOB_FILE = "Blob file ";
   /**
    * The read-ahead of data prep's source reads ({@link #withReadahead}): a reader that seeks (an image header reader, FFmpeg) gets
    * this many bytes per storage request instead of the file system's default (S3A: 64 KiB), so it sends far fewer requests.
@@ -320,7 +321,11 @@ public class BlobBytesSource implements Serializable {
     Long knownLength = knownObjectLength(blob, objectLength);
     long size;
     try {
-      size = blob.length != null ? blob.length : knownLength != null ? knownLength : pathStorage.getPathInfo(blob.path).getLength();
+      if (blob.length != null) {
+        size = blob.length;
+      } else {
+        size = knownLength != null ? knownLength : pathStorage.getPathInfo(blob.path).getLength();
+      }
     } catch (IOException | RuntimeException e) {
       throw notFoundChecked(pathStorage, blob.path, e);
     }
@@ -429,7 +434,7 @@ public class BlobBytesSource implements Serializable {
     } catch (IOException | RuntimeException recheckFailure) {
       // no proof of absence: a storage failure; the original's report and stack ride as suppressed, never as the cause, so the
       // FileNotFoundException in it cannot read as the file's absence
-      IOException unconfirmed = new IOException("Blob file " + path + " could not be opened and its absence could not be confirmed: "
+      IOException unconfirmed = new IOException(BLOB_FILE + path + " could not be opened and its absence could not be confirmed: "
           + failure.getClass().getSimpleName() + ": " + failure.getMessage(), recheckFailure);
       unconfirmed.addSuppressed(failure);
       return unconfirmed;
@@ -478,7 +483,7 @@ public class BlobBytesSource implements Serializable {
       return new IOException("Seek to " + offset + " of " + path + " failed and the object's length could not be read", e);
     }
     if (objectLength < offset) {
-      BlobTruncatedException truncated = new BlobTruncatedException("Blob file " + path + " holds " + objectLength
+      BlobTruncatedException truncated = new BlobTruncatedException(BLOB_FILE + path + " holds " + objectLength
           + " bytes, before the recorded offset " + offset);
       truncated.initCause(e);
       return truncated;
@@ -642,7 +647,7 @@ public class BlobBytesSource implements Serializable {
     }
 
     private EOFException truncated() {
-      return new BlobTruncatedException("Blob file " + path + " ended early: expected " + remaining + " more bytes of the referenced range");
+      return new BlobTruncatedException(BLOB_FILE + path + " ended early: expected " + remaining + " more bytes of the referenced range");
     }
 
     @Override
@@ -739,6 +744,7 @@ public class BlobBytesSource implements Serializable {
 
     @Override
     public void close() {
+      // nothing to release
     }
   }
 
@@ -792,7 +798,7 @@ public class BlobBytesSource implements Serializable {
         throw notFoundChecked(storage, path, e);
       }
       if (n < 0) {
-        throw new BlobTruncatedException("Blob file " + path + " ended early: expected " + remaining
+        throw new BlobTruncatedException(BLOB_FILE + path + " ended early: expected " + remaining
             + " more bytes of the referenced range");
       }
       return n;

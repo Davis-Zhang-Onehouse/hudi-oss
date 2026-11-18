@@ -687,7 +687,7 @@ public class HoodieStreamer implements Serializable {
      * Delta Sync Config.
      */
     private final HoodieStreamer.Config cfg;
-    private SourceContract sourceContract;
+    private transient SourceContract sourceContract;
 
     /**
      * Schema provider that supplies the command for reading the input and writing out the target table.

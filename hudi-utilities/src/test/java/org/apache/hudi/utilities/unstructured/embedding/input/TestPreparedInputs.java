@@ -54,7 +54,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -67,6 +66,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -194,11 +194,11 @@ public class TestPreparedInputs {
     when(env.conf()).thenReturn(new SparkConf(false).set("spark.master", "local[4]").set("spark.testing.reservedMemory", "0"));
     SparkEnv.set(env);
     TaskContext$.MODULE$.setTaskContext(mock(TaskContext.class));
-    try {
-      PreparedInputs inTask = new PreparedInputs(props, INSTANT, destination());
+    try (PreparedInputs inTask = new PreparedInputs(props, INSTANT, destination())) {
       if (HoodieBaseParquetWriter.supportsColumnStatisticsSwitch()) {
+        String fileId = row(0);
         HoodieValidationException refused = assertThrows(HoodieValidationException.class,
-            () -> inTask.prepare(row(0), null, JPEG, payload, 64));
+            () -> inTask.prepare(fileId, null, JPEG, payload, 64));
         assertTrue(refused.getMessage().contains(EmbeddingInputConfig.INLINE_MAX_BYTES.key() + "=" + huge
             + " is above the per-task inline ceiling"), refused.getMessage());
         assertTrue(refused.getMessage().contains("in the task before its first stored input"), refused.getMessage());
@@ -252,9 +252,11 @@ public class TestPreparedInputs {
     assertThrows(IllegalArgumentException.class, () -> inputs.prepare(fileId, null, JPEG, null, 4));
     assertThrows(IllegalArgumentException.class, () -> inputs.prepare(fileId, null, JPEG, () -> new ByteArrayInputStream(content), -1));
     for (String partition : new String[] {"../x", "a/../b", "/2026", "2026/", "a//b", "./a", "a/."}) {
-      assertThrows(IllegalArgumentException.class, () -> prepare(inputs, fileId, partition, JPEG, bytes(32, 4)), partition);
+      byte[] outOfLine = bytes(32, 4);
+      assertThrows(IllegalArgumentException.class, () -> prepare(inputs, fileId, partition, JPEG, outOfLine), partition);
       // the rule applies to every row, inline or not
-      assertThrows(IllegalArgumentException.class, () -> prepare(inputs, fileId, partition, JPEG, bytes(8, 4)), "inline " + partition);
+      byte[] inline = bytes(8, 4);
+      assertThrows(IllegalArgumentException.class, () -> prepare(inputs, fileId, partition, JPEG, inline), "inline " + partition);
     }
     for (String partition : new String[] {"2026/10/14", "p", "dt=2026-10-14/region=us"}) {
       Row blob = prepare(inputs, fileId, partition, JPEG, bytes(32, 4));
@@ -310,7 +312,7 @@ public class TestPreparedInputs {
     Row replay = inputs.prepare(row(11), "p", JPEG, payload, content.length);
     assertEquals(2, opens[0], "one open per prepare");
     assertEquals(first.getString(0), replay.getString(0));
-    assertFalse(first.getStruct(2).getString(0).equals(replay.getStruct(2).getString(0)));
+    assertNotEquals(first.getStruct(2).getString(0), replay.getStruct(2).getString(0));
     inputs.awaitWrites();
     assertArrayEquals(content, stored(replay));
     assertArrayEquals(content, stored(first));
@@ -325,11 +327,12 @@ public class TestPreparedInputs {
     byte[] content = bytes(300_000, 19);
     PreparedInputs inputs = inputs(THRESHOLD);
     Row clean = inputs.prepare(row(13), "p", JPEG, () -> new ByteArrayInputStream(content), content.length);
-    HoodieIOException interrupted = assertThrows(HoodieIOException.class, () -> inputs.prepare(row(13), "p", JPEG,
+    String fileId = row(13);
+    HoodieIOException interrupted = assertThrows(HoodieIOException.class, () -> inputs.prepare(fileId, "p", JPEG,
         () -> new ResetAfter(new ByteArrayInputStream(content), 100_000), content.length));
     assertTrue(interrupted.getCause() instanceof IOException, String.valueOf(interrupted.getCause()));
     Row retry = inputs.prepare(row(13), "p", JPEG, () -> new ByteArrayInputStream(content), content.length);
-    assertFalse(clean.getStruct(2).getString(0).equals(retry.getStruct(2).getString(0)));
+    assertNotEquals(clean.getStruct(2).getString(0), retry.getStruct(2).getString(0));
     inputs.awaitWrites();
     assertArrayEquals(content, stored(retry));
   }
@@ -340,13 +343,15 @@ public class TestPreparedInputs {
     byte[] content = bytes(1000, 18);
     PreparedInputs inputs = inputs(THRESHOLD);
     for (long declared : new long[] {content.length - 1, content.length + 1}) {
+      String fileId = row(12);
       IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-          () -> inputs.prepare(row(12), "p", JPEG, () -> new ByteArrayInputStream(content), declared));
+          () -> inputs.prepare(fileId, "p", JPEG, () -> new ByteArrayInputStream(content), declared));
       assertTrue(refused.getMessage().contains("declares " + declared), refused.getMessage());
     }
     // inline too
+    String fileId = row(12);
     IllegalArgumentException inline = assertThrows(IllegalArgumentException.class,
-        () -> inputs.prepare(row(12), "p", JPEG, () -> new ByteArrayInputStream(bytes(8, 1)), 9));
+        () -> inputs.prepare(fileId, "p", JPEG, () -> new ByteArrayInputStream(bytes(8, 1)), 9));
     assertTrue(inline.getMessage().contains("declares 9"), inline.getMessage());
   }
 
@@ -376,8 +381,10 @@ public class TestPreparedInputs {
         return n;
       }
     };
+    PreparedInputs inputs = inputs(THRESHOLD);
+    String fileId = row(16);
     IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-        () -> inputs(THRESHOLD).prepare(row(16), "p", JPEG, growing, length));
+        () -> inputs.prepare(fileId, "p", JPEG, growing, length));
     assertTrue(refused.getMessage().contains("more than " + length), refused.getMessage());
     assertEquals(length + 1L, served[0], "the read stopped one byte past the length");
   }
@@ -406,11 +413,13 @@ public class TestPreparedInputs {
         "one read asked for " + largestRead[0] + " bytes: the payload was buffered whole");
     List<String> before = payloadFiles();
     for (long declared : new long[] {length - 1, length + 1}) {
+      String fileId = row(17);
       IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-          () -> inputs.prepare(row(17), "p", JPEG, () -> new ByteArrayInputStream(content), declared));
+          () -> inputs.prepare(fileId, "p", JPEG, () -> new ByteArrayInputStream(content), declared));
       assertTrue(refused.getMessage().contains("declares " + declared), refused.getMessage());
     }
-    HoodieIOException interrupted = assertThrows(HoodieIOException.class, () -> inputs.prepare(row(17), "p", JPEG,
+    String fileId = row(17);
+    HoodieIOException interrupted = assertThrows(HoodieIOException.class, () -> inputs.prepare(fileId, "p", JPEG,
         () -> new ResetAfter(new ByteArrayInputStream(content), 2 * PayloadWriter.COPY_BUFFER_BYTES), length));
     assertTrue(interrupted.getCause() instanceof IOException, String.valueOf(interrupted.getCause()));
     assertEquals(before, payloadFiles(), "a payload that fails to read leaves no file");
@@ -435,7 +444,7 @@ public class TestPreparedInputs {
     for (String reference : references) {
       assertFalse(Files.exists(Paths.get(reference)), "nothing relative to the working directory: " + reference);
     }
-    Collections.sort(references);
+    references.sort(null);
     assertEquals(references, payloadFiles(), "the out-of-line payload files only");
   }
 

@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the warning list of budget keys naming no configured group, the parallelism P each group's floor uses
  * ({@link BalanceParallelism}), and which strategy a job gets.
  */
-public class TestBalanceConfig {
+class TestBalanceConfig {
 
   private static final long MIB = 1024L * 1024L;
 
@@ -43,7 +43,7 @@ public class TestBalanceConfig {
   }
 
   @Test
-  public void sizeTypeDefaultAndOptionalHashStrategy() {
+  void sizeTypeDefaultAndOptionalHashStrategy() {
     assertEquals(SizeTypeAwareBalancingStrategy.class, RowBalancer.strategyFrom(new TypedProperties()).getClass());
     assertEquals(SizeTypeAwareBalancingStrategy.class.getName(), EmbeddingTableConfig.BALANCE_STRATEGY_CLASS.defaultValue());
     TypedProperties props = new TypedProperties();
@@ -52,7 +52,7 @@ public class TestBalanceConfig {
   }
 
   @Test
-  public void budgetsDefaultPerGroup() {
+  void budgetsDefaultPerGroup() {
     TypedProperties props = new TypedProperties();
     assertEquals(256 * MIB, SizeTypeAwareBalancingStrategy.maxBytesPerTask(props, BalanceGroups.PDF));
     assertEquals(2048 * MIB, SizeTypeAwareBalancingStrategy.maxBytesPerTask(props, BalanceGroups.IMAGE));
@@ -61,7 +61,7 @@ public class TestBalanceConfig {
   }
 
   @Test
-  public void budgetsConfigured() {
+  void budgetsConfigured() {
     TypedProperties props = new TypedProperties();
     props.setProperty(budgetKey(BalanceGroups.VIDEO), "2147483648");
     props.setProperty(EmbeddingTableConfig.BALANCE_DEFAULT_MAX_BYTES_PER_TASK.key(), "1");
@@ -73,7 +73,7 @@ public class TestBalanceConfig {
   }
 
   @Test
-  public void blankBudgetKeyCountsAsUnset() {
+  void blankBudgetKeyCountsAsUnset() {
     TypedProperties props = new TypedProperties();
     props.setProperty(budgetKey(BalanceGroups.VIDEO), " ");
     props.setProperty(budgetKey("com.example.X"), "");
@@ -83,7 +83,7 @@ public class TestBalanceConfig {
   }
 
   @Test
-  public void budgetsMustBePositive() {
+  void budgetsMustBePositive() {
     for (String value : new String[] {"0", "-5", "lots"}) {
       TypedProperties props = new TypedProperties();
       props.setProperty(budgetKey(BalanceGroups.PDF), value);
@@ -99,7 +99,7 @@ public class TestBalanceConfig {
   }
 
   @Test
-  public void unknownBudgetGroups() {
+  void unknownBudgetGroups() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
         "com.example.TxtPreprocessor");

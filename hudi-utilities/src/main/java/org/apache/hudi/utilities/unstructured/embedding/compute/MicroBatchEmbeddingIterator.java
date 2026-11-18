@@ -195,13 +195,13 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
    */
   private Iterator<Row> embedNextBatch() {
     List<Row> batch = new ArrayList<>(batchSize);
-    List<EmbeddingResult> refused = new ArrayList<>(batchSize);
+    List<EmbeddingResult> refusals = new ArrayList<>(batchSize);
     List<EmbeddingInput> inputs = new ArrayList<>(batchSize);
     while (batch.size() < batchSize && rows.hasNext()) {
       Row row = rows.next();
       batch.add(row);
       EmbeddingResult refusal = refusal(row);
-      refused.add(refusal);
+      refusals.add(refusal);
       if (refusal == null) {
         inputs.add(toInput(row));
       }
@@ -215,7 +215,7 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
     List<Row> processed = new ArrayList<>(batch.size());
     int called = 0;
     for (int i = 0; i < batch.size(); i++) {
-      EmbeddingResult result = refused.get(i) != null ? refused.get(i) : results.get(called++);
+      EmbeddingResult result = refusals.get(i) != null ? refusals.get(i) : results.get(called++);
       processed.add(withOutcome(batch.get(i), result));
     }
     return processed.iterator();
@@ -344,8 +344,10 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
         counters.getBatchesOk().add(1);
         return results;
       }
-      LOG.warn("EMBED-COMPUTE-BATCH-FAILED model={} rows={} firstInput=[{}]: {}", model.getName(), inputs.size(),
-          inputs.get(0).describeIdentity(), malformed);
+      if (LOG.isWarnEnabled()) {
+        LOG.warn("EMBED-COMPUTE-BATCH-FAILED model={} rows={} firstInput=[{}]: {}", model.getName(), inputs.size(),
+            inputs.get(0).describeIdentity(), malformed);
+      }
       counters.getBatchesFailed().add(1);
       return Collections.nCopies(inputs.size(), EmbeddingResult.retryable(malformed));
     } catch (EmbeddingClientConfigException | EmbeddingComputePlatformException e) {

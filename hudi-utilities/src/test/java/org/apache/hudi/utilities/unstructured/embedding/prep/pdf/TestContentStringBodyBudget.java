@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * An unfiltered content stream is read as a view on the staged file, but PDFBox's content parser still copies each string
  * and inline-image body onto the heap whole, so one oversized string or inline image is held to the decoded-size budget.
  */
-public class TestContentStringBodyBudget {
+class TestContentStringBodyBudget {
 
   private static final long BUDGET = 10_000;
 
@@ -72,7 +72,7 @@ public class TestContentStringBodyBudget {
 
   @ParameterizedTest
   @EnumSource(Body.class)
-  public void oversizedBodyInAnUnfilteredPageStreamFailsThePage(Body body) throws IOException {
+  void oversizedBodyInAnUnfilteredPageStreamFailsThePage(Body body) throws IOException {
     try (PDDocument document = Loader.loadPDF(PdfFixtures.contentsStreams(body.ops((int) (2 * BUDGET))))) {
       assertDecodeLimit(document.getPage(1));
     }
@@ -80,7 +80,7 @@ public class TestContentStringBodyBudget {
 
   @ParameterizedTest
   @EnumSource(Body.class)
-  public void oversizedBodyInAnUnfilteredFormFailsThePage(Body body) throws IOException {
+  void oversizedBodyInAnUnfilteredFormFailsThePage(Body body) throws IOException {
     try (PDDocument document = Loader.loadPDF(formPage(body.ops((int) (2 * BUDGET))))) {
       assertDecodeLimit(document.getPage(0));
     }
@@ -88,7 +88,7 @@ public class TestContentStringBodyBudget {
 
   @ParameterizedTest
   @EnumSource(Body.class)
-  public void bodyWithinTheBudgetPasses(Body body) throws IOException {
+  void bodyWithinTheBudgetPasses(Body body) throws IOException {
     try (PDDocument page = Loader.loadPDF(PdfFixtures.contentsStreams(body.ops((int) (BUDGET / 2)), body.ops((int) (BUDGET / 2))));
          PDDocument form = Loader.loadPDF(formPage(body.ops((int) (BUDGET / 2))))) {
       new StreamDecodeGuard(BUDGET, temp.toFile()).checkPage(page.getPage(1));
@@ -97,7 +97,8 @@ public class TestContentStringBodyBudget {
   }
 
   private void assertDecodeLimit(PDPage page) {
-    PageFailure failure = assertThrows(PageFailure.class, () -> new StreamDecodeGuard(BUDGET, temp.toFile()).checkPage(page));
+    StreamDecodeGuard guard = new StreamDecodeGuard(BUDGET, temp.toFile());
+    PageFailure failure = assertThrows(PageFailure.class, () -> guard.checkPage(page));
     assertEquals(PdfFailureCode.DECODE_LIMIT, failure.code());
     assertTrue(failure.getMessage().contains(String.valueOf(BUDGET)), failure.getMessage());
   }

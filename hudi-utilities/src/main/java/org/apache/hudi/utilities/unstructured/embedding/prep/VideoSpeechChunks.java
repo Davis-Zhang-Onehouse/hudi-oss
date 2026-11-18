@@ -90,6 +90,8 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
   public static final String SPEECH_PREFIX = "speech: ";
 
   private static final Logger LOG = LoggerFactory.getLogger(VideoSpeechChunks.class);
+  private static final String STARTING_AT = " starting at ";
+  private static final String SEGMENT = "segment ";
 
   private final AudioSegmentSource source;
   private final SegmentTranscriber transcriber;
@@ -104,11 +106,11 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
   private long nextOrdinal;
   private boolean done;
 
-  public VideoSpeechChunks(AudioSegmentSource source, SegmentTranscriber transcriber, TranscriptChunker chunker, AudioInput input,
-                           Tokenizer tokenizer, TypedProperties props, String logicLine, String speakerScope) {
-    this.source = source;
-    this.transcriber = transcriber;
-    this.chunker = chunker;
+  public VideoSpeechChunks(Engines engines, AudioInput input, Tokenizer tokenizer, TypedProperties props, String logicLine,
+                           String speakerScope) {
+    this.source = engines.source;
+    this.transcriber = engines.transcriber;
+    this.chunker = engines.chunker;
     this.input = input;
     this.tokenizer = tokenizer;
     this.props = props;
@@ -116,16 +118,32 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
     this.speakerScope = speakerScope;
   }
 
+  /** The segment source, the transcriber and the transcript chunker of a video's speech. */
+  public static final class Engines {
+    private final AudioSegmentSource source;
+    private final SegmentTranscriber transcriber;
+    private final TranscriptChunker chunker;
+
+    public Engines(AudioSegmentSource source, SegmentTranscriber transcriber, TranscriptChunker chunker) {
+      this.source = source;
+      this.transcriber = transcriber;
+      this.chunker = chunker;
+    }
+  }
+
   @Override
   public boolean hasNext() {
     if (done) {
       return false;
     }
+    // an Error (e.g. an exhausted heap) closes what is open before it propagates: the body neither returned nor failed
+    boolean settled = false;
     try {
       if (chunks == null) {
         open();
       }
       if (chunks.hasNext()) {
+        settled = true;
         return true;
       }
       // the chunker must pack every utterance: what it left would never be written
@@ -133,12 +151,15 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
         throw new IllegalStateException("chunker " + chunker.logicVersion() + " left utterances unpacked");
       }
       finish();
+      settled = true;
       return false;
     } catch (RuntimeException e) {
+      settled = true;
       throw failed(e);
-    } catch (Error e) {
-      closeQuietly();
-      throw e;
+    } finally {
+      if (!settled) {
+        closeQuietly();
+      }
     }
   }
 
@@ -147,13 +168,19 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
     if (!hasNext()) {
       throw new NoSuchElementException();
     }
+    // as in hasNext: an Error closes what is open before it propagates
+    boolean settled = false;
     try {
-      return chunk(chunks.next());
+      Chunk chunk = chunk(chunks.next());
+      settled = true;
+      return chunk;
     } catch (RuntimeException e) {
+      settled = true;
       throw failed(e);
-    } catch (Error e) {
-      closeQuietly();
-      throw e;
+    } finally {
+      if (!settled) {
+        closeQuietly();
+      }
     }
   }
 
@@ -348,12 +375,12 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
     private AudioSegment checked(AudioSegment segment) {
       String what = null;
       if (segment.index() != taken) {
-        what = "segment " + segment.index() + " where " + taken + " was due (indexes are dense from 0, in order)";
+        what = SEGMENT + segment.index() + " where " + taken + " was due (indexes are dense from 0, in order)";
       } else if (segment.startMs() < 0 || segment.endMs() <= segment.startMs()) {
-        what = "segment " + segment.index() + " spanning [" + segment.startMs() + ", " + segment.endMs() + ") ms (a span is "
+        what = SEGMENT + segment.index() + " spanning [" + segment.startMs() + ", " + segment.endMs() + ") ms (a span is "
             + "0 <= start < end)";
       } else if (taken > 0 && segment.startMs() < previousEndMs) {
-        what = "segment " + segment.index() + " starting at " + segment.startMs() + " ms, before the end of segment "
+        what = SEGMENT + segment.index() + STARTING_AT + segment.startMs() + " ms, before the end of segment "
             + (taken - 1) + " at " + previousEndMs + " ms (segments are in time order and do not overlap)";
       }
       if (what != null) {
@@ -367,10 +394,10 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
       long start = utterance.getStartMs();
       String what = null;
       if (start < currentStartMs || start >= currentEndMs) {
-        what = "an utterance of segment " + currentIndex + " starting at " + start + " ms, outside the segment's span ["
+        what = "an utterance of segment " + currentIndex + STARTING_AT + start + " ms, outside the segment's span ["
             + currentStartMs + ", " + currentEndMs + ") ms";
       } else if (start < previousUtteranceStartMs) {
-        what = "an utterance of segment " + currentIndex + " starting at " + start + " ms, before the previous utterance's start"
+        what = "an utterance of segment " + currentIndex + STARTING_AT + start + " ms, before the previous utterance's start"
             + " at " + previousUtteranceStartMs + " ms (starts are non-decreasing)";
       }
       if (what != null) {
@@ -439,24 +466,43 @@ public final class VideoSpeechChunks implements ClosableIterator<Chunk> {
       }
     }
 
-    /** Closes the open utterance iterator and the segments, once; a failure is classified by its origin. */
+    /**
+     * Closes the open utterance iterator and the segments, once; a failure is classified by its origin. The first failure is
+     * thrown, a later one suppressed on it.
+     */
     @Override
     public void close() {
       if (closed) {
         return;
       }
       closed = true;
+      RuntimeException failure = null;
       try {
         if (current != null) {
           closeCurrent();
         }
+      } catch (RuntimeException e) {
+        failure = e;
       } finally {
-        try {
-          segments.close();
-        } catch (RuntimeException e) {
-          throw new SourceFailure(e);
-        }
+        failure = closeSegments(failure);
       }
+      if (failure != null) {
+        throw failure;
+      }
+    }
+
+    /** Closes the segments; returns {@code first}, with a segments failure suppressed on it, or that failure when there is none. */
+    private RuntimeException closeSegments(RuntimeException first) {
+      try {
+        segments.close();
+      } catch (RuntimeException e) {
+        SourceFailure failure = new SourceFailure(e);
+        if (first == null) {
+          return failure;
+        }
+        first.addSuppressed(failure);
+      }
+      return first;
     }
   }
 

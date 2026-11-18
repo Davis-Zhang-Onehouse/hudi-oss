@@ -34,6 +34,8 @@ import java.util.Set;
 /** Composition rules of an unstructured job's required transformer and final schema guard. */
 final class UnstructuredTransformerChain {
 
+  private static final String SOURCE_NAME = "UnstructuredDataSource";
+
   /** The delimiter of a chain entry's {@code <id>:<class>} form ({@link org.apache.hudi.utilities.transform.ChainedTransformer}). */
   private static final String ID_DELIMITER = ":";
 
@@ -43,7 +45,6 @@ final class UnstructuredTransformerChain {
   static List<String> compose(UnstructuredMode mode, List<String> configured) {
     List<String> chain = composeRequired(mode, configured);
     Class<? extends Transformer> closing = UnstructuredSchemaGuard.class;
-    String sourceName = "UnstructuredDataSource";
     boolean withIds = false;
     Set<String> ids = new HashSet<>();
     for (String entry : chain) {
@@ -53,13 +54,13 @@ final class UnstructuredTransformerChain {
         ids.add(name.getLeft().get());
       }
       if (isA(name.getRight(), closing)) {
-        throw new HoodieTransformPlanException(sourceName + " runs " + closing.getName() + " last itself: remove it from "
+        throw new HoodieTransformPlanException(SOURCE_NAME + " runs " + closing.getName() + " last itself: remove it from "
             + "--transformer-class. Transformers configured: " + configured);
       }
     }
     String id = closing.getSimpleName();
     if (withIds && ids.contains(id)) {
-      throw new HoodieTransformPlanException("--transformer-class uses the id " + id + ", which " + sourceName + " gives the "
+      throw new HoodieTransformPlanException("--transformer-class uses the id " + id + ", which " + SOURCE_NAME + " gives the "
           + closing.getName() + " it adds last: rename that entry. Transformers configured: " + configured);
     }
     List<String> closed = new ArrayList<>(chain);
@@ -79,7 +80,6 @@ final class UnstructuredTransformerChain {
     Class<? extends Transformer> required = mode.requiredTransformer();
     Set<Class<? extends Transformer>> excludedTransformers = mode.excludedTransformers();
     List<String> entries = configured == null ? Collections.emptyList() : configured;
-    String sourceName = "UnstructuredDataSource";
     int requiredEntries = 0;
     boolean withIds = false;
     Set<String> ids = new HashSet<>();
@@ -91,13 +91,7 @@ final class UnstructuredTransformerChain {
         ids.add(name.getLeft().get());
       }
       String className = name.getRight();
-      for (Class<? extends Transformer> excluded : excludedTransformers) {
-        if (isA(className, excluded)) {
-          throw new HoodieTransformPlanException(sourceName + " does not run with " + excluded.getName() + ": --transformer-class names "
-              + className + ". " + (sourceName + " runs " + required.getName() + ". ")
-              + "Transformers configured: " + entries);
-        }
-      }
+      checkNotExcluded(className, excludedTransformers, required, entries);
       if (isA(className, required)) {
         requiredEntries++;
         if (requiredEntries > 1) {
@@ -109,18 +103,34 @@ final class UnstructuredTransformerChain {
     if (requiredEntries > 0) {
       return requiredEntries == 1 ? configured : chain;
     }
-    if (withIds) {
-      String id = required.getSimpleName();
-      if (ids.contains(id)) {
-        throw new HoodieTransformPlanException("--transformer-class uses the id " + id + ", which " + sourceName + " gives the "
-            + required.getName() + " it adds to the chain: rename that entry, or name " + required.getName() + " in the chain. "
+    chain.add(0, requiredEntry(required, withIds, ids, entries));
+    return chain;
+  }
+
+  /** Refuses a chain entry naming one of the transformers the source does not run with. */
+  private static void checkNotExcluded(String className, Set<Class<? extends Transformer>> excludedTransformers,
+                                       Class<? extends Transformer> required, List<String> entries) {
+    for (Class<? extends Transformer> excluded : excludedTransformers) {
+      if (isA(className, excluded)) {
+        throw new HoodieTransformPlanException(SOURCE_NAME + " does not run with " + excluded.getName() + ": --transformer-class names "
+            + className + ". " + (SOURCE_NAME + " runs " + required.getName() + ". ")
             + "Transformers configured: " + entries);
       }
-      chain.add(0, id + ID_DELIMITER + required.getName());
-    } else {
-      chain.add(0, required.getName());
     }
-    return chain;
+  }
+
+  /** The entry of the required transformer added first to a chain that has none: with an id when the chain's entries have ids. */
+  private static String requiredEntry(Class<? extends Transformer> required, boolean withIds, Set<String> ids, List<String> entries) {
+    if (!withIds) {
+      return required.getName();
+    }
+    String id = required.getSimpleName();
+    if (ids.contains(id)) {
+      throw new HoodieTransformPlanException("--transformer-class uses the id " + id + ", which " + SOURCE_NAME + " gives the "
+          + required.getName() + " it adds to the chain: rename that entry, or name " + required.getName() + " in the chain. "
+          + "Transformers configured: " + entries);
+    }
+    return id + ID_DELIMITER + required.getName();
   }
 
   /**

@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the digests. Pixels, not PNG bytes, are pinned (through the lossless PNG encoding), so an encoder's compression choices do
  * not matter; the JPEG encoding is chosen by its own settings (encoding, quality).
  */
-public class TestImageResizeLogicV1Golden {
+class TestImageResizeLogicV1Golden {
 
   /** The default spec with the lossless PNG encoding, so the decoded output IS the prepared pixels (JPEG would alter them). */
   private static final ImagePreprocessingSpec DEFAULTS = new ImagePreprocessingSpec(
@@ -57,7 +57,7 @@ public class TestImageResizeLogicV1Golden {
       "gif-300x200, 300x200, 04786933241a06447b5d585f0b45d0e7df47c81fcb4a34020e9baa7c0472cc5c",
       "bmp-600x26, 512x22, a3352e526e46d0c8598853fdea2e44954da09d840b2e4e8e33984f250d3671cd",
       "tiff-520x30, 512x30, 9101a27c067aa5fa1195f258fbaf115ff85e1a78d5f98840e6c39b03dd0981fc"})
-  public void preparedPixelsArePinnedForThisLogicVersion(String fixture, String size, String digest) throws IOException {
+  void preparedPixelsArePinnedForThisLogicVersion(String fixture, String size, String digest) throws IOException {
     assertEquals("image-resize-v1", ImageResizeLogicV1.LOGIC_VERSION, "a new logic version needs new pinned digests");
     PreparedImage prepared = new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(fixture(fixture)));
     BufferedImage pixels = ImageFixtures.decode(prepared.getEncoded());
@@ -71,7 +71,7 @@ public class TestImageResizeLogicV1Golden {
    */
   @ParameterizedTest
   @CsvSource({"jpeg", "png"})
-  public void theJdksWriterEncodesEvenWhenAnotherIsRegisteredFirst(String encoding) throws Exception {
+  void theJdksWriterEncodesEvenWhenAnotherIsRegisteredFirst(String encoding) throws Exception {
     ImagePreprocessingSpec spec = new ImagePreprocessingSpec(ImagePreprocessingSpec.DEFAULT_LONG_SIDE,
         ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, ImagePreprocessingSpec.DEFAULT_MAX_PIXELS,
         ImagePreprocessingSpec.DEFAULT_INTERMEDIATE_BUDGET_BYTES, InProcessImageDecoder.class.getName(), encoding,
@@ -93,7 +93,7 @@ public class TestImageResizeLogicV1Golden {
    */
   @ParameterizedTest
   @CsvSource({"gif", "tiff"})
-  public void multiImageFileIsPreparedFromItsFirstImageOnly(String format) throws IOException {
+  void multiImageFileIsPreparedFromItsFirstImageOnly(String format) throws IOException {
     byte[] multi = ImageFixtures.twoFrames(format, 300, 200);
     String prepared = preparedDigest(multi);
     assertEquals(preparedDigest(ImageFixtures.frame(multi, 0, format)), prepared, "image 0 of the " + format);

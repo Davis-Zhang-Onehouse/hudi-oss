@@ -66,14 +66,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * per kept frame carrying the frame as its payload and its index; it declares that it stores inputs; a size guard before any
  * read; its failures split into content failures of the file (keeping the frames already emitted) and interruptions of the round.
  */
-public class TestVideoFramePreprocessor {
+class TestVideoFramePreprocessor {
 
   private static final String LOGIC = "scripted-frames-v0";
   private static final long VIDEO_SIZE = 12345L;
 
   @ParameterizedTest
   @ValueSource(strings = {"mp4", "mov", "mkv", "webm", "avi"})
-  public void everyVideoExtensionMapsToTheFramePreprocessorWhichStoresInputs(String extension) {
+  void everyVideoExtensionMapsToTheFramePreprocessorWhichStoresInputs(String extension) {
     PreprocessorRegistry registry = new PreprocessorRegistry(new TypedProperties());
     FilePreprocessor preprocessor = registry.forExtension(extension).get();
     assertEquals(VideoFramePreprocessor.class, preprocessor.getClass());
@@ -85,7 +85,7 @@ public class TestVideoFramePreprocessor {
   }
 
   @Test
-  public void oneChunkPerKeptFrameCarryingItsImageIndexAndAux() throws IOException {
+  void oneChunkPerKeptFrameCarryingItsImageIndexAndAux() throws IOException {
     ScriptedStrategy strategy = new ScriptedStrategy(3, -1, null);
     List<Chunk> chunks = drain(new ScriptedPreprocessor(strategy).open(video(), file(VIDEO_SIZE), null, new TypedProperties()));
 
@@ -118,7 +118,7 @@ public class TestVideoFramePreprocessor {
   }
 
   @Test
-  public void videoAboveTheSizeGuardIsRefusedBeforeAnyRead() {
+  void videoAboveTheSizeGuardIsRefusedBeforeAnyRead() {
     AtomicInteger opens = new AtomicInteger();
     BlobBytesSupplier counting = () -> {
       opens.incrementAndGet();
@@ -127,8 +127,9 @@ public class TestVideoFramePreprocessor {
     ScriptedStrategy strategy = new ScriptedStrategy(3, -1, null);
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "4999");
-    PreprocessingException refused = assertThrows(PreprocessingException.class,
-        () -> new ScriptedPreprocessor(strategy).open(counting, file(5000L), null, props));
+    ScriptedPreprocessor preprocessor = new ScriptedPreprocessor(strategy);
+    FileMeta oversized = file(5000L);
+    PreprocessingException refused = assertThrows(PreprocessingException.class, () -> preprocessor.open(counting, oversized, null, props));
     assertEquals("video declares 5000 bytes, above " + EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key()
         + " = 4999; refused before any read", refused.getMessage());
     assertEquals(0, opens.get());
@@ -136,7 +137,7 @@ public class TestVideoFramePreprocessor {
   }
 
   @Test
-  public void videoAboveTheFormerDefaultIsPreparedWhenNoCapIsSet() throws IOException {
+  void videoAboveTheFormerDefaultIsPreparedWhenNoCapIsSet() throws IOException {
     // 3 GiB declared, above the former 2 GiB default: no cap unless one is set
     ScriptedStrategy strategy = new ScriptedStrategy(3, -1, null);
     try (ClosableIterator<Chunk> chunks = new ScriptedPreprocessor(strategy).open(() -> {
@@ -149,7 +150,7 @@ public class TestVideoFramePreprocessor {
 
   /** The default (FFmpeg) preprocessor checks the frame keys itself, without loading FFmpeg, naming the offending key. */
   @Test
-  public void configurationIsValidatedOnTheDriverNamingTheKey() {
+  void configurationIsValidatedOnTheDriverNamingTheKey() {
     VideoFramePreprocessor preprocessor = new VideoFramePreprocessor();
     preprocessor.validateConfig(new TypedProperties(), null);
     String[][] bad = {
@@ -171,7 +172,7 @@ public class TestVideoFramePreprocessor {
 
   /** A custom strategy validates itself; the size guard is still the preprocessor's. */
   @Test
-  public void customStrategyValidatesItsOwnConfiguration() {
+  void customStrategyValidatesItsOwnConfiguration() {
     ScriptedStrategy strategy = new ScriptedStrategy(1, -1, null);
     VideoFramePreprocessor preprocessor = new ScriptedPreprocessor(strategy);
     preprocessor.validateConfig(new TypedProperties(), null);
@@ -190,26 +191,26 @@ public class TestVideoFramePreprocessor {
 
   /** Content failures of the file at the open (its quarantine entry, the round advances): refused, undecodable, gone, short, malformed. */
   @Test
-  public void refusedCorruptGoneShortOrMalformedSourcesAtTheOpenAreContentFailures() {
+  void refusedCorruptGoneShortOrMalformedSourcesAtTheOpenAreContentFailures() {
     UncheckedIOException pixelGuard = new UncheckedIOException("refused",
         new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + "3840x2161 is above the pixel guard"));
     VideoDecodeException noVideo = new VideoDecodeException("video v has no video stream");
     for (RuntimeException fault : Arrays.asList(pixelGuard, noVideo)) {
-      RuntimeException thrown = assertThrows(RuntimeException.class, () -> new ScriptedPreprocessor(new ScriptedStrategy(0, 0, fault))
-          .open(video(), file(VIDEO_SIZE), null, new TypedProperties()));
+      ScriptedPreprocessor preprocessor = new ScriptedPreprocessor(new ScriptedStrategy(0, 0, fault));
+      RuntimeException thrown = assertThrows(RuntimeException.class, () -> openVideo(preprocessor));
       assertSame(fault, thrown);
     }
     for (IOException fault : Arrays.asList(new FileNotFoundException("gone.mp4"), new BlobTruncatedException("ended early"),
         new BlobReferenceException("an escaping path"))) {
-      IOException thrown = assertThrows(IOException.class, () -> new ScriptedPreprocessor(new ScriptedStrategy(fault))
-          .open(video(), file(VIDEO_SIZE), null, new TypedProperties()));
+      ScriptedPreprocessor preprocessor = new ScriptedPreprocessor(new ScriptedStrategy(fault));
+      IOException thrown = assertThrows(IOException.class, () -> openVideo(preprocessor));
       assertSame(fault, thrown, "a content failure is the file's own: " + thrown);
     }
   }
 
   /** A frame logic that keeps no frame is not a failure: the file yields no chunk (the framework's empty file). */
   @Test
-  public void strategyThatKeepsNoFrameYieldsNoChunk() throws IOException {
+  void strategyThatKeepsNoFrameYieldsNoChunk() throws IOException {
     ScriptedStrategy strategy = new ScriptedStrategy(0, -1, null);
     assertEquals(0, drain(new ScriptedPreprocessor(strategy).open(video(), file(VIDEO_SIZE), null, new TypedProperties())).size());
     assertEquals(1, strategy.closed.get());
@@ -221,7 +222,7 @@ public class TestVideoFramePreprocessor {
    */
   @ParameterizedTest
   @ValueSource(ints = {ScriptedStrategy.IN_HAS_NEXT, ScriptedStrategy.IN_NEXT, ScriptedStrategy.AT_CLOSE})
-  public void contentFailureWhileReadingKeepsTheFramesBeforeIt(int where) throws IOException {
+  void contentFailureWhileReadingKeepsTheFramesBeforeIt(int where) throws IOException {
     VideoDecodeException corrupt = new VideoDecodeException("video v cannot be decoded at 4000000us");
     int framesBefore = where == ScriptedStrategy.AT_CLOSE ? 3 : 2;
     List<Chunk> before = new ArrayList<>();
@@ -237,27 +238,27 @@ public class TestVideoFramePreprocessor {
   /** A failure that fails the round (here a platform failure: a codec missing from the executor) propagates as it is. */
   @ParameterizedTest
   @ValueSource(ints = {ScriptedStrategy.AT_OPEN, ScriptedStrategy.IN_HAS_NEXT, ScriptedStrategy.IN_NEXT, ScriptedStrategy.AT_CLOSE})
-  public void roundFailuresPropagate(int where) {
+  void roundFailuresPropagate(int where) {
     PrepPlatformException platform = new PrepPlatformException("no JPEG writer", null);
-    RuntimeException failure = assertThrows(RuntimeException.class, () -> drain(new ScriptedPreprocessor(
-        new ScriptedStrategy(where == ScriptedStrategy.AT_CLOSE ? 2 : 4, where == ScriptedStrategy.AT_CLOSE ? -1 : 1, platform, where))
-        .open(video(), file(VIDEO_SIZE), null, new TypedProperties())));
+    ScriptedPreprocessor preprocessor = new ScriptedPreprocessor(
+        new ScriptedStrategy(where == ScriptedStrategy.AT_CLOSE ? 2 : 4, where == ScriptedStrategy.AT_CLOSE ? -1 : 1, platform, where));
+    RuntimeException failure = assertThrows(RuntimeException.class, () -> openAndDrain(preprocessor));
     assertSame(platform, PrepFailures.roundFailure(failure), where + ": " + failure);
   }
 
   /** Interruptions of the round (never a FAILED file): any other storage failure, at the open or while frames are read. */
   @Test
-  public void otherStorageFailuresOpeningOrReadingTheSourceAreInterruptions() throws IOException {
+  void otherStorageFailuresOpeningOrReadingTheSourceAreInterruptions() throws IOException {
     IOException slowDown = new IOException("503 Slow Down");
-    SourceReadException atOpen = assertThrows(SourceReadException.class, () -> new ScriptedPreprocessor(new ScriptedStrategy(slowDown))
-        .open(video(), file(VIDEO_SIZE), null, new TypedProperties()));
+    ScriptedPreprocessor slowDownPreprocessor = new ScriptedPreprocessor(new ScriptedStrategy(slowDown));
+    SourceReadException atOpen = assertThrows(SourceReadException.class, () -> openVideo(slowDownPreprocessor));
     assertSame(slowDown, atOpen.getCause());
 
     // a denied read is never the file's fault, even when the storage calls it not found
     IOException denied = new AccessDeniedException("video.mp4");
     denied.initCause(new FileNotFoundException("video.mp4"));
-    assertThrows(SourceReadException.class, () -> new ScriptedPreprocessor(new ScriptedStrategy(denied))
-        .open(video(), file(VIDEO_SIZE), null, new TypedProperties()));
+    ScriptedPreprocessor deniedPreprocessor = new ScriptedPreprocessor(new ScriptedStrategy(denied));
+    assertThrows(SourceReadException.class, () -> openVideo(deniedPreprocessor));
 
     UncheckedIOException reset = new UncheckedIOException("read", new BlobReadException(new IOException("connection reset")));
     List<Chunk> before = new ArrayList<>();
@@ -270,13 +271,13 @@ public class TestVideoFramePreprocessor {
 
     // a source found gone part way is the file's own failure, not an interruption
     UncheckedIOException gone = new UncheckedIOException("read", new BlobReadException(new FileNotFoundException("gone.mp4")));
-    assertSame(gone, assertThrows(UncheckedIOException.class, () -> drain(new ScriptedPreprocessor(
-        new ScriptedStrategy(4, 1, gone, ScriptedStrategy.IN_HAS_NEXT)).open(video(), file(VIDEO_SIZE), null, new TypedProperties()))));
+    ScriptedPreprocessor gonePreprocessor = new ScriptedPreprocessor(new ScriptedStrategy(4, 1, gone, ScriptedStrategy.IN_HAS_NEXT));
+    assertSame(gone, assertThrows(UncheckedIOException.class, () -> openAndDrain(gonePreprocessor)));
   }
 
   /** A linkage error of a custom strategy is not FFmpeg's: it propagates as it is (only the default maps to a configuration error). */
   @Test
-  public void linkageErrorOfACustomStrategyPropagatesAsItIs() {
+  void linkageErrorOfACustomStrategyPropagatesAsItIs() {
     NoClassDefFoundError missing = new NoClassDefFoundError("com/example/Codec");
     ScriptedStrategy strategy = new ScriptedStrategy(0, 0, null) {
       @Override
@@ -284,13 +285,13 @@ public class TestVideoFramePreprocessor {
         throw missing;
       }
     };
-    assertSame(missing, assertThrows(NoClassDefFoundError.class, () -> new ScriptedPreprocessor(strategy)
-        .open(video(), file(VIDEO_SIZE), null, new TypedProperties())));
+    ScriptedPreprocessor preprocessor = new ScriptedPreprocessor(strategy);
+    assertSame(missing, assertThrows(NoClassDefFoundError.class, () -> openVideo(preprocessor)));
   }
 
   /** Closing a video part way closes its frames once. */
   @Test
-  public void closingPartWayClosesTheFramesOnce() throws IOException {
+  void closingPartWayClosesTheFramesOnce() throws IOException {
     ScriptedStrategy strategy = new ScriptedStrategy(5, -1, null);
     ClosableIterator<Chunk> chunks = new ScriptedPreprocessor(strategy).open(video(), file(VIDEO_SIZE), null, new TypedProperties());
     assertEquals(Long.valueOf(0L), chunks.next().getFrameIndex());
@@ -390,8 +391,9 @@ public class TestVideoFramePreprocessor {
           }
           int k = taken++;
           byte[] image = jpeg(k);
-          return new ExtractedFrame(2000L * k, k, true, 160, 120, ImageContentTypes.JPEG, image.length, "dedup-" + k,
+          ExtractedFrame.EncodedImage encoded = new ExtractedFrame.EncodedImage(160, 120, ImageContentTypes.JPEG, image.length,
               () -> new ByteArrayInputStream(image));
+          return new ExtractedFrame(2000L * k, k, true, "dedup-" + k, encoded);
         }
 
         @Override
@@ -403,6 +405,14 @@ public class TestVideoFramePreprocessor {
         }
       };
     }
+  }
+
+  private static ClosableIterator<Chunk> openVideo(ScriptedPreprocessor preprocessor) throws IOException {
+    return preprocessor.open(video(), file(VIDEO_SIZE), null, new TypedProperties());
+  }
+
+  private static List<Chunk> openAndDrain(ScriptedPreprocessor preprocessor) throws IOException {
+    return drain(openVideo(preprocessor));
   }
 
   private static BlobBytesSupplier video() {

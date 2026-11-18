@@ -36,6 +36,7 @@ import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
 import org.apache.hudi.utilities.unstructured.embedding.text.Tokenizer;
 
+import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
@@ -56,12 +57,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** The embedding round preserves its caller's reader setting while preprocessing, including failed rounds. */
 @Tag("functional")
-public class TestEmbeddingReaderConfig extends EmbeddingRoundTestBase {
+class TestEmbeddingReaderConfig extends EmbeddingRoundTestBase {
   private static final String READER_CONF = "spark.sql.parquet.enableVectorizedReader";
 
   @ParameterizedTest(name = "reader={0}, failed={1}")
   @CsvSource({"true,false", "false,false", "unset,false", "true,true", "false,true", "unset,true"})
-  public void callerSettingSurvivesDuringWork(String setting, boolean failed) throws Exception {
+  void callerSettingSurvivesDuringWork(String setting, boolean failed) throws Exception {
     SparkSession session = spark();
     boolean wasSet = session.conf().contains(READER_CONF);
     String before = session.conf().get(READER_CONF);
@@ -90,7 +91,9 @@ public class TestEmbeddingReaderConfig extends EmbeddingRoundTestBase {
     Dataset<Row> batch = session.createDataFrame(Collections.singletonList(source), BlobTableSchema.schema());
     try {
       if (failed) {
-        assertThrows(EmbeddingPrepFailedException.class, () -> new EmbeddingTableTransformer().apply(jsc(), session, batch, props, "20261031000000000"));
+        EmbeddingTableTransformer transformer = new EmbeddingTableTransformer();
+        JavaSparkContext context = jsc();
+        assertThrows(EmbeddingPrepFailedException.class, () -> transformer.apply(context, session, batch, props, "20261031000000000"));
       } else {
         List<Row> output = new EmbeddingTableTransformer().apply(jsc(), session, batch, props, "20261031000000000").collectAsList();
         assertEquals(1, output.size());

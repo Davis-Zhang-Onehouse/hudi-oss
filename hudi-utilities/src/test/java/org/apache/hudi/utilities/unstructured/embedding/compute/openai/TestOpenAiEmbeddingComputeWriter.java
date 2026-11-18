@@ -59,10 +59,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Provider writer assertions on the single prep_and_compute writer over the unstructured data source on S3 and the stock checkpoint. */
 @Tag("functional")
-public class TestOpenAiEmbeddingComputeWriter extends OpenAiRoundTestBase {
+class TestOpenAiEmbeddingComputeWriter extends OpenAiRoundTestBase {
 
   @Test
-  public void testOpenAiModelFillsVectorsInOneCommitAndKeepsPreparedColumns() throws Exception {
+  void testOpenAiModelFillsVectorsInOneCommitAndKeepsPreparedColumns() throws Exception {
     announce(pdf("a"), pdf("b"));
     server.otherwise(PATH, embeddings(DIM));
     ComputeRoundCounters.Counted report = ComputeRoundCounters.round(spark(), providerProps(table()));
@@ -89,7 +89,7 @@ public class TestOpenAiEmbeddingComputeWriter extends OpenAiRoundTestBase {
 
   @ParameterizedTest
   @ValueSource(ints = {401, 429, 503})
-  public void providerFailureKeepsCommitAndStockCheckpointThenRecovers(int status) throws Exception {
+  void providerFailureKeepsCommitAndStockCheckpointThenRecovers(int status) throws Exception {
     server.otherwise(PATH, embeddings(DIM));
     announce(pdf("first"));
     TypedProperties props = providerProps(table());
@@ -118,7 +118,7 @@ public class TestOpenAiEmbeddingComputeWriter extends OpenAiRoundTestBase {
   }
 
   @Test
-  public void anInputRejectionKeepsItsPreparedRowAndAddsAnErrorBesideSuccessfulVectors() throws Exception {
+  void anInputRejectionKeepsItsPreparedRowAndAddsAnErrorBesideSuccessfulVectors() throws Exception {
     announce(pdf("a"), pdf("b"));
     server.otherwise(PATH, request -> request.inputs().stream().anyMatch(text -> text.startsWith("Hudi"))
         ? json(400, "{\"error\":{\"message\":\"bad document chunk\",\"type\":\"invalid_request_error\",\"param\":\"input\"}}")
@@ -145,7 +145,7 @@ public class TestOpenAiEmbeddingComputeWriter extends OpenAiRoundTestBase {
   }
 
   @Test
-  public void testDriverRejectsAnInvalidModelBeforeSparkWork() throws Exception {
+  void testDriverRejectsAnInvalidModelBeforeSparkWork() throws Exception {
     announce(pdf("invalid-model"));
     TypedProperties props = providerProps(table(), PREFIX + EmbeddingTableConfig.MODEL_NAME_SUFFIX, "text-embedding-ada-002");
     Exception failure = assertThrows(Exception.class, () -> round(props));
@@ -156,7 +156,7 @@ public class TestOpenAiEmbeddingComputeWriter extends OpenAiRoundTestBase {
   }
 
   @Test
-  public void testKeyNeverInTableFilesOrConfig() throws Exception {
+  void testKeyNeverInTableFilesOrConfig() throws Exception {
     announce(pdf("key-check"));
     server.otherwise(PATH, embeddings(DIM));
     TypedProperties props = providerProps(table());

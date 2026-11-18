@@ -43,7 +43,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * out-of-line value that has a path, and a null blob are kept as they are.
  */
 @Tag("functional")
-public class TestPrepRoundSourceObjects extends SparkClientFunctionalTestHarness {
+class TestPrepRoundSourceObjects extends SparkClientFunctionalTestHarness {
 
   private static Row row(String name, Row blob) {
     String path = "bucketfs://landing/" + name;
@@ -55,7 +55,7 @@ public class TestPrepRoundSourceObjects extends SparkClientFunctionalTestHarness
   }
 
   @Test
-  public void onlyAnOutOfLineValueWithoutAPathIsPointedAtItsObject() {
+  void onlyAnOutOfLineValueWithoutAPathIsPointedAtItsObject() {
     byte[] inline = "%PDF inline".getBytes(StandardCharsets.UTF_8);
     List<Row> input = Arrays.asList(
         row("pending.pdf", outOfLine(null, 0L, 10L, true)),

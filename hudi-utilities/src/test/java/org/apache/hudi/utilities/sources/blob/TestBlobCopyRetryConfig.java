@@ -28,6 +28,7 @@ import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -65,8 +66,9 @@ class TestBlobCopyRetryConfig {
     String base = temp.resolve("table").toUri().toString();
     HoodieHadoopStorage storage = new HoodieHadoopStorage(new StoragePath(base), HadoopFSUtils.getStorageConf(new Configuration()));
     OutOfLineWriter writer = new OutOfLineWriter(storage, base, "20261030182900000", Option.empty());
+    StructType schema = BlobTableSchema.schema();
     IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-        () -> BlobObjectCopier.copyRow(row, BlobTableSchema.schema(), props, "pdf", storage, writer));
+        () -> BlobObjectCopier.copyRow(row, schema, props, "pdf", storage, writer));
     assertEquals("BlobSourceConfigException", failure.getClass().getSimpleName());
     assertTrue(failure.getMessage().contains(key), failure.getMessage());
     assertTrue(failure.getMessage().contains(value), failure.getMessage());

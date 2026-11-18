@@ -59,7 +59,7 @@ public class CountingObjectFileSystem extends BucketFolderFileSystem {
   }
 
   /** Registers the scheme in {@code conf}, its buckets as folders under {@code root}. */
-  public static void install(Configuration conf, java.nio.file.Path root) {
+  public static void installCounting(Configuration conf, java.nio.file.Path root) {
     BucketFolderFileSystem.install(conf, root);
     conf.set("fs." + SCHEME + ".impl", CountingObjectFileSystem.class.getName());
     conf.setBoolean("fs." + SCHEME + ".impl.disable.cache", true);
@@ -100,12 +100,14 @@ public class CountingObjectFileSystem extends BucketFolderFileSystem {
   public FSDataInputStream open(Path f, int bufferSize) throws IOException {
     Counts counts = counts(key(f));
     counts.opens.incrementAndGet();
+    FSDataInputStream opened;
     OPENING.set(true);
     try {
-      return new FSDataInputStream(new CountingStream(super.open(f, bufferSize), counts));
+      opened = super.open(f, bufferSize);
     } finally {
       OPENING.set(false);
     }
+    return new FSDataInputStream(new CountingStream(opened, counts));
   }
 
   /** A stream that counts read runs and takes a read-ahead, as an object store's stream does. */

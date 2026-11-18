@@ -49,17 +49,24 @@ public class EmbeddingInput implements Serializable {
 
   /** An embedding row's full source version identity, in key-column order, and its prepared text. */
   public EmbeddingInput(String sourcePathSha, long sourceModificationTime, long sourceFileSize, String modality, long chunkId, String text) {
-    this(sourcePathSha, sourceModificationTime, sourceFileSize, modality, chunkId, text, null, null);
-  }
-
-  private EmbeddingInput(String sourcePathSha, long sourceModificationTime, long sourceFileSize, String modality, long chunkId,
-                         String text, BlobBytesSupplier stored, PreparedImageSupplier image) {
     this.sourcePathSha = sourcePathSha;
     this.sourceModificationTime = sourceModificationTime;
     this.sourceFileSize = sourceFileSize;
     this.chunkId = chunkId;
     this.modality = modality;
     this.text = text;
+    this.stored = null;
+    this.image = null;
+  }
+
+  /** {@code row}'s identity and text with {@code stored} and {@code image}. */
+  private EmbeddingInput(EmbeddingInput row, BlobBytesSupplier stored, PreparedImageSupplier image) {
+    this.sourcePathSha = row.sourcePathSha;
+    this.sourceModificationTime = row.sourceModificationTime;
+    this.sourceFileSize = row.sourceFileSize;
+    this.chunkId = row.chunkId;
+    this.modality = row.modality;
+    this.text = row.text;
     this.stored = stored;
     this.image = image;
   }
@@ -77,7 +84,8 @@ public class EmbeddingInput implements Serializable {
   /** The input of an image row with its full source version identity, in key-column order; see the overload above. */
   public static EmbeddingInput storedImage(String sourcePathSha, long sourceModificationTime, long sourceFileSize, String modality,
                                            long chunkId, BlobBytesSupplier stored, PreparedImageSupplier image) {
-    return new EmbeddingInput(sourcePathSha, sourceModificationTime, sourceFileSize, modality, chunkId, null, stored, image);
+    return new EmbeddingInput(new EmbeddingInput(sourcePathSha, sourceModificationTime, sourceFileSize, modality, chunkId, null),
+        stored, image);
   }
 
   public String getSourcePathSha() {

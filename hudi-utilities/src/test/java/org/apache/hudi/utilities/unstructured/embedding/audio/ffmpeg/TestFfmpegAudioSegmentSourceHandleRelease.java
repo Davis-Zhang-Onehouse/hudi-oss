@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The blob and FFmpeg grabber the audio segment source opens are closed on every way out, the seek resume included. */
-public class TestFfmpegAudioSegmentSourceHandleRelease {
+class TestFfmpegAudioSegmentSourceHandleRelease {
 
   /** Tone 2 s, silence 1 s, tone 1.5 s, silence 2 s, tone 3 s: three speech segments. */
   private static final long[] LAYOUT = {2000, 1000, 1500, 2000, 3000};
@@ -52,13 +52,13 @@ public class TestFfmpegAudioSegmentSourceHandleRelease {
   private static Path silentVideo;
 
   @BeforeAll
-  public static void generate() throws IOException {
+  static void generate() throws IOException {
     aac = AudioClips.generate(dir.resolve("aac.mp4"), AudioClips.Codec.AAC, 44100, 2, LAYOUT);
     silentVideo = VideoClips.generate(dir.resolve("video-only.mp4"), 2, 10, 2, 160, 120, -1, -1);
   }
 
   @Test
-  public void drainedTrackClosesItsBlob() throws IOException {
+  void drainedTrackClosesItsBlob() throws IOException {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(aac);
     int segments = 0;
     try (FfmpegAudioSegmentSource.Segments it = open(bytes, aac, 0, 0, new TypedProperties())) {
@@ -76,7 +76,7 @@ public class TestFfmpegAudioSegmentSourceHandleRelease {
   }
 
   @Test
-  public void abandonedAfterTheFirstSegmentClosesItsBlob() throws IOException {
+  void abandonedAfterTheFirstSegmentClosesItsBlob() throws IOException {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(aac);
     try (FfmpegAudioSegmentSource.Segments it = open(bytes, aac, 0, 0, new TypedProperties())) {
       assertTrue(it.hasNext());
@@ -87,7 +87,7 @@ public class TestFfmpegAudioSegmentSourceHandleRelease {
   }
 
   @Test
-  public void refusalWhileOpeningClosesItsBlob() {
+  void refusalWhileOpeningClosesItsBlob() {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(aac);
     TypedProperties props = new TypedProperties();
     props.setProperty(AudioConfigKeys.MAX_DURATION_MS.key(), "1000");
@@ -97,7 +97,7 @@ public class TestFfmpegAudioSegmentSourceHandleRelease {
   }
 
   @Test
-  public void videoWithoutAudioClosesItsBlob() throws IOException {
+  void videoWithoutAudioClosesItsBlob() throws IOException {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(silentVideo);
     try (FfmpegAudioSegmentSource.Segments it = open(bytes, silentVideo, 0, 0, new TypedProperties())) {
       assertFalse(it.hasNext());
@@ -108,7 +108,7 @@ public class TestFfmpegAudioSegmentSourceHandleRelease {
 
   /** A resume part way seeks, and may reopen the grabber from the start: every blob it opened is closed. */
   @Test
-  public void resumePartWayClosesEveryBlobItOpened() throws IOException {
+  void resumePartWayClosesEveryBlobItOpened() throws IOException {
     for (long startMs : new long[] {200, 3000, 6500}) {
       TrackedBlobSupplier bytes = new TrackedBlobSupplier(aac);
       try (FfmpegAudioSegmentSource.Segments it = open(bytes, aac, 1, startMs, new TypedProperties())) {
@@ -122,16 +122,18 @@ public class TestFfmpegAudioSegmentSourceHandleRelease {
   }
 
   @Test
-  public void storageFailurePartWayClosesItsBlob() throws IOException {
+  void storageFailurePartWayClosesItsBlob() throws IOException {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(aac, Files.size(aac) / 2, n -> null);
-    assertThrows(RuntimeException.class, () -> {
-      try (FfmpegAudioSegmentSource.Segments it = open(bytes, aac, 0, 0, new TypedProperties())) {
-        while (it.hasNext()) {
-          it.next();
-        }
-      }
-    });
+    assertThrows(RuntimeException.class, () -> readAll(bytes));
     assertEquals(Collections.emptyList(), bytes.unclosed(), "unclosed handles after a storage failure part way");
+  }
+
+  private static void readAll(TrackedBlobSupplier bytes) throws IOException {
+    try (FfmpegAudioSegmentSource.Segments it = open(bytes, aac, 0, 0, new TypedProperties())) {
+      while (it.hasNext()) {
+        it.next();
+      }
+    }
   }
 
   private static FfmpegAudioSegmentSource.Segments open(TrackedBlobSupplier bytes, Path clip, long startSegment, long startMs,

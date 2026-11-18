@@ -76,7 +76,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Azure OpenAI and TEI response shapes (no live endpoint is called). The clock is fake and a sleep
  * only advances it, so backoff and deadlines are exact and instant.
  */
-public class TestOpenAiCompatibleEmbeddingClient {
+class TestOpenAiCompatibleEmbeddingClient {
 
   private static final String ALIAS = "oai";
   private static final String MODEL = "text-embedding-3-small";
@@ -96,7 +96,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   private Level previousLevel;
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     server = new StubEmbeddingServer();
     environment.put(KEY_ENV, KEY);
     logs = new CapturingAppender();
@@ -108,7 +108,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     clientLogger.removeAppender(logs);
     clientLogger.setLevel(previousLevel);
     logs.stop();
@@ -118,7 +118,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   // ---------------------------------------------------------------- success, ordering, stats
 
   @Test
-  public void testSuccessfulBatch() {
+  void testSuccessfulBatch() {
     server.otherwise(PATH, embeddings(DIM));
     OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
     List<EmbeddingResult> results = client.embed(inputs("alpha", "beta", "gamma"));
@@ -140,7 +140,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testRecordedResponseShapeMapsByIndex() {
+  void testRecordedResponseShapeMapsByIndex() {
     server.otherwise(PATH, request -> recorded(200, "embeddings-response.json"));
     List<EmbeddingResult> results = client(new TypedProperties()).embed(inputs("first", "second"));
     // the recording lists index 1 before index 0
@@ -149,14 +149,14 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testResultsMapByIndexNotPosition() {
+  void testResultsMapByIndexNotPosition() {
     // embeddings() answers in reversed index order; every vector must still land on its own input
     server.otherwise(PATH, embeddings(DIM));
     assertOk(client(new TypedProperties()).embed(inputs("a1", "b2", "c3", "d4", "e5")), "a1", "b2", "c3", "d4", "e5");
   }
 
   @Test
-  public void duplicateResponseIndicesAreRetryable() {
+  void duplicateResponseIndicesAreRetryable() {
     server.otherwise(PATH, request -> json(200, "{\"data\":[{\"index\":0,\"embedding\":[1,2,3,4]},"
         + "{\"index\":0,\"embedding\":[5,6,7,8]}]}"));
     TypedProperties props = new TypedProperties();
@@ -168,7 +168,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void nonIntegralResponseIndexIsRetryable() {
+  void nonIntegralResponseIndexIsRetryable() {
     server.otherwise(PATH, request -> json(200, "{\"data\":[{\"index\":0.5,\"embedding\":[1,2,3,4]}]}"));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.RETRY_MAX_ATTEMPTS_SUFFIX), "1");
@@ -180,7 +180,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
 
   @ParameterizedTest
   @ValueSource(strings = {"1e100", "NaN"})
-  public void nonFiniteVectorElementsAreRetryable(String value) {
+  void nonFiniteVectorElementsAreRetryable(String value) {
     server.otherwise(PATH, request -> json(200, "{\"data\":[{\"index\":0,\"embedding\":[" + value + ",2,3,4]}]}"));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.RETRY_MAX_ATTEMPTS_SUFFIX), "1");
@@ -192,7 +192,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testMissingIndexIsRetryable() {
+  void testMissingIndexIsRetryable() {
     server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
         + "\"embedding\":[0.1,0.2,0.3,0.4]}],\"usage\":{\"prompt_tokens\":2}}"));
     List<EmbeddingResult> results = client(new TypedProperties()).embed(inputs("a", "b"));
@@ -202,24 +202,26 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testWrongModelDimensionAbortsTheRun() {
+  void testWrongModelDimensionAbortsTheRun() {
     // every vector 5 long for a column of 4: the configuration is wrong, so no row may be marked PERMANENT
     server.otherwise(PATH, embeddings(DIM + 1));
-    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(new TypedProperties()).embed(inputs("a", "b")));
+    OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
+    List<EmbeddingInput> inputs = inputs("a", "b");
+    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(thrown.getMessage().contains("returned 5-dimension vectors"), thrown.getMessage());
     assertTrue(thrown.getMessage().contains(key(EmbeddingTableConfig.MODEL_DIMENSIONS_SUFFIX) + "=4"), thrown.getMessage());
   }
 
   @Test
-  public void testTeiWrongModelDimensionAbortsTheRun() {
+  void testTeiWrongModelDimensionAbortsTheRun() {
     server.otherwise("/info", request -> recorded(200, "tei-info.json")).otherwise(PATH, embeddings(384));
-    assertThrows(EmbeddingClientConfigException.class,
-        () -> client("hf-tei", "BAAI/bge-small-en-v1.5", teiProps()).embed(inputs("a", "b")));
+    OpenAiCompatibleEmbeddingClient client = client("hf-tei", "BAAI/bge-small-en-v1.5", teiProps());
+    List<EmbeddingInput> inputs = inputs("a", "b");
+    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
   }
 
   @Test
-  public void testOneVectorOfAnotherLengthIsRetryable() {
+  void testOneVectorOfAnotherLengthIsRetryable() {
     server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"data\":["
         + "{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.1,0.2,0.3,0.4]},"
         + "{\"object\":\"embedding\",\"index\":1,\"embedding\":[0.1,0.2,0.3]}]}"));
@@ -232,7 +234,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   // ---------------------------------------------------------------- retries
 
   @Test
-  public void test429WithRetryAfterThenSuccess() {
+  void test429WithRetryAfterThenSuccess() {
     server.then(PATH, request -> recorded(429, "error-429-rate.json").withHeader("Retry-After", "2"))
         .otherwise(PATH, embeddings(DIM));
     OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
@@ -243,7 +245,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testAzureRetryAfterMsWins() {
+  void testAzureRetryAfterMsWins() {
     server.then(PATH, request -> recorded(429, "error-429-rate.json").withHeader("retry-after-ms", "750")
         .withHeader("Retry-After", "9")).otherwise(PATH, embeddings(DIM));
     assertOk(client(new TypedProperties()).embed(inputs("a")), "a");
@@ -251,7 +253,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testRetryAfterAboveMaxBackoffEndsRetries() {
+  void testRetryAfterAboveMaxBackoffEndsRetries() {
     server.otherwise(PATH, request -> recorded(429, "error-429-rate.json").withHeader("Retry-After", "5"));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.RETRY_MAX_BACKOFF_MS_SUFFIX), "1000");
@@ -262,7 +264,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void test5xxThenSuccessWithinDeadline() {
+  void test5xxThenSuccessWithinDeadline() {
     // Count response-driven retries independently of local socket scheduling; real transport failures have their own test.
     List<Recorded> requests = new ArrayList<>();
     HttpTransport transport = new HttpTransport() {
@@ -298,7 +300,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testRetriesExhaustedAreRetryable() {
+  void testRetriesExhaustedAreRetryable() {
     server.otherwise(PATH, request -> recorded(503, "error-503.json"));
     List<EmbeddingResult> results = client(new TypedProperties()).embed(inputs("a", "b"));
     assertAll(results, EmbeddingResult.Status.RETRYABLE_FAILURE, "HTTP 503: The server is overloaded");
@@ -307,7 +309,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testTransportFailureIsRetryable() {
+  void testTransportFailureIsRetryable() {
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.ENDPOINT_SUFFIX), "http://127.0.0.1:1/v1");
     props.setProperty(key(OpenAiClientConfig.RETRY_MAX_ATTEMPTS_SUFFIX), "2");
@@ -318,21 +320,23 @@ public class TestOpenAiCompatibleEmbeddingClient {
 
   /** Out of quota is the account's state (class P): the call fails at once, without a retry. */
   @Test
-  public void testQuotaFailsTheCallWithoutRetry() {
+  void testQuotaFailsTheCallWithoutRetry() {
     server.otherwise(PATH, request -> recorded(429, "error-429-quota.json"));
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(new TypedProperties()).embed(inputs("a", "b")));
+    OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
+    List<EmbeddingInput> inputs = inputs("a", "b");
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(e.getMessage().contains("exceeded your current quota"), e.getMessage());
     assertEquals(1, server.posts().size());
   }
 
   /** A billing 429 (code credit_balance_exhausted, OpenAI error-codes guide) fails the call at once, like insufficient_quota. */
   @Test
-  public void testBillingRateLimitFailsTheCallWithoutRetry() {
+  void testBillingRateLimitFailsTheCallWithoutRetry() {
     server.otherwise(PATH, request -> json(429, "{\"error\":{\"message\":\"Your organization has no prepaid credits remaining.\","
         + "\"type\":null,\"param\":null,\"code\":\"credit_balance_exhausted\"}}"));
-    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(new TypedProperties()).embed(inputs("a", "b")));
+    OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
+    List<EmbeddingInput> inputs = inputs("a", "b");
+    EmbeddingClientConfigException e = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(e.getMessage().contains("for lack of quota") && e.getMessage().contains("no prepaid credits"), e.getMessage());
     assertEquals(1, server.posts().size());
     assertTrue(sleeps.isEmpty());
@@ -340,7 +344,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
 
   /** A 409 Conflict is retried, as the official SDK retries it; the retry's answer settles the inputs. */
   @Test
-  public void test409IsRetriedThenSucceeds() {
+  void test409IsRetriedThenSucceeds() {
     server.then(PATH, request -> json(409, "{\"error\":{\"message\":\"conflict\",\"type\":null,\"param\":null,\"code\":null}}"))
         .otherwise(PATH, embeddings(DIM));
     List<EmbeddingResult> results = client(new TypedProperties()).embed(inputs("a", "b"));
@@ -353,7 +357,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testRequestsAfterTheDeadlineAreNotSent() {
+  void testRequestsAfterTheDeadlineAreNotSent() {
     // the first request takes 10 s of the 5 s deadline: the second is never sent
     server.then(PATH, request -> {
       now.addAndGet(10_000);
@@ -370,7 +374,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testSleepThatWouldCrossTheDeadlineEndsRetries() {
+  void testSleepThatWouldCrossTheDeadlineEndsRetries() {
     server.otherwise(PATH, request -> recorded(429, "error-429-rate.json").withHeader("Retry-After", "4"));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.REQUEST_DEADLINE_MS_SUFFIX), "3000");
@@ -382,7 +386,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   // ---------------------------------------------------------------- classification + bisection
 
   @Test
-  public void test400BisectsToTheBadInput() {
+  void test400BisectsToTheBadInput() {
     server.otherwise(PATH, rejecting("BAD"));
     OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
     List<String> texts = Arrays.asList("t0", "t1", "t2", "BAD", "t4", "t5", "t6", "t7");
@@ -402,7 +406,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testTwoBadInputsInDifferentHalvesAreBothIsolated() {
+  void testTwoBadInputsInDifferentHalvesAreBothIsolated() {
     server.otherwise(PATH, rejecting("BAD"));
     List<EmbeddingResult> results = client(new TypedProperties())
         .embed(inputs("t0", "BAD-1", "t2", "t3", "t4", "t5", "BAD-6", "t7"));
@@ -413,7 +417,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testRequestLevelRejectionWithoutAParamMakesTheRequestRetryable() {
+  void testRequestLevelRejectionWithoutAParamMakesTheRequestRetryable() {
     // e.g. an Azure deployment of a non-embedding model: every request, of any size, gets the same param-less 400. That is
     // indistinguishable from a request whose probed inputs are all bad, so no row is PERMANENT and the run is not aborted:
     // the whole request is RETRYABLE and counts toward the outage short-circuit
@@ -428,12 +432,13 @@ public class TestOpenAiCompatibleEmbeddingClient {
     client.embed(inputs("u0", "u1", "u2"));
     client.embed(inputs("v0", "v1", "v2"));
     int sent = server.posts().size();
-    assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(inputs("w0", "w1", "w2")));
+    List<EmbeddingInput> inputs = inputs("w0", "w1", "w2");
+    assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(inputs));
     assertEquals(sent, server.posts().size());
   }
 
   @Test
-  public void testBadInputsAtBothEndsDoNotAbortTheRun() {
+  void testBadInputsAtBothEndsDoNotAbortTheRun() {
     // bad data at positions 0, 1 and last, rejected with one generic message, must never abort
     server.otherwise(PATH, rejecting("BAD"));
     List<EmbeddingResult> results = client(new TypedProperties())
@@ -448,7 +453,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testTwoBadInputsFirstInTheBatchAreStillIsolated() {
+  void testTwoBadInputsFirstInTheBatchAreStillIsolated() {
     // the neighbour of the request-level case: the first two singletons fail alike, but the probe of the last input succeeds
     server.otherwise(PATH, rejecting("BAD"));
     List<EmbeddingResult> results = client(new TypedProperties())
@@ -462,7 +467,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testBisectBudgetExhaustedLeavesInputsRetryable() {
+  void testBisectBudgetExhaustedLeavesInputsRetryable() {
     server.otherwise(PATH, rejecting("BAD"));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.BISECT_MAX_REQUESTS_SUFFIX), "1");
@@ -473,7 +478,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testDeadlineDuringBisectionLeavesInputsRetryable() {
+  void testDeadlineDuringBisectionLeavesInputsRetryable() {
     server.otherwise(PATH, request -> {
       now.addAndGet(4_000);
       return rejecting("BAD").apply(request);
@@ -490,19 +495,21 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void test400NamingDimensionsIsAConfigErrorWithoutBisection() {
+  void test400NamingDimensionsIsAConfigErrorWithoutBisection() {
     server.otherwise(PATH, request -> recorded(400, "error-400-dimensions.json"));
-    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(new TypedProperties()).embed(inputs("a", "b", "c", "d")));
+    OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
+    List<EmbeddingInput> inputs = inputs("a", "b", "c", "d");
+    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(thrown.getMessage().contains("does not support specifying dimensions"), thrown.getMessage());
     assertEquals(1, server.posts().size());
   }
 
   @Test
-  public void test401RaisesConfigException() {
+  void test401RaisesConfigException() {
     server.otherwise(PATH, request -> recorded(401, "error-401.json"));
-    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(new TypedProperties()).embed(inputs("a", "b")));
+    OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
+    List<EmbeddingInput> inputs = inputs("a", "b");
+    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(thrown.getMessage().contains("HTTP 401"), thrown.getMessage());
     assertTrue(thrown.getMessage().contains("env " + KEY_ENV), "names the credential source: " + thrown.getMessage());
     assertEquals(1, server.posts().size(), "no retry and no bisection");
@@ -514,7 +521,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testProviderErrorTextIsRedacted() {
+  void testProviderErrorTextIsRedacted() {
     // the 401 recording echoes the key's first chars ("sk-test-A***1234"); a 400 echoes the whole key
     server.then(PATH, request -> json(400, "{\"error\":{\"message\":\"bad input " + KEY + "\",\"type\":\"x\"}}"));
     List<EmbeddingResult> results = client(new TypedProperties()).embed(inputs("a"));
@@ -523,8 +530,9 @@ public class TestOpenAiCompatibleEmbeddingClient {
     assertTrue(results.get(0).getError().contains("bad input ***"), results.get(0).getError());
 
     server.otherwise(PATH, request -> recorded(401, "error-401.json"));
-    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class,
-        () -> client(new TypedProperties()).embed(inputs("a")));
+    OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
+    List<EmbeddingInput> inputs = inputs("a");
+    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertFalse(thrown.getMessage().contains(KEY.substring(0, OpenAiCompatibleEmbeddingClient.KEY_PREFIX_CHARS)),
         thrown.getMessage());
   }
@@ -532,7 +540,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   // ---------------------------------------------------------------- local validation + batching
 
   @Test
-  public void testOverLimitAndEmptyInputsFailLocallyWithoutARequest() {
+  void testOverLimitAndEmptyInputsFailLocallyWithoutARequest() {
     server.otherwise(PATH, embeddings(DIM));
     String overLimit = String.join(" ", Collections.nCopies(8200, "hello"));
     assertTrue(new OpenAiBpeTokenizer().countTokens(overLimit) > 8191);
@@ -555,7 +563,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testNonTextAndNullTextArePermanent() {
+  void testNonTextAndNullTextArePermanent() {
     List<EmbeddingInput> inputs = Arrays.asList(
         new EmbeddingInput("img", 0, "unsupported", null),
         new EmbeddingInput("txt", 0, EmbeddingTableSchema.MODALITY_TEXT, null));
@@ -566,10 +574,11 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testDuplicateIdsThrow() {
+  void testDuplicateIdsThrow() {
     List<EmbeddingInput> inputs = new ArrayList<>(inputs("a"));
     inputs.add(inputs.get(0));
-    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> client(new TypedProperties()).embed(inputs));
+    OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
+    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> client.embed(inputs));
     assertTrue(failure.getMessage().contains("source_path_sha=fid-0"), failure.getMessage());
     assertTrue(failure.getMessage().contains("source_modification_time=0"), failure.getMessage());
     assertTrue(failure.getMessage().contains("source_file_size=0"), failure.getMessage());
@@ -579,7 +588,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testBatchingRespectsInputAndTokenLimits() {
+  void testBatchingRespectsInputAndTokenLimits() {
     server.otherwise(PATH, embeddings(DIM));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.REQUEST_MAX_INPUTS_SUFFIX), "4");
@@ -611,7 +620,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   // ---------------------------------------------------------------- outage short-circuit
 
   @Test
-  public void testOutageShortCircuit() {
+  void testOutageShortCircuit() {
     server.otherwise(PATH, request -> recorded(503, "error-503.json"));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.OUTAGE_CONSECUTIVE_FAILURES_SUFFIX), "2");
@@ -624,12 +633,13 @@ public class TestOpenAiCompatibleEmbeddingClient {
     assertTrue(results.get(2).getError().startsWith(OpenAiCompatibleEmbeddingClient.OUTAGE), results.get(2).getError());
     assertAll(results, EmbeddingResult.Status.RETRYABLE_FAILURE, "");
 
-    assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(inputs("d")));
+    List<EmbeddingInput> inputs = inputs("d");
+    assertThrows(EmbeddingProviderUnavailableException.class, () -> client.embed(inputs));
     assertEquals(2, server.posts().size(), "no request after the short-circuit opened");
   }
 
   @Test
-  public void testSuccessResetsTheOutageCount() {
+  void testSuccessResetsTheOutageCount() {
     server.then(PATH, request -> recorded(503, "error-503.json")).then(PATH, embeddings(DIM))
         .then(PATH, request -> recorded(503, "error-503.json")).otherwise(PATH, embeddings(DIM));
     TypedProperties props = new TypedProperties();
@@ -646,7 +656,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   // ---------------------------------------------------------------- Azure + TEI
 
   @Test
-  public void testAzureUsesApiKeyHeaderAndDeploymentName() {
+  void testAzureUsesApiKeyHeaderAndDeploymentName() {
     server.otherwise("/openai/v1/embeddings", embeddings(DIM));
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.ENDPOINT_SUFFIX), server.url() + "/openai/v1");
@@ -661,7 +671,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testTei424IsRetryableAndInfoSetsLimits() {
+  void testTei424IsRetryableAndInfoSetsLimits() {
     server.otherwise("/info", request -> recorded(200, "tei-info.json"))
         .then(PATH, request -> recorded(424, "tei-error-424.json")).otherwise(PATH, embeddings(DIM));
     OpenAiCompatibleEmbeddingClient client = client("hf-tei", "BAAI/bge-small-en-v1.5", teiProps());
@@ -675,27 +685,28 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testTeiInitFailsWhenInfoSaysNotEmbedding() {
+  void testTeiInitFailsWhenInfoSaysNotEmbedding() {
     server.otherwise("/info", request -> recorded(200, "tei-info-reranker.json"));
-    IllegalStateException thrown = assertThrows(IllegalStateException.class,
-        () -> client("hf-tei", "BAAI/bge-reranker-base", teiProps()));
+    TypedProperties props = teiProps();
+    IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> client("hf-tei", "BAAI/bge-reranker-base", props));
     assertTrue(thrown.getMessage().contains("does not serve an embedding model"), thrown.getMessage());
   }
 
   @Test
-  public void testTeiInitFailsWhenInfoUnreachableOrFailing() {
+  void testTeiInitFailsWhenInfoUnreachableOrFailing() {
     TypedProperties unreachable = teiProps();
     unreachable.setProperty(key(OpenAiClientConfig.ENDPOINT_SUFFIX), "http://127.0.0.1:1/v1");
     assertThrows(IllegalStateException.class, () -> client("hf-tei", "m", unreachable));
     server.otherwise("/info", request -> json(503, "{\"error\":\"Model is overloaded\",\"error_type\":\"overloaded\"}"));
-    IllegalStateException failing = assertThrows(IllegalStateException.class, () -> client("hf-tei", "m", teiProps()));
+    TypedProperties overloaded = teiProps();
+    IllegalStateException failing = assertThrows(IllegalStateException.class, () -> client("hf-tei", "m", overloaded));
     assertTrue(failing.getMessage().contains("HTTP 503"), failing.getMessage());
   }
 
   // ---------------------------------------------------------------- secrets
 
   @Test
-  public void testKeyNeverInLogsOrToString() throws IOException {
+  void testKeyNeverInLogsOrToString() throws IOException {
     // call 1: 429 then OK; call 2: a 400 bisected to one rejected input; call 3: 503 five times; call 4: 401
     server.then(PATH, request -> recorded(429, "error-429-rate.json").withHeader("Retry-After", "1"))
         .then(PATH, embeddings(DIM))
@@ -710,7 +721,8 @@ public class TestOpenAiCompatibleEmbeddingClient {
     client.embed(inputs("ok-after-retry"));
     client.embed(inputs("BAD", "fine"));
     client.embed(inputs("server-error"));
-    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs("unauthorized")));
+    List<EmbeddingInput> inputs = inputs("unauthorized");
+    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
 
     String captured = logs.text();
     assertTrue(captured.contains("EMBED-OPENAI-REQUEST-FAILED"), "the capture saw the client's logging: " + captured);
@@ -730,10 +742,11 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testKeyWithControlCharactersIsRefusedAtInit() {
+  void testKeyWithControlCharactersIsRefusedAtInit() {
     // a two-line key file or env value: an HTTP client would quote it in an "invalid header value" error
     environment.put(KEY_ENV, "sk-test-AB\nCD");
-    IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> client(new TypedProperties()));
+    TypedProperties props = new TypedProperties();
+    IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> client(props));
     assertTrue(thrown.getMessage().contains("env " + KEY_ENV), thrown.getMessage());
     assertFalse(thrown.getMessage().contains("sk-test"), thrown.getMessage());
     assertFalse(thrown.getMessage().contains("AB"), thrown.getMessage());
@@ -741,7 +754,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testKeyCrossingTheMessageCutIsRedactedWhole() {
+  void testKeyCrossingTheMessageCutIsRedactedWhole() {
     // 1010 chars then the key: the 1024-char cut falls inside the key, after its first 14 chars
     String filler = String.join("", Collections.nCopies(1010, "x"));
     server.otherwise(PATH, request -> json(400, "{\"error\":{\"message\":\"" + filler + KEY + "\",\"type\":\"x\"}}"));
@@ -751,7 +764,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testUnsendableRequestIsAConfigErrorWithoutTheHeader() {
+  void testUnsendableRequestIsAConfigErrorWithoutTheHeader() {
     // an HTTP client that refuses to build the request quotes the header value, as the JDK's does
     HttpTransport refusing = new HttpTransport() {
       @Override
@@ -769,8 +782,8 @@ public class TestOpenAiCompatibleEmbeddingClient {
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.CREDENTIAL_ENV_SUFFIX), KEY_ENV);
     client.init(new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, DIM, null, "openai", MODEL), props);
-    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class,
-        () -> client.embed(inputs("a")));
+    List<EmbeddingInput> inputs = inputs("a");
+    EmbeddingClientConfigException thrown = assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertTrue(thrown.getMessage().contains("cannot be sent: invalid header value: \"Bearer ***"), thrown.getMessage());
     assertFalse(thrown.getMessage().contains(KEY.substring(0, OpenAiCompatibleEmbeddingClient.KEY_PREFIX_CHARS)),
         thrown.getMessage());
@@ -778,7 +791,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testInterruptStopsTheCallWithoutCountingAnOutage() {
+  void testInterruptStopsTheCallWithoutCountingAnOutage() {
     server.otherwise(PATH, request -> recorded(503, "error-503.json"));
     OpenAiCompatibleEmbeddingClient client = new OpenAiCompatibleEmbeddingClient(new JdkHttpTransport(), now::get,
         millis -> {
@@ -804,15 +817,16 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testStatsAfterAConfigFailure() {
+  void testStatsAfterAConfigFailure() {
     server.otherwise(PATH, request -> recorded(401, "error-401.json"));
     OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
-    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs("a", "b")));
+    List<EmbeddingInput> inputs = inputs("a", "b");
+    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs));
     assertEquals(1, client.lastCallStats().getRequests());
   }
 
   @Test
-  public void testHugeUsageKeepsTheVectors() {
+  void testHugeUsageKeepsTheVectors() {
     server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
         + "\"embedding\":[0.1,0.2,0.3,0.4]}],\"usage\":{\"prompt_tokens\":99999999999999999999999}}"));
     OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
@@ -821,7 +835,7 @@ public class TestOpenAiCompatibleEmbeddingClient {
   }
 
   @Test
-  public void testNonNumericUsageKeepsTheVectors() {
+  void testNonNumericUsageKeepsTheVectors() {
     server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
         + "\"embedding\":[0.1,0.2,0.3,0.4]}],\"usage\":{\"prompt_tokens\":\"n/a\"}}"));
     OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
@@ -833,19 +847,21 @@ public class TestOpenAiCompatibleEmbeddingClient {
   // ---------------------------------------------------------------- factory
 
   @Test
-  public void testFactoryResolvesTheProvidersAndChecksConfigOnTheDriver() {
+  void testFactoryResolvesTheProvidersAndChecksConfigOnTheDriver() {
     for (String provider : new String[] {"openai", "azure-openai", "hf-tei"}) {
       EmbeddingModelSpec spec = new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, DIM, null, provider, MODEL);
       assertEquals(OpenAiCompatibleEmbeddingClient.class.getName(), EmbeddingClientFactory.clientClassName(spec));
     }
     EmbeddingModelSpec ada = new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, DIM, null, "openai", "text-embedding-ada-002");
-    assertThrows(IllegalArgumentException.class, () -> EmbeddingClientFactory.checkConfig(ada, new TypedProperties()));
+    TypedProperties noProps = new TypedProperties();
+    assertThrows(IllegalArgumentException.class, () -> EmbeddingClientFactory.checkConfig(ada, noProps));
     EmbeddingClientFactory.checkConfig(new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, DIM, null, "dummy", ALIAS),
         new TypedProperties());
     // an explicit client.class naming this client is checked on the driver too
     EmbeddingModelSpec explicitAda = new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, DIM,
         OpenAiCompatibleEmbeddingClient.class.getName(), "openai", "text-embedding-ada-002");
-    assertThrows(IllegalArgumentException.class, () -> EmbeddingClientFactory.checkConfig(explicitAda, new TypedProperties()));
+    TypedProperties explicitProps = new TypedProperties();
+    assertThrows(IllegalArgumentException.class, () -> EmbeddingClientFactory.checkConfig(explicitAda, explicitProps));
   }
 
   // ---------------------------------------------------------------- helpers

@@ -52,7 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * The blob copy: {@link BlobObjectCopier#copyRow} closes the source stream and the target stream of every attempt, and a failed
  * attempt leaves no file under the blob folder (the shared writer removes it), on the main path, a retried copy and a failed one.
  */
-public class TestBlobObjectCopierHandleRelease {
+class TestBlobObjectCopierHandleRelease {
 
   @TempDir
   Path tempDir;
@@ -62,7 +62,7 @@ public class TestBlobObjectCopierHandleRelease {
   private byte[] content;
 
   @BeforeEach
-  public void writeSource() throws IOException {
+  void writeSource() throws IOException {
     HandleCountingFileSystem.reset();
     source = tempDir.resolve("source").resolve("a.pdf");
     table = tempDir.resolve("table");
@@ -76,12 +76,12 @@ public class TestBlobObjectCopierHandleRelease {
   }
 
   @AfterEach
-  public void resetRegistry() {
+  void resetRegistry() {
     HandleCountingFileSystem.reset();
   }
 
   @Test
-  public void mainPathClosesTheSourceAndTargetStreams() throws IOException {
+  void mainPathClosesTheSourceAndTargetStreams() throws IOException {
     Row copied = copy(props(1));
     assertEquals(2, HandleCountingFileSystem.opened(), "one source read and one target write");
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "streams left open by the main copy");
@@ -91,7 +91,7 @@ public class TestBlobObjectCopierHandleRelease {
   }
 
   @Test
-  public void retriedCopyClosesEveryAttemptAndKeepsOnlyTheLastFile() throws IOException {
+  void retriedCopyClosesEveryAttemptAndKeepsOnlyTheLastFile() throws IOException {
     // the first attempt's first source read fails transiently; the second attempt copies
     HandleCountingFileSystem.inject(source, HandleCountingFileSystem.Fault.READ, 1);
     Row copied = copy(props(3));
@@ -102,17 +102,19 @@ public class TestBlobObjectCopierHandleRelease {
   }
 
   @Test
-  public void failedCopyClosesBothStreamsAndLeavesNoFile() throws IOException {
+  void failedCopyClosesBothStreamsAndLeavesNoFile() throws IOException {
     HandleCountingFileSystem.inject(source, HandleCountingFileSystem.Fault.READ, 1);
-    assertThrows(BlobCopyFailure.class, () -> copy(props(1)));
+    Properties props = props(1);
+    assertThrows(BlobCopyFailure.class, () -> copy(props));
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "streams left open by a failed copy");
     assertEquals(Collections.emptyList(), blobFiles(), "files left by a failed copy");
   }
 
   @Test
-  public void failedTargetCloseClosesTheSourceAndLeavesNoFile() throws IOException {
+  void failedTargetCloseClosesTheSourceAndLeavesNoFile() throws IOException {
     HandleCountingFileSystem.inject(table, HandleCountingFileSystem.Fault.CLOSE_WRITE, 1);
-    assertThrows(BlobCopyFailure.class, () -> copy(props(1)));
+    Properties props = props(1);
+    assertThrows(BlobCopyFailure.class, () -> copy(props));
     assertEquals(Collections.emptyList(), HandleCountingFileSystem.unclosed(), "streams left open by a failed target close");
     assertEquals(Collections.emptyList(), blobFiles(), "files left by a failed target close");
   }

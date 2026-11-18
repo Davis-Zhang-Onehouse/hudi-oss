@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The whisper-jni native library on the platform the tests run on (linux-arm64 locally, linux-x86_64 in CI), and how model
  * loading failures are classified. Needs no model file.
  */
-public class TestWhisperNativeLibrary {
+class TestWhisperNativeLibrary {
 
   private static WhisperConfig modelAt(Path file) {
     TypedProperties props = new TypedProperties();
@@ -45,42 +45,44 @@ public class TestWhisperNativeLibrary {
   }
 
   @Test
-  public void nativeLibraryLoadsOnThisPlatform() {
+  void nativeLibraryLoadsOnThisPlatform() {
     assertNotNull(NativeWhisperEngine.library());
     assertTrue(NativeWhisperEngine.library().getSystemInfo().contains("BLAS"));
   }
 
   @Test
-  public void missingModelRefusedAsConfiguration(@TempDir Path dir) {
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-        () -> NativeWhisperEngine.open(modelAt(dir.resolve("ggml-absent.bin"))));
+  void missingModelRefusedAsConfiguration(@TempDir Path dir) {
+    WhisperConfig config = modelAt(dir.resolve("ggml-absent.bin"));
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> NativeWhisperEngine.open(config));
     assertTrue(e.getMessage().startsWith(WhisperConfig.MODEL.key()), e.getMessage());
   }
 
   @Test
-  public void badMagicModelRefusedAsConfiguration(@TempDir Path dir) throws IOException {
+  void badMagicModelRefusedAsConfiguration(@TempDir Path dir) throws IOException {
     Path model = Files.write(dir.resolve("ggml-broken.bin"), new byte[] {1, 2, 3, 4, 5});
     int live = NativeWhisperEngine.liveContexts();
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> NativeWhisperEngine.open(modelAt(model)));
+    WhisperConfig config = modelAt(model);
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> NativeWhisperEngine.open(config));
     assertTrue(e.getMessage().contains("not a ggml whisper model"), e.getMessage());
     assertEquals(live, NativeWhisperEngine.liveContexts());
   }
 
   @Test
-  public void modelPathDirectoryRefused(@TempDir Path dir) throws IOException {
+  void modelPathDirectoryRefused(@TempDir Path dir) throws IOException {
     Path model = Files.createDirectory(dir.resolve("ggml-folder.bin"));
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> NativeWhisperEngine.open(modelAt(model)));
+    WhisperConfig config = modelAt(model);
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> NativeWhisperEngine.open(config));
     assertTrue(e.getMessage().contains("no readable model file"), e.getMessage());
   }
 
   @Test
-  public void transcriberSurfacesModelErrorAsConfiguration(@TempDir Path dir) throws IOException {
+  void transcriberSurfacesModelErrorAsConfiguration(@TempDir Path dir) throws IOException {
     Path model = Files.write(dir.resolve("ggml-broken.bin"), new byte[] {9, 9, 9, 9});
     TypedProperties props = new TypedProperties();
     props.setProperty(WhisperConfig.MODEL.key(), model.toString());
     try (WhisperSegmentTranscriber transcriber = new WhisperSegmentTranscriber()) {
-      assertThrows(IllegalArgumentException.class,
-          () -> transcriber.transcribe(WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2)), props));
+      WhisperTestSegments.TestSegment segment = WhisperTestSegments.pcm(0, 0, WhisperTestSegments.tone(2));
+      assertThrows(IllegalArgumentException.class, () -> transcriber.transcribe(segment, props));
     }
     assertEquals(0, WhisperContextPool.shared().open());
   }

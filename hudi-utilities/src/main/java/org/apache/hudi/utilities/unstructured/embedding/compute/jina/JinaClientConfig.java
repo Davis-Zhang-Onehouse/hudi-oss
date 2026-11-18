@@ -60,14 +60,17 @@ import java.util.Map;
     description = "Per-model endpoint and credential settings for Jina embedding requests.")
 public final class JinaClientConfig implements Serializable {
 
+  private static final String SINCE_VERSION = "1.3.0";
+
   private static final long serialVersionUID = 1L;
   public static final String ENDPOINT_SUFFIX = ".endpoint";
 
+  public static final String DEFAULT_ENDPOINT = "https://api.jina.ai/v1";
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.endpoint family. */
   public static final ConfigProperty<String> ENDPOINT_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.endpoint")
-      .defaultValue("https://api.jina.ai/v1")
-      .sinceVersion("1.3.0")
+      .defaultValue(DEFAULT_ENDPOINT)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Endpoint. Replace <alias> with the declared model alias.");
   public static final String CREDENTIAL_FILE_SUFFIX = ".credential.file";
 
@@ -75,18 +78,17 @@ public final class JinaClientConfig implements Serializable {
   public static final ConfigProperty<String> CREDENTIAL_FILE_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.credential.file")
       .noDefaultValue("<unset>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Credential file. Replace <alias> with the declared model alias. Default: <unset>.");
   public static final String CREDENTIAL_ENV_SUFFIX = ".credential.env";
 
+  public static final String DEFAULT_CREDENTIAL_ENV = "JINA_API_KEY";
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.credential.env family. */
   public static final ConfigProperty<String> CREDENTIAL_ENV_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.credential.env")
-      .defaultValue("JINA_API_KEY")
-      .sinceVersion("1.3.0")
+      .defaultValue(DEFAULT_CREDENTIAL_ENV)
+      .sinceVersion(SINCE_VERSION)
       .withDocumentation("Credential env. Replace <alias> with the declared model alias.");
-  public static final String DEFAULT_ENDPOINT = "https://api.jina.ai/v1";
-  public static final String DEFAULT_CREDENTIAL_ENV = "JINA_API_KEY";
   public static final int DEFAULT_MAX_INPUTS = 64;
   public static final int MAX_INPUTS = 2048;
   /** Documented models: the most dimensions, and whether {@code dimensions} may be sent (else the model returns exactly that). */

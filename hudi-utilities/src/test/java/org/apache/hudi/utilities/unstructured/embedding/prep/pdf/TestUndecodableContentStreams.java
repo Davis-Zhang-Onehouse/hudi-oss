@@ -49,7 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * A content or form stream that fails to decode for a reason other than its size is skipped, as PDFBox skips it: the page
  * keeps the text of its other streams instead of failing.
  */
-public class TestUndecodableContentStreams {
+class TestUndecodableContentStreams {
 
   private static final COSName UNKNOWN_FILTER = COSName.getPDFName("UnknownDecode");
 
@@ -57,12 +57,12 @@ public class TestUndecodableContentStreams {
   Path staging;
 
   @BeforeAll
-  public static void fontCache(@TempDir Path cache) {
+  static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
   }
 
   @Test
-  public void contentsArrayKeepsTheStreamsThatDecode() throws IOException {
+  void contentsArrayKeepsTheStreamsThatDecode() throws IOException {
     byte[] pdf = build(document -> {
       PDPage page = textPage(document, null);
       COSStream broken = PdfFixtures.stream(document, "BT /F1 10 Tf 50 650 Td (Lost text.) Tj ET\n");
@@ -76,7 +76,7 @@ public class TestUndecodableContentStreams {
   }
 
   @Test
-  public void streamThatFailsMidDecodeLeavesNoStateForTheNextStream() throws IOException {
+  void streamThatFailsMidDecodeLeavesNoStateForTheNextStream() throws IOException {
     // the broken stream decodes 4 KiB of an open array before its invalid byte; the next stream holds more numbers than
     // one array may, each group closed by an operator, so it passes only when scanned without the broken stream's bytes
     StringBuilder openArray = new StringBuilder("[ ");
@@ -100,7 +100,7 @@ public class TestUndecodableContentStreams {
   }
 
   @Test
-  public void undrawnBrokenFormInInheritedResourcesFailsNoPage() throws IOException {
+  void undrawnBrokenFormInInheritedResourcesFailsNoPage() throws IOException {
     byte[] pdf = build(document -> {
       PDResources inherited = PdfFixtures.helvetica();
       COSStream form = PdfFixtures.stream(document, "BT /F1 10 Tf 50 600 Td (Form text.) Tj ET\n");
@@ -125,7 +125,7 @@ public class TestUndecodableContentStreams {
   }
 
   @Test
-  public void drawnBrokenFormIsSkippedAndThePageKeepsItsText() throws IOException {
+  void drawnBrokenFormIsSkippedAndThePageKeepsItsText() throws IOException {
     byte[] pdf = build(document -> {
       PDPage page = textPage(document, null);
       COSStream form = PdfFixtures.stream(document, "BT /F1 10 Tf 50 600 Td (Form text.) Tj ET\n");
@@ -147,7 +147,7 @@ public class TestUndecodableContentStreams {
   }
 
   @Test
-  public void undecodableStreamIsDecodedOncePerDocument() throws IOException {
+  void undecodableStreamIsDecodedOncePerDocument() throws IOException {
     byte[] pdf = build(document -> {
       COSStream broken = PdfFixtures.stream(document, "BT /F1 10 Tf 50 650 Td (Lost text.) Tj ET\n");
       broken.setItem(COSName.FILTER, UNKNOWN_FILTER);

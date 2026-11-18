@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * The text normalization rules of the PDF chunker, and the NFKC half of its error handling.
  */
-public class TestTextNormalizer {
+class TestTextNormalizer {
 
   private final TextNormalizer normalizer = new TextNormalizer(262_144);
 
@@ -38,7 +38,7 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void nfkc() {
+  void nfkc() {
     assertEquals("text-normalizer-v2", TextNormalizer.LOGIC_VERSION);
     assertEquals("file", norm("\uFB01le"));  // escaped non-ASCII test data
     assertEquals("AB", norm("\uFF21\uFF22"));  // escaped non-ASCII test data
@@ -47,27 +47,27 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void lineEndings() {
+  void lineEndings() {
     assertEquals("a b c d", norm("a\r\nb\rc\u2028d"));
     assertEquals("a\n\nb", norm("a\u2029b"));
     assertEquals("word word", norm("word\u0085word"), "NEL is a line break; the words never merge");
   }
 
   @Test
-  public void whitespaceCollapse() {
+  void whitespaceCollapse() {
     assertEquals("a b c\n\nd", norm("a \t b\n c\n\n\n d"));
     assertEquals("a b", norm("  a\u00A0\u2003 b  "));
     assertEquals("a\n\nb", norm("a \n \n b"));
   }
 
   @Test
-  public void invisiblesRemoved() {
+  void invisiblesRemoved() {
     assertEquals("abcd", norm("a\u2060b\uFEFFc\u00ADd"), "word joiner, BOM, soft hyphen join"); // escaped non-ASCII test data
     assertEquals("ab", norm("a\u0001\u007Fb"));  // escaped non-ASCII test data
   }
 
   @Test
-  public void zeroWidthSpaceSeparatesWordsInSpacedScripts() {
+  void zeroWidthSpaceSeparatesWordsInSpacedScripts() {
     assertEquals("alpha beta", norm("alpha\u200Bbeta"));  // escaped non-ASCII test data
     assertEquals("alpha beta", norm("alpha\u200B\u200Bbeta"));  // escaped non-ASCII test data
     assertEquals("a b", norm("a \u200B b"));  // escaped non-ASCII test data
@@ -76,7 +76,7 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void zeroWidthSpaceDroppedInUnspacedScripts() {
+  void zeroWidthSpaceDroppedInUnspacedScripts() {
     // Thai, Chinese and Japanese write no spaces between words; U+200B there is a break hint, not a space.
     assertEquals("\u0E2A\u0E27\u0E31\u0E2A\u0E14\u0E35", norm("\u0E2A\u0E27\u0E31\u0E2A\u200B\u0E14\u0E35")); // escaped non-ASCII test data
     assertEquals("\u4E2D\u6587", norm("\u4E2D\u200B\u6587"));  // escaped non-ASCII test data
@@ -84,14 +84,14 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void zeroWidthSpaceNextToCjkPunctuationIsDropped() {
+  void zeroWidthSpaceNextToCjkPunctuationIsDropped() {
     // the prolonged sound mark and the ideographic full stop are Common script but belong to unspaced text
     assertEquals("\u30B3\u30FC\u30D2\u30FCcoffee", norm("\u30B3\u30FC\u30D2\u30FC\u200Bcoffee")); // escaped non-ASCII test data
     assertEquals("\u4E2D\u3002xyz", norm("\u4E2D\u3002\u200Bxyz"));  // escaped non-ASCII test data
   }
 
   @Test
-  public void emojiZwjSequencesKept() {
+  void emojiZwjSequencesKept() {
     String family = "\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67";  // escaped non-ASCII test data
     assertEquals(family, norm(family));
     String eyeInBubble = "\uD83D\uDC41\uFE0F\u200D\uD83D\uDDE8\uFE0F";  // escaped non-ASCII test data
@@ -101,7 +101,7 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void joinersKeptInsideWords() {
+  void joinersKeptInsideWords() {
     String persian = "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645";  // escaped non-ASCII test data
     assertEquals(persian, norm(persian), "Persian ZWNJ is part of the spelling");
     String devanagari = "\u0915\u094D\u200D\u0937";  // escaped non-ASCII test data
@@ -113,7 +113,7 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void strayJoinersRemoved() {
+  void strayJoinersRemoved() {
     assertEquals("a b", norm("a \u200D b"));  // escaped non-ASCII test data
     assertEquals("abc", norm("\u200Cabc\u200D"));  // escaped non-ASCII test data
     String manWoman = "\uD83D\uDC68\u200D\uD83D\uDC69";  // escaped non-ASCII test data
@@ -121,7 +121,7 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void joinerAfterVowelMarksKeepsTheScriptOfItsBaseLetter() {
+  void joinerAfterVowelMarksKeepsTheScriptOfItsBaseLetter() {
     // a ZWNJ after a vocalized letter follows a combining mark (Inherited script); the base letter decides
     String kasra = "\u0628\u0650\u200C\u0647\u0627";  // escaped non-ASCII test data
     assertEquals(kasra, norm(kasra), "Persian with a kasra before the ZWNJ");
@@ -130,13 +130,13 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void emojiZwjSequenceEndingInANonEmojiSymbolKeepsTheJoiner() {
+  void emojiZwjSequenceEndingInANonEmojiSymbolKeepsTheJoiner() {
     String headShakingSideways = "\uD83D\uDE42\u200D\u2194\uFE0F";  // escaped non-ASCII test data
     assertEquals(headShakingSideways, norm(headShakingSideways), "U+2194 is a math symbol in an emoji ZWJ sequence");
   }
 
   @Test
-  public void joinersInScriptsThatDoNotJoinAreRemoved() {
+  void joinersInScriptsThatDoNotJoinAreRemoved() {
     // in Latin, Greek or Cyrillic a ZWNJ/ZWJ only steers ligatures; keeping it would split the word for exact matching
     assertEquals("Auflage", norm("Auf\u200Clage"));  // escaped non-ASCII test data
     assertEquals("alphabeta", norm("alpha\u200Dbeta"));  // escaped non-ASCII test data
@@ -145,27 +145,27 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void joinerAfterAVariationSelectorAtAWordEndIsRemoved() {
+  void joinerAfterAVariationSelectorAtAWordEndIsRemoved() {
     // only a virama (Malayalam chillu) keeps a joiner that nothing follows; VS16 is a combining mark but not a virama
     assertEquals("\uD83D\uDC41\uFE0F x", norm("\uD83D\uDC41\uFE0F\u200D x"));  // escaped non-ASCII test data
   }
 
   @Test
-  public void unpairedSurrogateReplacedAndCounted() {
+  void unpairedSurrogateReplacedAndCounted() {
     TextNormalizer.Result result = normalizer.normalize("ab\uD83Dcd\uDE00e\uD83D\uDE00"); // non-ASCII data
     assertEquals("ab\uFFFDcd\uFFFDe\uD83D\uDE00", result.text());  // escaped non-ASCII test data
     assertEquals(2, result.unpairedSurrogates());
   }
 
   @Test
-  public void tabDoesNotMergeWords() {
+  void tabDoesNotMergeWords() {
     assertEquals("a b", norm("a\tb"));
     assertEquals("a b", norm("a\u000Bb"));
     assertEquals("a b", norm("a\fb"));
   }
 
   @Test
-  public void normalizeIdempotent() {
+  void normalizeIdempotent() {
     String[] fixed = {"a \u200B b", "e\u00AD\u0301", "x\u00A8y", "a\u200B\u200Db", "\u200D\u0915\u200D", "\u00B4\u0F72\u200D\u0327", "\uFE70\u200C\u0BCD", // escaped non-ASCII test data
         "\uFDFA \uFDFA", "a\n\u0301b", " \n\n ", "\uD800"}; // escaped non-ASCII test data
     for (String x : fixed) {
@@ -199,7 +199,7 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void nfkcExpansionTruncated() {
+  void nfkcExpansionTruncated() {
     StringBuilder page = new StringBuilder();
     for (int i = 0; i < 262_144; i++) {
       page.append('\uFDFA');                         // NFKC expands each to 18 chars
@@ -212,7 +212,7 @@ public class TestTextNormalizer {
   }
 
   @Test
-  public void truncationNeverSplitsSurrogate() {
+  void truncationNeverSplitsSurrogate() {
     TextNormalizer small = new TextNormalizer(5);
     TextNormalizer.Result result = small.normalize("abcd\uD83D\uDE00ef");  // escaped non-ASCII test data
     assertEquals("abcd", result.text());

@@ -35,10 +35,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * A video's speech and frame chunk ids against the embedding table's record key: both are dense from 0, and the key columns
  * {@link EmbeddingTableSchema#KEY_COLUMNS} (source version, modality, chunk_id) keep frame k and speech chunk k apart.
  */
-public class TestAudioChunkIds {
+class TestAudioChunkIds {
 
   @Test
-  public void framesAndSpeechOfOneSourceNumberedFromZeroNeverShareARecordKey() {
+  void framesAndSpeechOfOneSourceNumberedFromZeroNeverShareARecordKey() {
     String sha = "0123456789abcdef0123456789abcdef";
     int n = 50;
     ChunkIdScheme scheme = new SequentialChunkIdScheme();

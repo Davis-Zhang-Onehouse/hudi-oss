@@ -179,21 +179,20 @@ public class TranscriptPacker implements TranscriptChunker {
       while (true) {
         if (!inputDone && packer.needsMoreText()) {
           pull();
-          continue;
-        }
-        PackedChunk cut = packer.cut(inputDone);
-        if (cut == null) {
-          return null;
-        }
-        if (labelOnly(cut)) {
+        } else {
+          PackedChunk cut = packer.cut(inputDone);
+          if (cut == null) {
+            return null;
+          }
+          if (!labelOnly(cut)) {
+            TranscriptChunk chunk = toChunk(cut);
+            dropReleased();
+            return chunk;
+          }
           // a turn's label cut off alone (the word after it does not fit beside it): no content, and the next chunk starts
           // with the same label as its prefix, so nothing is lost by not writing it
           dropReleased();
-          continue;
         }
-        TranscriptChunk chunk = toChunk(cut);
-        dropReleased();
-        return chunk;
       }
     }
 
@@ -230,7 +229,8 @@ public class TranscriptPacker implements TranscriptChunker {
      * never starts inside it and a turn stays one line.
      */
     private static String checkedLabel(String label, long segment) {
-      for (int i = 0; i < label.length(); ) {
+      int i = 0;
+      while (i < label.length()) {
         int cp = label.codePointAt(i);
         if (Character.isWhitespace(cp) || Character.isSpaceChar(cp) || Character.isISOControl(cp) || cp == '[' || cp == ']') {
           throw new TranscriptPackingException("speaker label '" + label + "' of segment " + segment + " is not a generic id "
@@ -276,8 +276,8 @@ public class TranscriptPacker implements TranscriptChunker {
           endMs = Math.max(endMs, utterance.endMs);
         }
       }
-      return new TranscriptChunkValue(ordinal++, cut.text(), cut.tokenCount(), first.startMs, endMs,
-          new ArrayList<>(speakers), first.segment, last.segment);
+      return new TranscriptChunkValue(ordinal++, cut.text(), cut.tokenCount(),
+          new TranscriptChunkValue.Range(first.startMs, endMs), new ArrayList<>(speakers), new TranscriptChunkValue.Range(first.segment, last.segment));
     }
 
     /** Drops the utterances no later chunk can carry: below the packer's first held mark (the read-ahead one stays). */

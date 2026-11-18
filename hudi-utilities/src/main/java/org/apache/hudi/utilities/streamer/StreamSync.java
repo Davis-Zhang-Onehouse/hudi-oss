@@ -344,6 +344,7 @@ public class StreamSync implements Serializable, Closeable {
         onInitializingHoodieWriteClient, streamContext);
   }
 
+  // by design: mirrors upstream's 8-argument constructor; a parameter object in this core class is out of scope (D-1605)
   private StreamSync(HoodieStreamer.Config cfg, SparkSession sparkSession, Pair<SourceContract, TypedProperties> prepared,
                      HoodieSparkEngineContext hoodieSparkContext, FileSystem fs, Configuration conf,
                      Function<SparkRDDWriteClient, Boolean> onInitializingHoodieWriteClient, StreamContext streamContext) throws IOException {
@@ -352,6 +353,8 @@ public class StreamSync implements Serializable, Closeable {
   }
 
   // The service has already prepared these properties before constructing its schema provider and validating its table.
+  // by design: mirrors upstream's 8-argument constructor plus the prepared contract; a parameter object in this core class is out of
+  // scope (D-1605)
   StreamSync(HoodieStreamer.Config cfg, SparkSession sparkSession, TypedProperties props, HoodieSparkEngineContext hoodieSparkContext,
              FileSystem fs, Configuration conf, Function<SparkRDDWriteClient, Boolean> onInitializingHoodieWriteClient,
              StreamContext streamContext, SourceContract contract) throws IOException {
@@ -791,6 +794,7 @@ public class StreamSync implements Serializable, Closeable {
    * @return Pair with {@link InputBatch} containing the new batch of data from source along with new checkpoint and schema provider instance to use,
    *         and a boolean set to `true` if row writer can be used.
    */
+  // by design: the remaining complexity is upstream Hudi's; the stack's own branch is in helpers (D-1760)
   @VisibleForTesting
   Pair<InputBatch, Boolean> fetchNextBatchFromSource(Option<Checkpoint> resumeCheckpoint, HoodieTableMetaClient metaClient) {
     Option<JavaRDD<GenericRecord>> avroRDDOptional = null;
@@ -805,19 +809,10 @@ public class StreamSync implements Serializable, Closeable {
           formatAdapter.fetchNewDataInRowFormat(resumeCheckpoint, cfg.sourceLimit);
       checkpoint = dataAndCheckpoint.getCheckpointForNextBatch();
 
-      Option<Dataset<Row>> transformed;
-      boolean startsInstant = startsInstantBeforeTransformer();
-      if (startsInstant && isNoNewData(resumeCheckpoint, checkpoint)) {
-        // the caller ends the round on the unchanged checkpoint: no instant is started and nothing is transformed
+      if (endsRoundBeforeTransformer(resumeCheckpoint, checkpoint)) {
         return Pair.of(new InputBatch(Option.empty(), checkpoint, dataAndCheckpoint.getSchemaProvider()), false);
       }
-      if (startsInstant && dataAndCheckpoint.getBatch().isPresent()) {
-        // the source returned data (its driver-side result, no Spark action): start the commit before the transformer
-        String instantTime = startCommitBeforeTransformer(metaClient);
-        transformed = applyTransformerForInstant(dataAndCheckpoint.getBatch(), instantTime, metaClient);
-      } else {
-        transformed = dataAndCheckpoint.getBatch().map(data -> transformer.get().apply(hoodieSparkContext.jsc(), sparkSession, data, props));
-      }
+      Option<Dataset<Row>> transformed = transform(dataAndCheckpoint.getBatch(), metaClient);
 
       transformed = formatAdapter.processErrorEvents(transformed,
           ErrorEvent.ErrorReason.CUSTOM_TRANSFORMER_FAILURE);
@@ -912,6 +907,56 @@ public class StreamSync implements Serializable, Closeable {
     } else {
       return Pair.of(new InputBatch(avroRDDOptional, checkpoint, schemaProvider), false);
     }
+  }
+
+  /** The round's instant: the one started before the transformer (taken once), else a new commit. */
+  private String roundInstant(HoodieTableMetaClient metaClient) {
+    if (instantStartedBeforeTransformer.isPresent()) {
+      String instantTime = instantStartedBeforeTransformer.get();
+      instantStartedBeforeTransformer = Option.empty();
+      return instantTime;
+    }
+    return startCommit(metaClient, !autoGenerateRecordKeys);
+  }
+
+  /** The checkpoint metadata of the commit; a round whose instant started before the transformer cannot be restored. */
+  private Map<String, String> checkpointCommitMetadata(InputBatch inputBatch, boolean startedBeforeTransformer) {
+    Map<String, String> checkpointCommitMetadata =
+        extractCheckpointMetadata(inputBatch, props, writeClient.getConfig().getWriteVersion().versionCode(), cfg);
+    if (startedBeforeTransformer) {
+      checkpointCommitMetadata = new HashMap<>(checkpointCommitMetadata);
+      checkpointCommitMetadata.put(RestorePlanActionExecutor.RESTORE_UNSUPPORTED_REASON_KEY, RESTORE_UNSUPPORTED_REASON);
+    }
+    return checkpointCommitMetadata;
+  }
+
+  /** Tells the transformer about a commit; a successful return can also mean an empty commit was skipped, so only a durable one. */
+  private void notifyTransformerOfCommit(HoodieTableMetaClient metaClient, String instantTime) {
+    if (transformer.isPresent()
+        && CompletedWrite.exists(metaClient, instantTime)) {
+      transformer.get().onCommit(hoodieSparkContext.jsc(), sparkSession,
+          TypedProperties.copy(writeClient.getConfig().getProps()), instantTime);
+    }
+  }
+
+  /**
+   * An instant-aware round ({@link #startsInstantBeforeTransformer()}) with no new data: the caller ends the round on the
+   * unchanged checkpoint, so no instant is started and nothing is transformed.
+   */
+  private boolean endsRoundBeforeTransformer(Option<Checkpoint> resumeCheckpoint, Checkpoint checkpoint) {
+    return startsInstantBeforeTransformer() && isNoNewData(resumeCheckpoint, checkpoint);
+  }
+
+  /**
+   * Applies the transformer to {@code batch}. For an instant-aware transformer and a batch the source returned (its driver-side
+   * result, no Spark action), the commit of the round is started first and the transformer runs for that instant.
+   */
+  private Option<Dataset<Row>> transform(Option<Dataset<Row>> batch, HoodieTableMetaClient metaClient) {
+    if (startsInstantBeforeTransformer() && batch.isPresent()) {
+      String instantTime = startCommitBeforeTransformer(metaClient);
+      return applyTransformerForInstant(batch, instantTime, metaClient);
+    }
+    return batch.map(data -> transformer.get().apply(hoodieSparkContext.jsc(), sparkSession, data, props));
   }
 
   /**
@@ -1071,19 +1116,14 @@ public class StreamSync implements Serializable, Closeable {
    * @param overallTimerContext Timer Context
    * @return Option Compaction instant if one is scheduled
    */
+  // by design: the remaining complexity is upstream Hudi's; the stack's own parts are in helpers (D-1760)
   private Pair<Option<String>, JavaRDD<WriteStatus>> writeToSinkAndDoMetaSync(HoodieTableMetaClient metaClient, InputBatch inputBatch,
                                                                               boolean useRowWriter,
                                                                               HoodieIngestionMetrics metrics,
                                                                               Timer.Context overallTimerContext) {
     boolean releaseResourcesInvoked = false;
-    String instantTime;
     boolean startedBeforeTransformer = instantStartedBeforeTransformer.isPresent();
-    if (startedBeforeTransformer) {
-      instantTime = instantStartedBeforeTransformer.get();
-      instantStartedBeforeTransformer = Option.empty();
-    } else {
-      instantTime = startCommit(metaClient, !autoGenerateRecordKeys);
-    }
+    String instantTime = roundInstant(metaClient);
     try {
       Option<String> scheduledCompactionInstant = Option.empty();
       // write to hudi and fetch result
@@ -1102,11 +1142,7 @@ public class StreamSync implements Serializable, Closeable {
           errorTableWriteStatusRDDOpt = errorTableWriter.map(w -> w.upsert(instantTime, getLatestCommittedInstant()));
         }
 
-        Map<String, String> checkpointCommitMetadata = extractCheckpointMetadata(inputBatch, props, writeClient.getConfig().getWriteVersion().versionCode(), cfg);
-        if (startedBeforeTransformer) {
-          checkpointCommitMetadata = new HashMap<>(checkpointCommitMetadata);
-          checkpointCommitMetadata.put(RestorePlanActionExecutor.RESTORE_UNSUPPORTED_REASON_KEY, RESTORE_UNSUPPORTED_REASON);
-        }
+        Map<String, String> checkpointCommitMetadata = checkpointCommitMetadata(inputBatch, startedBeforeTransformer);
         Option<String> latestCommittedInstant = getLatestCommittedInstant();
         String commitActionType = CommitUtils.getCommitActionType(cfg.operation, HoodieTableType.valueOf(cfg.tableType));
 
@@ -1220,11 +1256,7 @@ public class StreamSync implements Serializable, Closeable {
         this.formatAdapter.getSource().onCommit(inputBatch.getCheckpointForNextBatch() != null
             ? inputBatch.getCheckpointForNextBatch().getCheckpointKey() : null);
         // A successful return can also mean that an empty commit was skipped. Notify only a durable completed instant.
-        if (transformer.isPresent()
-            && CompletedWrite.exists(metaClient, instantTime)) {
-          transformer.get().onCommit(hoodieSparkContext.jsc(), sparkSession,
-              TypedProperties.copy(writeClient.getConfig().getProps()), instantTime);
-        }
+        notifyTransformerOfCommit(metaClient, instantTime);
         // Schedule compaction if needed
         if (cfg.isAsyncCompactionEnabled()) {
           scheduledCompactionInstant = writeClient.scheduleCompaction(Option.empty());

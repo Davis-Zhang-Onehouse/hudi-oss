@@ -238,29 +238,34 @@ final class SourceObjectOpener {
         interrupted.initCause(e);
         throw interrupted;
       } catch (ExecutionException e) {
-        Throwable cause = e.getCause();
-        while ((cause instanceof CompletionException || cause instanceof ExecutionException)
-            && cause.getCause() != null) {
-          cause = cause.getCause();
-        }
-        if (cause instanceof UncheckedIOException) {
-          throw ((UncheckedIOException) cause).getCause();
-        }
-        if (cause instanceof IOException) {
-          throw (IOException) cause;
-        }
-        if (cause instanceof IllegalArgumentException) {
-          warnOnce("openFile refused the file status of " + path + " (" + cause + ")");
-          return null;
-        }
-        if (cause instanceof RuntimeException) {
-          throw (RuntimeException) cause;
-        }
-        if (cause instanceof Error) {
-          throw (Error) cause;
-        }
-        throw new IOException(cause);
+        return openFailure(e, path);
       }
+    }
+
+    /** Unwraps a failed open: rethrows its cause, or returns null (after a warning) for an IllegalArgumentException. */
+    private static FSDataInputStream openFailure(ExecutionException e, Path path) throws IOException {
+      Throwable cause = e.getCause();
+      while ((cause instanceof CompletionException || cause instanceof ExecutionException)
+          && cause.getCause() != null) {
+        cause = cause.getCause();
+      }
+      if (cause instanceof UncheckedIOException) {
+        throw ((UncheckedIOException) cause).getCause();
+      }
+      if (cause instanceof IOException) {
+        throw (IOException) cause;
+      }
+      if (cause instanceof IllegalArgumentException) {
+        warnOnce("openFile refused the file status of " + path + " (" + cause + ")");
+        return null;
+      }
+      if (cause instanceof RuntimeException) {
+        throw (RuntimeException) cause;
+      }
+      if (cause instanceof Error) {
+        throw (Error) cause;
+      }
+      throw new IOException(cause);
     }
   }
 }

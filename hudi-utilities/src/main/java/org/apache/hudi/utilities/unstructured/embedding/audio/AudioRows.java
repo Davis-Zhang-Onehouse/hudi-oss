@@ -32,8 +32,10 @@ public final class AudioRows {
   /** The logic version of the speech rows' layout, the {@code speech} part of the audio logic. */
   public static final String SPEECH_LOGIC_VERSION = "prep-v1";
 
-  /** Aux key, on speech rows: the audio logic version, see {@link #AUDIO_LOGIC_FORMAT}. */
-  /** Legacy raw-chunk hint; stored rows carry the composed prep_logic_version instead. */
+  /**
+   * Aux key, on speech rows: the audio logic version, see {@link #AUDIO_LOGIC_FORMAT}. Legacy raw-chunk hint; stored rows carry
+   * the composed prep_logic_version instead.
+   */
   public static final String AUX_AUDIO_LOGIC = "audio_logic";
 
   /**

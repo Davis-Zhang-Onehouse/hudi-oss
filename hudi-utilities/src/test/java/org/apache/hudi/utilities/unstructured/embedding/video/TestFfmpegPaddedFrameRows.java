@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * its width, so a frame 129 to 144 pixels wide reads as 4 channels (65 to 96 wide as 4, 32 wide as 6). Such a clip yields its
  * frames at their native size, and their pixels are the clip's own, under both dedup methods.
  */
-public class TestFfmpegPaddedFrameRows {
+class TestFfmpegPaddedFrameRows {
 
   /** Mean absolute luma difference, per mosaic cell, between a stored frame and the picture the clip was drawn from. */
   private static final double MAX_MEAN_LUMA_ERROR = 16;
@@ -57,7 +57,7 @@ public class TestFfmpegPaddedFrameRows {
 
   @ParameterizedTest
   @CsvSource({"136,96,dhash", "136,96,sha256", "80,64,dhash", "32,24,dhash", "320,240,dhash"})
-  public void paddedRowsYieldTheClipsOwnFrames(int width, int height, String method) throws IOException {
+  void paddedRowsYieldTheClipsOwnFrames(int width, int height, String method) throws IOException {
     // keyframes every 2 s of a 6 s clip whose picture changes every second: 0, 2 and 4 s are kept
     Path clip = VideoClips.generate(dir.resolve("clip-" + width + "x" + height + ".mp4"), 6, 10, 2, width, height, -1, -1);
     TypedProperties props = new TypedProperties();
