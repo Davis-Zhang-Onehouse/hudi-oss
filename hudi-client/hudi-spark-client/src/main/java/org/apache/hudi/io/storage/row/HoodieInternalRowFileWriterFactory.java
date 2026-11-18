@@ -30,8 +30,11 @@ import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.engine.LocalTaskContextSupplier;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.core.io.HoodieParquetConfigInjector;
 import org.apache.hudi.io.storage.HoodieSparkLanceWriter;
+import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration;
 import org.apache.hudi.table.HoodieTable;
@@ -127,20 +130,25 @@ public class HoodieInternalRowFileWriterFactory {
                                                                                 StructType structType,
                                                                                 Option<BloomFilter> bloomFilterOpt)
       throws IOException {
+    // The configured Parquet config injector applies here as on the record writer path (HoodieSparkFileWriterFactory), so a
+    // bulk insert or a clustering through the row writer keeps the table's Parquet settings.
+    Pair<StorageConfiguration, HoodieConfig> injectedConfigs =
+        HoodieParquetConfigInjector.applyConfigInjector(path, table.getStorageConf(), writeSupportConfig);
+    HoodieConfig config = injectedConfigs.getRight();
     HoodieRowParquetWriteSupport writeSupport = HoodieRowParquetWriteSupport
-        .getHoodieRowParquetWriteSupport((Configuration) table.getStorageConf().unwrap(), structType, bloomFilterOpt, writeSupportConfig);
+        .getHoodieRowParquetWriteSupport((Configuration) injectedConfigs.getLeft().unwrap(), structType, bloomFilterOpt, config);
 
     return new HoodieInternalRowParquetWriter(
         path,
         new HoodieParquetConfig<>(
             writeSupport,
-            getCompressionCodecName(writeConfig.getParquetCompressionCodec()),
-            writeConfig.getParquetBlockSize(),
-            writeConfig.getParquetPageSize(),
-            writeConfig.getParquetMaxFileSize(),
+            getCompressionCodecName(config.getString(HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME)),
+            config.getIntOrDefault(HoodieStorageConfig.PARQUET_BLOCK_SIZE),
+            config.getIntOrDefault(HoodieStorageConfig.PARQUET_PAGE_SIZE),
+            config.getLongOrDefault(HoodieStorageConfig.PARQUET_MAX_FILE_SIZE),
             new HadoopStorageConfiguration(writeSupport.getHadoopConf()),
-            writeConfig.getParquetCompressionRatio(),
-            writeConfig.parquetDictionaryEnabled()
+            config.getDoubleOrDefault(HoodieStorageConfig.PARQUET_COMPRESSION_RATIO_FRACTION),
+            config.getBooleanOrDefault(HoodieStorageConfig.PARQUET_DICTIONARY_ENABLED)
         ));
   }
 

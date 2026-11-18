@@ -815,6 +815,24 @@ public class StreamSync implements Serializable, Closeable {
   }
 
   /**
+   * Rolls back a data-table instant that failed before commit and returns the original failure for the caller to throw.
+   * A rollback failure is suppressed so that it cannot mask the round's original failure.
+   */
+  private <E extends RuntimeException> E rolledBack(String instantTime, E failure) {
+    return rolledBack(() -> writeClient.rollback(instantTime), failure);
+  }
+
+  @VisibleForTesting
+  static <E extends RuntimeException> E rolledBack(Runnable rollback, E failure) {
+    try {
+      rollback.run();
+    } catch (RuntimeException rollbackFailure) {
+      failure.addSuppressed(rollbackFailure);
+    }
+    return failure;
+  }
+
+  /**
    * Apply schema reconcile and schema evolution rules(schema on read) and generate new target schema provider.
    *
    * @param incomingSchema schema of the source data
@@ -933,8 +951,7 @@ public class StreamSync implements Serializable, Closeable {
               case ROLLBACK_COMMIT:
                 // Roll back the inflight data-table instant so it doesn't leak under LAZY
                 // failed-writes cleanup policy (preserves HSWSV behavior).
-                writeClient.rollback(instantTime);
-                throw new HoodieStreamerWriteException("Error table commit failed for instant " + instantTime);
+                throw rolledBack(instantTime, new HoodieStreamerWriteException("Error table commit failed for instant " + instantTime));
               case LOG_ERROR:
                 log.error("Error table write failed for instant {}", instantTime);
                 break;
@@ -957,8 +974,7 @@ public class StreamSync implements Serializable, Closeable {
                 checkpointCommitMetadata, metaClient);
           } catch (HoodieValidationException e) {
             log.error("Pre-commit validators failed for instant {}", instantTime, e);
-            writeClient.rollback(instantTime);
-            throw new HoodieStreamerWriteException("Pre-commit validators failed for instant " + instantTime, e);
+            throw rolledBack(instantTime, new HoodieStreamerWriteException("Pre-commit validators failed for instant " + instantTime, e));
           }
         }
 
@@ -991,8 +1007,7 @@ public class StreamSync implements Serializable, Closeable {
             WriteErrorReporter.logTopErrors(writeStatuses);
             // Roll back the inflight data-table instant so it doesn't leak under LAZY
             // failed-writes cleanup policy (preserves HSWSV behavior).
-            writeClient.rollback(instantTime);
-            throw new HoodieStreamerWriteException("Commit " + instantTime + " has write errors and commitOnErrors=false");
+            throw rolledBack(instantTime, new HoodieStreamerWriteException("Commit " + instantTime + " has write errors and commitOnErrors=false"));
           }
         }
 

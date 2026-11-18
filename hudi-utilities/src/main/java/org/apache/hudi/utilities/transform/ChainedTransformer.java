@@ -77,16 +77,20 @@ public class ChainedTransformer implements Transformer {
 
     Set<String> identifiers = new HashSet<>();
     for (String configuredTransformer : configuredTransformers) {
-      if (!configuredTransformer.contains(ID_TRANSFORMER_CLASS_NAME_DELIMITER)) {
-        transformers.add(new TransformerInfo(ReflectionUtils.loadClass(configuredTransformer)));
+      String[] parts = configuredTransformer.trim().split(ID_TRANSFORMER_CLASS_NAME_DELIMITER, -1);
+      if (parts.length > 2) {
+        throw new HoodieTransformPlanException("There should only be one colon in a configured transformer");
+      }
+      String className = parts[parts.length - 1].trim();
+      if (className.isEmpty() || (parts.length == 2 && parts[0].trim().isEmpty())) {
+        throw new HoodieTransformPlanException("Transformer identifier or class is empty for " + configuredTransformer);
+      }
+      if (parts.length == 1) {
+        transformers.add(new TransformerInfo(ReflectionUtils.loadClass(className)));
       } else {
-        String[] splits = configuredTransformer.split(ID_TRANSFORMER_CLASS_NAME_DELIMITER);
-        if (splits.length > 2) {
-          throw new HoodieTransformPlanException("There should only be one colon in a configured transformer");
-        }
-        String id = splits[0];
+        String id = parts[0].trim();
         validateIdentifier(id, identifiers, configuredTransformer);
-        Transformer transformer = ReflectionUtils.loadClass(splits[1]);
+        Transformer transformer = ReflectionUtils.loadClass(className);
         transformers.add(new TransformerInfo(transformer, id));
       }
     }
@@ -137,7 +141,7 @@ public class ChainedTransformer implements Transformer {
     Option<StructType> expectedTargetStructOpt = Option.ofNullable(incomingStruct);
     for (TransformerInfo transformerInfo : transformers) {
       expectedTargetStructOpt = Option.of(
-          getExpectedTransformedSchema(transformerInfo, jsc, sparkSession, expectedTargetStructOpt, Option.empty(), properties));
+          getExpectedTransformedSchema(transformerInfo, jsc, sparkSession, expectedTargetStructOpt, Option.empty(), transformerInfo.getProperties(properties, transformers)));
     }
     return expectedTargetStructOpt.get();
   }
