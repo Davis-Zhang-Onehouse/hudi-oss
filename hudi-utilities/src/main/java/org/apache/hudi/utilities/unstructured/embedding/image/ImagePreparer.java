@@ -65,8 +65,8 @@ public class ImagePreparer {
 
   /**
    * Reads the header and sizes the decode, without decoding a pixel; one reader session over one stream (a reader may
-   * flush the stream behind its header, so the stream is never rewound to the decode). The one exception is a BMP's
-   * intermediate estimate, which reads the first header bytes again under mark/reset: the BMP reader never flushes.
+   * flush the stream behind its header, so the stream is never rewound to the decode). The intermediate estimate's header bytes
+   * are read first, under mark/reset, before the reader takes the stream.
    */
   public RasterPlan plan(ImageSource source) throws IOException {
     try (ImageInputStream in = source.open()) {
@@ -79,14 +79,17 @@ public class ImagePreparer {
             + header.getFormat() + " (" + header + ")");
       }
       try {
+        // the header bytes the intermediate estimate needs, read before the reader takes the stream (a PNG reader flushes it)
+        byte[] prefix = DecoderIntermediates.headerPrefix(in);
         reader.setInput(in, true, true);
         ImageHeader header = ImageHeaderReader.headerOf(reader);
         checkPixels(header);
-        long intermediate = DecoderIntermediates.estimate(reader, header);
+        long intermediate = DecoderIntermediates.estimate(reader, header, prefix);
         if (intermediate > spec.intermediateBudgetBytes()) {
           throw new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + header + " needs about " + intermediate
               + " bytes of decoder intermediates before subsampling (a full-resolution TIFF strip/tile with its compressed "
-              + "bytes, source-width PNG/BMP/GIF rows, a BMP RLE bitmap read whole, or progressive JPEG coefficients), above the configured budget ("
+              + "bytes, source-width PNG/BMP/GIF rows, a BMP RLE bitmap read whole, or progressive JPEG coefficients), "
+              + "above the configured budget ("
               + EmbeddingTableConfig.COMPUTE_IMAGE_INTERMEDIATE_BUDGET_BYTES.key() + ") of "
               + spec.intermediateBudgetBytes());
         }

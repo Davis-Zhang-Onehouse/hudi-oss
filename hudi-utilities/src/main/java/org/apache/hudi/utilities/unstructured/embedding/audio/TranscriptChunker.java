@@ -48,7 +48,7 @@ import java.util.Iterator;
  */
 public interface TranscriptChunker {
 
-  /** Logic version of normalisation and packing, e.g. {@code transcript-pack-v1}. */
+  /** Logic version of normalisation and packing, e.g. {@code transcript-pack-v2}. */
   String logicVersion();
 
   /**

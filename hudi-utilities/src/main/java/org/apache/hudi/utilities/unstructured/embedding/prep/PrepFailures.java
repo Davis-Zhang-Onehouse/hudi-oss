@@ -39,7 +39,11 @@ import java.util.Set;
  *   <li>a {@link PreprocessorConfigurationException} or a {@link PrepPlatformException}: the job's configuration or its platform;</li>
  *   <li>an {@link EmbeddingPayloadWriteException}: a prepared payload's file could not be written under the embedding table;</li>
  *   <li>a {@link TokenizerException} of kind {@link TokenizerException.Kind#RETRYABLE}: the tokenizer's runtime failed after its
- *       own bounded retries, the text itself was never judged.</li>
+ *       own bounded retries, the text itself was never judged;</li>
+ *   <li>a JVM failure a decoder wrapped or suppressed (a {@link VirtualMachineError}, e.g. an OutOfMemoryError, or a
+ *       {@link LinkageError}): it says nothing about the file, and fails the round as a {@link PrepPlatformException}. Not a
+ *       {@link StackOverflowError}: the file's own nesting depth causes it, the same on every attempt, so it stays the file's (or
+ *       a PDF page's) bad input.</li>
  * </ul>
  * Any other failure of a file is its bad input: it is recorded in the job's error table and skipped.
  */
@@ -48,7 +52,10 @@ public final class PrepFailures {
   private PrepFailures() {
   }
 
-  /** The first throwable of {@code failure}'s cause and suppressed chain that fails the round, or null when there is none. */
+  /**
+   * The first throwable of {@code failure}'s cause and suppressed chain that fails the round (for a JVM failure, a
+   * {@link PrepPlatformException} carrying {@code failure}), or null when there is none.
+   */
   public static RuntimeException roundFailure(Throwable failure) {
     Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
     Deque<Throwable> pending = new ArrayDeque<>();
@@ -60,6 +67,10 @@ public final class PrepFailures {
       }
       if (failsTheRound(cause)) {
         return (RuntimeException) cause;
+      }
+      if ((cause instanceof VirtualMachineError && !(cause instanceof StackOverflowError)) || cause instanceof LinkageError) {
+        return new PrepPlatformException("the JVM failed while the file was read, not the file: " + cause.getClass().getSimpleName()
+            + ": " + cause.getMessage() + ", under " + failure.getClass().getSimpleName() + ": " + failure.getMessage(), failure);
       }
       if (cause.getCause() != null) {
         pending.addLast(cause.getCause());

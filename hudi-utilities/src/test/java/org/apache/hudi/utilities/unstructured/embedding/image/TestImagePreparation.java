@@ -324,6 +324,98 @@ public class TestImagePreparation {
     assertEquals(512, new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(progressive)).getWidth());
   }
 
+  @Test
+  public void wideShortPngIsRefusedBeforeDecode() {
+    // the JDK PNG reader holds the current and prior scanline and a one-row raster at full width before subsampling:
+    // 60,000,000 x 1 RGBA is 60,000,000 pixels (under the 100-million pixel guard) but 3 x 240,000,000 B of rows
+    byte[] wide = ImageFixtures.zeroPng(60_000_000, 1, 8, 6);
+    ImagePreprocessingSpec defaults = new ImagePreprocessingSpec(ImagePreprocessingSpec.DEFAULT_LONG_SIDE,
+        ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, ImagePreprocessingSpec.DEFAULT_MAX_PIXELS,
+        ImagePreprocessingSpec.DEFAULT_INTERMEDIATE_BUDGET_BYTES, CountingImageDecoder.class.getName());
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class,
+        () -> new ImagePreparer(defaults).prepare(ImageFixtures.source(wide)));
+    assertTrue(refused.getMessage().startsWith(ImageRefusedException.REFUSED_BEFORE_DECODE), refused.getMessage());
+    assertTrue(refused.getMessage().contains("720000000"), refused.getMessage());
+    assertEquals(0, CountingImageDecoder.CALLS.get());
+  }
+
+  @Test
+  public void widePngWithinTheIntermediateBudgetIsDecoded() throws IOException {
+    // control: 1,000,000 x 1 RGBA needs 3 x 4,000,000 B of rows, under the default budget, and decodes
+    byte[] wide = ImageFixtures.zeroPng(1_000_000, 1, 8, 6);
+    ImagePreprocessingSpec defaults = new ImagePreprocessingSpec(ImagePreprocessingSpec.DEFAULT_LONG_SIDE,
+        ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, ImagePreprocessingSpec.DEFAULT_MAX_PIXELS,
+        ImagePreprocessingSpec.DEFAULT_INTERMEDIATE_BUDGET_BYTES, CountingImageDecoder.class.getName());
+    PreparedImage prepared = new ImagePreparer(defaults).prepare(ImageFixtures.source(wide));
+    assertEquals(1, CountingImageDecoder.CALLS.get());
+    assertTrue(prepared.getWidth() <= ImagePreprocessingSpec.DEFAULT_LONG_SIDE, String.valueOf(prepared.getWidth()));
+    // the same file under a 10,000,000 B budget is refused before decode
+    ImagePreprocessingSpec tight = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, 10_000_000, CountingImageDecoder.class.getName());
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class,
+        () -> new ImagePreparer(tight).prepare(ImageFixtures.source(wide)));
+    assertTrue(refused.getMessage().contains("12000000"), refused.getMessage());
+    assertEquals(1, CountingImageDecoder.CALLS.get());
+    // neighbour: an ordinary 1000x800 PNG needs 3 x 3,000 B of rows and decodes under that budget
+    assertEquals(512, new ImagePreparer(tight).prepare(ImageFixtures.source(ImageFixtures.image("png", 1000, 800))).getWidth());
+  }
+
+  /** Three full-width rows of {@code ceil(width x samples x bitDepth / 8)} bytes: refused one byte below, admitted at it. */
+  @ParameterizedTest
+  @CsvSource({
+      "1000, 8, 6, 12000",
+      "1000, 16, 6, 24000",
+      "1000, 8, 2, 9000",
+      "1000, 16, 4, 12000",
+      "1000, 8, 3, 3000",
+      "1001, 4, 3, 1503",
+      "1001, 1, 0, 378",
+      "1000, 16, 0, 6000"})
+  public void pngIsChargedThreeFullWidthRows(int width, int bitDepth, int colorType, long expected) throws IOException {
+    byte[] png = ImageFixtures.zeroPng(width, 2, bitDepth, colorType);
+    assertChargedExactly(png, expected);
+  }
+
+  /** One full-width row of a BI_RGB BMP, padded to 4 bytes: refused one byte below, admitted at it. */
+  @ParameterizedTest
+  @CsvSource({
+      "1001, 1, 128",
+      "1001, 4, 504",
+      "1001, 8, 1004",
+      "1001, 16, 2004",
+      "1001, 24, 3004",
+      "1000, 32, 4000"})
+  public void uncompressedBmpIsChargedOneFullWidthRow(int width, int bitsPerPixel, long expected) throws IOException {
+    assertChargedExactly(ImageFixtures.uncompressedBmp(width, 2, bitsPerPixel), expected);
+  }
+
+  @Test
+  public void wideShortUncompressedBmpIsRefusedBeforeDecode() throws IOException {
+    // the JDK BMP reader reads one full-width row before subsampling it: 400,000 x 1 x 24 bits is 1,200,000 B
+    byte[] wide = ImageFixtures.uncompressedBmp(400_000, 1, 24);
+    ImagePreprocessingSpec tight = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, 1_000_000, CountingImageDecoder.class.getName());
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class,
+        () -> new ImagePreparer(tight).prepare(ImageFixtures.source(wide)));
+    assertTrue(refused.getMessage().startsWith(ImageRefusedException.REFUSED_BEFORE_DECODE), refused.getMessage());
+    assertTrue(refused.getMessage().contains("1200000"), refused.getMessage());
+    assertEquals(0, CountingImageDecoder.CALLS.get());
+    // neighbour: 300,000 x 1 is 900,000 B and decodes under the same budget
+    new ImagePreparer(tight).prepare(ImageFixtures.source(ImageFixtures.uncompressedBmp(300_000, 1, 24)));
+    assertEquals(1, CountingImageDecoder.CALLS.get());
+  }
+
+  private static void assertChargedExactly(byte[] image, long expected) throws IOException {
+    ImagePreprocessingSpec below = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, expected - 1, CountingImageDecoder.class.getName());
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class,
+        () -> new ImagePreparer(below).plan(ImageFixtures.source(image)));
+    assertTrue(refused.getMessage().contains("needs about " + expected + " bytes"), refused.getMessage());
+    ImagePreprocessingSpec at = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, expected, CountingImageDecoder.class.getName());
+    new ImagePreparer(at).plan(ImageFixtures.source(image));
+  }
+
   private static ImageHeader header(byte[] bytes) throws IOException {
     try (ImageInputStream in = ImageFixtures.source(bytes).open()) {
       return ImageHeaderReader.read(in);

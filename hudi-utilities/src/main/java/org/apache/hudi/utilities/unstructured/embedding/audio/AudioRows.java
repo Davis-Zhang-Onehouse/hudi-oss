@@ -48,7 +48,7 @@ public final class AudioRows {
   /** Aux key, on speech rows: start of the chunk's first utterance, ms on the video's timeline (from the container start). */
   public static final String AUX_START_MS = "start_ms";
 
-  /** Aux key, on speech rows: end of the chunk's last utterance, ms on the video's timeline. */
+  /** Aux key, on speech rows: the latest end of the chunk's utterances, ms on the video's timeline. */
   public static final String AUX_END_MS = "end_ms";
 
   /** Aux key, on speech rows: distinct speaker labels of the chunk, comma-separated, in order of first appearance. */

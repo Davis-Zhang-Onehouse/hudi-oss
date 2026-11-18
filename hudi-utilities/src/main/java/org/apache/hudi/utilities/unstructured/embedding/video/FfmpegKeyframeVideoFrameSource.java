@@ -52,7 +52,6 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -71,9 +70,11 @@ import java.util.function.Function;
  * few frames), and feeds the keyframe timestamps to the schedule, which chooses the keyframes to keep. Then it DECODES: it seeks
  * to each chosen keyframe and decodes that one frame ({@code thread_count} = {@link VideoFrameConfig#getThreads()}) straight
  * into a BGR {@link BufferedImage}. Frames come out one per {@code next()}: at most one decoded frame, its raster and its
- * encoded JPEG are alive at a time, whatever the video's length; the chosen keyframes are two timestamps each. A scan that
+ * encoded JPEG are alive at a time, whatever the video's length; the chosen keyframes are two timestamps each, staged in a
+ * sequential local file and deleted on exhaustion or close. A scan that
  * ends in a failure (a cut file, unreadable packets, a storage failure) yields the frames chosen before it, then throws it,
- * where reading and decoding side by side did. (A storage failure part way through a file, a failure of the round, may be
+ * where reading and decoding side by side did; a keyframe past the timestamps JavaCV can represent fails the video as
+ * incomplete before any frame. (A storage failure part way through a file, a failure of the round, may be
  * reported a few frames later than then.)
  *
  * <p>Time: a frame's timestamp is its keyframe's PTS minus the CONTAINER's
@@ -103,7 +104,7 @@ import java.util.function.Function;
  */
 public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
-  public static final String LOGIC_VERSION = "video-keyframe-v2";
+  public static final String LOGIC_VERSION = "video-keyframe-v3";
   /** JPEG quality of an encoded frame, the {@link FrameJpegEncoder}'s. */
   public static final int JPEG_QUALITY = FrameJpegEncoder.JPEG_QUALITY;
 
@@ -186,9 +187,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private final KeyframeSchedule schedule;
     private final FrameDedup dedup;
     /** The chosen keyframes, in order, as {relative to the origin, as the demuxer reported it} in microseconds. */
-    private final List<long[]> chosen = new ArrayList<>();
-    /** The next of {@link #chosen} to decode. */
-    private int nextChosen;
+    private final TimestampSpool chosen = new TimestampSpool();
     private final Java2DFrameConverter converter = new Java2DFrameConverter();
     private final long maxPixels;
     private BlockBufferedBlob blob;
@@ -221,8 +220,6 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
     private boolean scanned;
     /** How the scan ended when it did not reach the end of a whole file: thrown once the frames chosen before it are out. */
     private RuntimeException scanFailure;
-    /** Whether a keyframe past JavaCV's timestamp range was seen (and logged). */
-    private boolean pastJavacvRange;
     private long nextIndex;
     private ExtractedFrame next;
     private boolean closed;
@@ -350,8 +347,9 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
         scan();
         failuresAfterScan = blob.failures();
       }
-      if (nextChosen < chosen.size()) {
-        return chosen.get(nextChosen++);
+      long[] nextTimestamp = chosen.next();
+      if (nextTimestamp != null) {
+        return nextTimestamp;
       }
       if (scanFailure != null) {
         throw scanFailure;
@@ -396,13 +394,14 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
             lastFrameMicros = Math.max(lastFrameMicros, relativeMicros);
             if ((packet.flags() & avcodec.AV_PKT_FLAG_KEY) != 0 && relativeMicros > previousRelativeMicros) {
               if (javacvTimestampOverflows(packet.pts(), timeBase)) {
-                // JavaCV cannot seek to it or time it: never offered to the schedule, the keyframes before it are kept
-                if (!pastJavacvRange) {
-                  pastJavacvRange = true;
-                  LOG.warn("Video {}: the keyframe at pts {} (time base {}/{}) and every later one are past the timestamps "
-                      + "FFmpegFrameGrabber can represent, so they are not chosen", video, packet.pts(), timeBase.num(),
-                      timeBase.den());
-                }
+                // JavaCV cannot seek to it or time it, so it and every later keyframe cannot be extracted: the video would be
+                // incomplete, which is a failure of the whole video, before any of its frames
+                chosen.close();
+                scanFailure = new VideoDecodeException("video " + video + " has a keyframe at pts " + packet.pts()
+                    + " (time base " + timeBase.num() + "/" + timeBase.den() + ") past the timestamps FFmpegFrameGrabber can "
+                    + "represent (1000000 x pts x time base numerator overflows a long): its keyframes from there on cannot be "
+                    + "extracted, so the video is refused as incomplete");
+                return;
               } else {
                 choose(schedule.onKeyframe(relativeMicros), relativeMicros, ptsMicros);
                 previousRelativeMicros = relativeMicros;
@@ -477,7 +476,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
      */
     private void choose(List<Long> chosenRelative, long relativeMicros, long ptsMicros) {
       for (long relative : chosenRelative) {
-        chosen.add(new long[] {relative, relative == relativeMicros ? ptsMicros : previousKeyframeMicros});
+        chosen.add(relative, relative == relativeMicros ? ptsMicros : previousKeyframeMicros);
       }
     }
 
@@ -563,7 +562,8 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       next = null;
       // each handle is released whatever the one before it threw, a JVM Error included; the first failure propagates once all
       // ran, the later ones suppressed into it
-      Throwable failure = release(() -> closeQuietly(grabber, stream, video), null);
+      Throwable failure = release(chosen::close, null);
+      failure = release(() -> closeQuietly(grabber, stream, video), failure);
       failure = release(converter::close, failure);
       if (encoder != null) {
         failure = release(encoder::close, failure);

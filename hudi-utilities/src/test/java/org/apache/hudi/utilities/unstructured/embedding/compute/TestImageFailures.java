@@ -34,10 +34,12 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.AccessDeniedException;
 import java.time.Duration;
+import java.util.zip.ZipException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -54,6 +56,45 @@ public class TestImageFailures {
   /** The five key columns of {@link #INPUT}, as every text naming the row gives them. */
   private static final String ROW = "source_path_sha=f source_modification_time=0 source_file_size=0 modality=image chunk_id=0";
 
+  @Test
+  public void suppressedJvmFailureFromImageCloseFailsTheRun() {
+    for (Error closeFailure : new Error[] {new OutOfMemoryError("image close"), new InternalError("image close"),
+        new NoClassDefFoundError("image/decoder")}) {
+      IIOException bodyFailure = new IIOException("image decode failed");
+      Exception failure = assertThrows(Exception.class, () -> {
+        try (AutoCloseable resource = () -> {
+          throw closeFailure;
+        }) {
+          throw bodyFailure;
+        }
+      });
+      assertSame(bodyFailure, failure);
+      assertSame(closeFailure, failure.getSuppressed()[0]);
+      EmbeddingComputePlatformException result = assertThrows(EmbeddingComputePlatformException.class,
+          () -> ImageFailures.result(INPUT, failure));
+      assertSame(failure, result.getCause());
+      assertTrue(result.getMessage().contains(ROW));
+    }
+  }
+
+  @Test
+  public void nestedSuppressedJvmFailureInACycleFailsTheRun() {
+    IIOException failure = new IIOException("image decode failed");
+    IOException cleanup = new IOException("image cleanup failed");
+    failure.addSuppressed(cleanup);
+    cleanup.addSuppressed(failure);
+    cleanup.addSuppressed(new IllegalStateException("close wrapper", new LinkageError("image decoder")));
+    assertTimeoutPreemptively(Duration.ofSeconds(2), () -> assertThrows(EmbeddingComputePlatformException.class,
+        () -> ImageFailures.result(INPUT, failure)));
+  }
+
+  @Test
+  public void suppressedStackDepthFailureRemainsAnImageFailure() {
+    IIOException failure = new IIOException("image decode failed");
+    failure.addSuppressed(new StackOverflowError("image nesting"));
+    assertEquals(EmbeddingResult.Status.PERMANENT_FAILURE, ImageFailures.result(INPUT, failure).getStatus());
+  }
+
   /**
    * A malformed stored-input reference breaks an invariant prep owns: whatever wraps it, the classification throws the
    * platform failure, naming the row and the reference's message, and gives no result.
@@ -69,6 +110,31 @@ public class TestImageFailures {
       assertTrue(e.getMessage().contains(ROW) && e.getMessage().contains("OUT_OF_LINE blob has null reference"),
           e.getMessage());
     }
+  }
+
+  /**
+   * A JVM failure under the decoder (the JDK PNG reader wraps an OutOfMemoryError in an IIOException) says nothing about the
+   * image: whatever wraps it, the classification throws the platform failure, so the run fails and the image is computed again,
+   * instead of a PERMANENT result that commits a null vector past it.
+   */
+  @Test
+  public void jvmFailureUnderTheDecoderFailsTheRunNotTheImage() {
+    for (Exception failure : new Exception[] {
+        new IIOException("Caught exception during read: ", new OutOfMemoryError("Java heap space")),
+        new UncheckedIOException(new IIOException("read failed", new OutOfMemoryError("Java heap space"))),
+        new IllegalStateException("decode failed", new InternalError("a JVM fault")),
+        new IIOException("reader failed", new NoClassDefFoundError("a/missing/Class"))}) {
+      EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class,
+          () -> ImageFailures.result(INPUT, failure), failure.toString());
+      assertTrue(e.getMessage().contains(ROW), e.getMessage());
+      assertSame(failure, e.getCause(), "carries the failure");
+    }
+    // controls: a corrupt image (an IIOException with no JVM failure under it), and a StackOverflowError (the input's nesting
+    // causes it on every attempt), stay PERMANENT
+    assertEquals(EmbeddingResult.Status.PERMANENT_FAILURE,
+        ImageFailures.result(INPUT, new IllegalStateException("decode failed", new StackOverflowError())).getStatus());
+    IIOException corrupt = new IIOException("Error reading PNG image data", new ZipException("invalid stored block lengths"));
+    assertEquals(EmbeddingResult.Status.PERMANENT_FAILURE, ImageFailures.result(INPUT, corrupt).getStatus());
   }
 
   /**

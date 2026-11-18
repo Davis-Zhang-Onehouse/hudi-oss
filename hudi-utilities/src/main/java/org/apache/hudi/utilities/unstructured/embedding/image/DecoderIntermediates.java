@@ -24,7 +24,6 @@ import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 
 import javax.imageio.ImageReader;
-import javax.imageio.ImageTypeSpecifier;
 import javax.imageio.metadata.IIOMetadata;
 import javax.imageio.plugins.tiff.BaselineTIFFTagSet;
 import javax.imageio.plugins.tiff.TIFFDirectory;
@@ -33,6 +32,7 @@ import javax.imageio.stream.ImageInputStream;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.util.Arrays;
 
 /**
  * Bytes a JDK reader needs BEFORE source subsampling applies, estimated from the image's header fields without decoding a pixel
@@ -49,14 +49,19 @@ import java.io.IOException;
  *       whose decompressor reads it in units and then copies them into one array (LZW, PackBits, CCITT; below one unit the
  *       read is a single array, so 2 x over-counts by at most 1,024,000 B), once for the others (Deflate; JPEG and old JPEG,
  *       whose tables, typically under 1 KiB, are not counted);</li>
- *   <li>PNG: two packed filter rows and one source row raster, each at the full source width; Adam7 passes
- *       are no wider than that row, for any supported bit depth and color type;</li>
  *   <li>BMP BI_RLE8 / BI_RLE4: the reader reads the whole compressed bitmap in units and copies them into one array before
- *       decoding a row: 2 x the bitmap size, the info header's imageSize or, when that is 0, bfSize - bfOffBits;</li>
+ *       decoding a row: 2 x the bitmap size, the info header's imageSize or, when that is 0, bfSize - bfOffBits, plus a
+ *       conservative {@code 4 x width} allowance for the decoded source row;</li>
+ *   <li>BMP BI_RGB / BI_BITFIELDS / BI_ALPHABITFIELDS (uncompressed): the reader reads one full-width row, padded to 4 bytes,
+ *       before subsampling it: {@code ceil(width x bitsPerPixel / 32) x 4} for modern headers; legacy or other BMP headers
+ *       retain the conservative {@code 4 x width} source-row allowance;</li>
+ *   <li>PNG: the reader holds the current and the prior scanline and a one-row raster, all at full width, before subsampling
+ *       (measured on JDK 11 and 17: 3.00 x the row for every non-interlaced color type and depth): 3 x
+ *       {@code ceil(width x samplesPerPixel x bitDepth / 8)}; an interlaced image decodes its passes one after another, each
+ *       pass's rows released before the next, and its widest pass is the full width;</li>
  *   <li>progressive JPEG (SOF2): libjpeg keeps every DCT coefficient of the image: per component
  *       {@code ceil(componentWidth / 8) x ceil(componentHeight / 8)} blocks of 64 two-byte coefficients (native memory);</li>
- *   <li>BMP: in addition to a compressed bitmap, at most one four-byte-per-pixel source row (including
- *       alignment), even when the destination is subsampled; GIF: one byte per source-row pixel;</li>
+ *   <li>GIF: one byte per source-row pixel;</li>
  *   <li>anything else: 0 (baseline JPEG has no whole-image coefficient buffer).</li>
  * </ul>
  */
@@ -70,6 +75,7 @@ final class DecoderIntermediates {
   private static final long BYTES_PER_BLOCK = 64L * 2;
   /** BMP header bytes read: the file header (14) and the info header up to its imageSize field. */
   private static final int BMP_HEADER_BYTES = 38;
+  private static final int BMP_BITS_PER_PIXEL_OFFSET = 28;
   private static final int BMP_FILE_SIZE_OFFSET = 2;
   private static final int BMP_BITMAP_OFFSET_OFFSET = 10;
   private static final int BMP_INFO_HEADER_SIZE_OFFSET = 14;
@@ -77,54 +83,77 @@ final class DecoderIntermediates {
   private static final int BMP_IMAGE_SIZE_OFFSET = 34;
   /** Info header of OS/2 1.x / Windows 2.x: no compression field, so never RLE. */
   private static final long BMP_CORE_HEADER_SIZE = 12;
+  private static final long BMP_BI_RGB = 0;
   private static final long BMP_BI_RLE8 = 1;
   private static final long BMP_BI_RLE4 = 2;
+  private static final long BMP_BI_BITFIELDS = 3;
+  private static final long BMP_BI_ALPHABITFIELDS = 6;
   /** The RLE bitmap is held twice while it is read: the units, then the one array they are copied into. */
   private static final long BMP_RLE_COPIES = 2;
+  /** PNG bytes read: the signature (8), the IHDR length and type (8), width, height, bit depth and color type. */
+  private static final int PNG_HEADER_BYTES = 26;
+  private static final int PNG_BIT_DEPTH_OFFSET = 24;
+  private static final int PNG_COLOR_TYPE_OFFSET = 25;
+  /** The PNG reader's full-width rows: the current scanline, the prior scanline and the one-row raster. */
+  private static final long PNG_ROW_COPIES = 3;
+  private static final int PNG_COLOR_RGB = 2;
+  private static final int PNG_COLOR_GRAY_ALPHA = 4;
+  private static final int PNG_COLOR_RGBA = 6;
+  /** The header bytes the estimate reads ({@link #headerPrefix}): the longer of the BMP and PNG prefixes. */
+  private static final int HEADER_PREFIX_BYTES = Math.max(BMP_HEADER_BYTES, PNG_HEADER_BYTES);
 
   private DecoderIntermediates() {
   }
 
   /**
-   * @param reader a JDK reader whose input is set (an {@link ImageInputStream}), positioned on image 0's header
-   * @return the estimated bytes, 0 when the format decodes straight into the subsampled destination
-   * @throws IOException when the metadata cannot be read (a corrupt header), or when the BMP header read fails in storage (a
-   *     {@link BlobReadException} of compute's stored-input stream, retried by the caller)
+   * The next {@link #HEADER_PREFIX_BYTES} bytes of {@code in} from its current position (fewer when the stream is shorter), read
+   * under mark/reset so the stream is left where it was; called on a stream at the start of the file, before a reader takes it:
+   * the PNG reader flushes the stream behind its header, so the header bytes cannot be read again afterwards.
+   *
+   * @throws IOException when the read fails in storage (a {@link BlobReadException} of compute's stored-input stream, retried by
+   *     the caller)
    */
-  static long estimate(ImageReader reader, ImageHeader header) throws IOException {
+  static byte[] headerPrefix(ImageInputStream in) throws IOException {
+    byte[] prefix = new byte[HEADER_PREFIX_BYTES];
+    int read = 0;
+    in.mark();
+    try {
+      while (read < prefix.length) {
+        int n = in.read(prefix, read, prefix.length - read);
+        if (n < 0) {
+          break;
+        }
+        read += n;
+      }
+    } finally {
+      in.reset();
+    }
+    return read == prefix.length ? prefix : Arrays.copyOf(prefix, read);
+  }
+
+  /**
+   * @param reader a JDK reader whose input is set (an {@link ImageInputStream}), positioned on image 0's header
+   * @param prefix the stream's first bytes ({@link #headerPrefix}), read before the reader took the stream
+   * @return the estimated bytes, 0 when the format decodes straight into the subsampled destination
+   * @throws IOException when the metadata cannot be read (a corrupt header)
+   */
+  static long estimate(ImageReader reader, ImageHeader header, byte[] prefix) throws IOException {
     if ("tiff".equals(header.getFormat())) {
       return tiffStripOrTile(reader.getImageMetadata(0), header);
     }
     if ("jpeg".equals(header.getFormat())) {
       return progressiveJpegCoefficients(reader.getImageMetadata(0), header);
     }
-    if ("png".equals(header.getFormat())) {
-      return pngRows(reader, header);
-    }
     if ("bmp".equals(header.getFormat())) {
-      return bmpRleBitmap((ImageInputStream) reader.getInput()) + 4L * header.getWidth();
+      return bmpBitmapOrRow(prefix, header);
+    }
+    if ("png".equals(header.getFormat())) {
+      return pngRows(prefix, header);
     }
     if ("gif".equals(header.getFormat())) {
       return header.getWidth();
     }
     return 0;
-  }
-
-  /**
-   * The JDK PNG reader holds two filter rows and a packed byte/ushort row raster before subsampling. Read only its
-   * raw sample layout: building the native metadata tree also clones unrelated ancillary-profile payloads.
-   */
-  private static long pngRows(ImageReader reader, ImageHeader header) throws IOException {
-    ImageTypeSpecifier rawType = reader.getRawImageType(0);
-    if (rawType == null) {
-      throw new ImageHeaderException("PNG reader offers no raw image type");
-    }
-    long bitsPerPixel = 0;
-    for (int sampleBits : rawType.getSampleModel(1, 1).getSampleSize()) {
-      bitsPerPixel += sampleBits;
-    }
-    long row = ((long) header.getWidth() * bitsPerPixel + 7) / 8;
-    return 3 * row;
   }
 
   /**
@@ -194,30 +223,58 @@ final class DecoderIntermediates {
   }
 
   /**
-   * 2 x the bitmap of a BI_RLE8 / BI_RLE4 BMP, sized as the JDK reader sizes its whole-bitmap read: the info header's imageSize,
-   * or bfSize - bfOffBits when it is 0; 0 for any other BMP. The header is read from the start of {@code in}, which is left
-   * where it was ({@code BMPMetadata} does not carry imageSize).
+   * 2 x the bitmap of a BI_RLE8 / BI_RLE4 BMP, plus a conservative full-width decoded row. The bitmap uses the info header's
+   * imageSize, or bfSize - bfOffBits when it is 0. A modern uncompressed BMP uses its precise padded row; legacy or other BMP
+   * headers retain the conservative source-row allowance. Embedded JPEG/PNG decoder buffers are not counted. The fields are
+   * read from {@code header}, the file's first bytes ({@code BMPMetadata} does not carry imageSize).
    */
-  private static long bmpRleBitmap(ImageInputStream in) throws IOException {
-    byte[] header = new byte[BMP_HEADER_BYTES];
-    in.mark();
-    try {
-      in.seek(0);
-      in.readFully(header);
-    } catch (EOFException e) {
-      // shorter than a BITMAPINFOHEADER: an OS/2 1.x header or a truncated file, never RLE the reader would read
-      return 0;
-    } finally {
-      in.reset();
+  private static long bmpBitmapOrRow(byte[] header, ImageHeader image) {
+    long sourceRow = 4L * image.getWidth();
+    // shorter than a BITMAPINFOHEADER (an OS/2 1.x header or a truncated file), or an OS/2 1.x / Windows 2.x header: a 16-bit
+    // width, never RLE
+    if (header.length < BMP_HEADER_BYTES || le32(header, BMP_INFO_HEADER_SIZE_OFFSET) == BMP_CORE_HEADER_SIZE) {
+      return sourceRow;
     }
     long compression = le32(header, BMP_COMPRESSION_OFFSET);
-    if (le32(header, BMP_INFO_HEADER_SIZE_OFFSET) == BMP_CORE_HEADER_SIZE
-        || (compression != BMP_BI_RLE8 && compression != BMP_BI_RLE4)) {
-      return 0;
+    if (compression == BMP_BI_RGB || compression == BMP_BI_BITFIELDS || compression == BMP_BI_ALPHABITFIELDS) {
+      long bitsPerPixel = (header[BMP_BITS_PER_PIXEL_OFFSET] & 0xffL) | (header[BMP_BITS_PER_PIXEL_OFFSET + 1] & 0xffL) << 8;
+      return ((long) image.getWidth() * bitsPerPixel + 31) / 32 * 4;
+    }
+    if (compression != BMP_BI_RLE8 && compression != BMP_BI_RLE4) {
+      return sourceRow;
     }
     long imageSize = le32(header, BMP_IMAGE_SIZE_OFFSET);
     long bitmap = imageSize != 0 ? imageSize : le32(header, BMP_FILE_SIZE_OFFSET) - le32(header, BMP_BITMAP_OFFSET_OFFSET);
-    return BMP_RLE_COPIES * Math.max(0, bitmap);
+    return BMP_RLE_COPIES * Math.max(0, bitmap) + sourceRow;
+  }
+
+  /**
+   * 3 x one full-width row of a PNG, {@code ceil(width x samplesPerPixel x bitDepth / 8)}, from the IHDR's bit depth and color
+   * type (the reader has already read and checked the IHDR, which a PNG holds at a fixed offset), taken from {@code ihdr}, the
+   * file's first bytes.
+   */
+  private static long pngRows(byte[] ihdr, ImageHeader header) throws EOFException {
+    if (ihdr.length < PNG_HEADER_BYTES) {
+      // the reader already parsed this IHDR, so the file is never shorter
+      throw new EOFException("PNG shorter than its IHDR");
+    }
+    long bitDepth = ihdr[PNG_BIT_DEPTH_OFFSET] & 0xff;
+    long row = ((long) header.getWidth() * pngSamplesPerPixel(ihdr[PNG_COLOR_TYPE_OFFSET] & 0xff) * bitDepth + 7) / 8;
+    return PNG_ROW_COPIES * row;
+  }
+
+  /** Samples per pixel of a PNG color type: gray 1, RGB 3, palette 1 (an index), gray + alpha 2, RGBA 4. */
+  private static long pngSamplesPerPixel(int colorType) {
+    switch (colorType) {
+      case PNG_COLOR_RGB:
+        return 3;
+      case PNG_COLOR_GRAY_ALPHA:
+        return 2;
+      case PNG_COLOR_RGBA:
+        return 4;
+      default:
+        return 1;
+    }
   }
 
   /** The unsigned little-endian 32-bit value at {@code offset}. */

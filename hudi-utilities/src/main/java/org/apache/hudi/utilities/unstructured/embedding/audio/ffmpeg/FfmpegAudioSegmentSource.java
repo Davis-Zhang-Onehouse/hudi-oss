@@ -32,6 +32,7 @@ import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobInput
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoDecodeException;
 
 import org.bytedeco.ffmpeg.avutil.AVRational;
+import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.javacv.Frame;
@@ -46,6 +47,7 @@ import java.io.UncheckedIOException;
 import java.nio.FloatBuffer;
 import java.util.Arrays;
 import java.util.NoSuchElementException;
+import java.util.function.Function;
 
 /**
  * The real {@link AudioSegmentSource} on FFmpeg through JavaCV (JavaCV 1.5.11 / FFmpeg 7.1, LGPL natives),
@@ -62,7 +64,9 @@ import java.util.NoSuchElementException;
  * <p>Resume: with {@code startMs > 0} the grabber seeks to {@value #PRE_ROLL_MS} ms before it (decoder and filter history) and
  * segmentation restarts at the first window at or after {@code startMs}; this is exact because the segmenter's state after a segment
  * depends only on the audio after its end and the resampler's output only on the audio around each sample. With
- * {@code startMs = 0} and {@code startSegment > 0} the video is decoded from the start and the first segments are skipped.
+ * {@code startMs = 0} and {@code startSegment > 0} the video is decoded from the start and the first segments are skipped; so
+ * is a track of any codec but MP3 at any {@code startMs}: a resumed segment must be byte for byte the one a run from the start
+ * gives, and only MP3's decoder is known to give the same samples after a seek (FFmpeg's AAC decoder does not).
  *
  * <p>Failures: a storage failure under any read (the stream remembers it; JavaCV reports it as an end of file) is an
  * {@link UncheckedIOException} over a {@link BlobReadException} (an interruption of the prep run); unreadable data (no seekable
@@ -76,7 +80,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
 
   public static final String LOGIC_VERSION = "ffmpeg-vad-energy-v1";
   public static final String ENCODING = "pcm_s16le";
-  /** Audio decoded before a resume point and dropped, so the decoder (AAC overlap, MP3 bit reservoir) and filter have history. */
+  /** Audio decoded before a resume point and dropped, so the decoder (MP3 bit reservoir) and filter have history. */
   public static final long PRE_ROLL_MS = 1000;
   /** Why a video produced no segment. */
   public static final String REASON_NO_AUDIO_STREAM = "no audio stream";
@@ -87,7 +91,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
   private static final long MICROS_PER_MILLI = 1000L;
   /**
    * After a seek, the first decoded frame must start at least this long before the first input sample the output needs: the frames
-   * right after a seek are decoder warm-up (an AAC frame lacks its predecessor's overlap) and must not reach a kept sample.
+   * right after a seek are decoder warm-up (an MP3 frame lacks its bit reservoir) and must not reach a kept sample.
    */
   private static final long SEEK_MARGIN_MS = 100;
   /** A frame whose timestamp is further than this from the running sample count re-anchors the timeline (a gap or a jump). */
@@ -126,7 +130,12 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       throw new VideoDecodeException("video " + describe(audio) + " bytes are not seekable");
     }
     return new Segments(describe(audio), (SeekableBlobBytesSupplier) bytes, startSegment, startMs, config,
-        maxSegmentWindows(config));
+        maxSegmentWindows(config), this::newGrabber);
+  }
+
+  /** The grabber over a video's stream; a test overrides it to stand in for FFmpeg's probe. */
+  FFmpegFrameGrabber newGrabber(InputStream stream) {
+    return new FFmpegFrameGrabber(stream);
   }
 
   /** The most windows one segment holds; a test overrides it to show what an unbounded segment costs. */
@@ -142,6 +151,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
   public static final class Segments implements ClosableIterator<AudioSegment> {
     private final String video;
     private final FfmpegAudioConfig config;
+    private final Function<InputStream, FFmpegFrameGrabber> grabbers;
     private final int windowSamples;
     private final long maxDurationSamples;
     private SeekableBlobInputStream stream;
@@ -181,9 +191,10 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
     private boolean closed;
 
     private Segments(String video, SeekableBlobBytesSupplier bytes, long startSegment, long startMs, FfmpegAudioConfig config,
-                     int maxSegmentWindows) throws IOException {
+                     int maxSegmentWindows, Function<InputStream, FFmpegFrameGrabber> grabbers) throws IOException {
       this.video = video;
       this.config = config;
+      this.grabbers = grabbers;
       this.windowSamples = config.getWindowSamples();
       this.maxDurationSamples = config.getMaxDurationMs() * config.getSampleRate() / 1000;
       this.pending = new short[2 * windowSamples];
@@ -231,7 +242,14 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       maxDurationInputs = config.getMaxDurationMs() * inRate / 1000;
       resampler = new AnchoredResampler(inRate, config.getSampleRate(), this::accept);
       long seekMs = Math.max(0, startMs - PRE_ROLL_MS);
-      if (startMs > 0 && (seekMs == 0 || sampleExact)) {
+      // only MP3 is known to decode the same samples after a seek as from the start (AAC does not): any other codec resumes by
+      // decoding from the start, so a resumed payload is the one a run from the start gives
+      boolean seekDeterministic = sampleExact && grabber.getAudioCodec() == avcodec.AV_CODEC_ID_MP3;
+      if (startMs > 0 && seekMs > 0 && !seekDeterministic) {
+        LOG.info("Video {}: resuming at {} ms by decoding from the start ({} audio is not resumed by seeking)", video, startMs,
+            sampleExact ? "codec " + grabber.getAudioCodecName() : "this container's");
+      }
+      if (startMs > 0 && (seekMs == 0 || seekDeterministic)) {
         long startSample = startMs * config.getSampleRate() / 1000;
         long firstWindow = (startSample + windowSamples - 1) / windowSamples;
         nextSample = firstWindow * windowSamples;
@@ -253,7 +271,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
 
     private void startGrabber(SeekableBlobBytesSupplier bytes) throws IOException {
       stream = new SeekableBlobInputStream(bytes.openSeekable());
-      grabber = new FFmpegFrameGrabber(stream);
+      grabber = grabbers.apply(stream);
       // video packets are read and dropped: no colour conversion buffers; audio decoded with one thread, at its own rate and
       // channel count (JavaCV converts only the sample format, to interleaved float)
       grabber.setImageMode(FrameGrabber.ImageMode.RAW);
@@ -264,6 +282,9 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       } catch (FrameGrabber.Exception | RuntimeException e) {
         throw failure("cannot be opened", e);
       }
+      // FFmpeg may swallow a read failure while it probes (the stream reports it as an end of file) and open the file with
+      // incomplete stream parameters: before any of them is read, a remembered storage failure is retryable, not the content
+      checkStorage("could not be read while it was opened");
     }
 
     /** Seeks and takes the first frame after it; false when that frame starts later than the pre-roll needs. */

@@ -304,7 +304,7 @@ public class TestFfmpegKeyframeVideoFrameSource {
   @Test
   public void configurationErrorsAreIllegalArgumentsNamingTheKey() {
     FfmpegKeyframeVideoFrameSource source = new FfmpegKeyframeVideoFrameSource();
-    assertEquals("video-keyframe-v2", source.name());
+    assertEquals("video-keyframe-v3", source.name());
     source.validateConfig(new TypedProperties());
     String[][] bad = {
         {EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS.key(), "0"},
@@ -420,11 +420,12 @@ public class TestFfmpegKeyframeVideoFrameSource {
 
   /**
    * JavaCV times a frame as {@code 1000000L * pts * num / den} in plain long arithmetic, which overflows at a 1 ns time base past
-   * 9223.37 s. A video on such a time base starting 4 s before that point, with a keyframe every 2 s: the keyframes at 0 and 2 s
-   * are kept, the ones at 4 and 6 s (past the point) are never chosen, with one WARN naming the video, and the video does not fail.
+   * 9223.37 s. A video on such a time base starting 4 s before that point, with a keyframe every 2 s: the keyframes at 4 and 6 s
+   * (past the point) cannot be extracted, so the video fails as incomplete, a content failure naming the video and the first
+   * such keyframe, before any frame (the ones at 0 and 2 s included) is handed out.
    */
   @Test
-  public void keyframesPastJavaCvsTimestampRangeAreNotChosenAndTheEarlierOnesAreKept() throws IOException {
+  public void keyframesPastJavaCvsTimestampRangeFailTheVideoBeforeAnyFrame() throws IOException {
     Path late = VideoClips.generate(dir.resolve("late-1ns.mp4"), 8, 10, 2, 160, 120, -1, -1, 9220, 1_000_000_000L);
     try (FFmpegFrameGrabber probe = new FFmpegFrameGrabber(late.toFile())) {
       probe.start();
@@ -435,17 +436,18 @@ public class TestFfmpegKeyframeVideoFrameSource {
       probe.stop();
     }
     FileMeta file = new FileMeta("fid-late", "mp4", Files.size(late));
-    List<Long> timestamps = new ArrayList<>();
-    List<String> warnings;
-    try (LogCapture logs = LogCapture.of(FfmpegKeyframeVideoFrameSource.class)) {
-      for (ExtractedFrame frame : drain(VideoClips.supplier(late), file, new TypedProperties())) {
-        timestamps.add(frame.getTimeMs());
+    List<ExtractedFrame> frames = new ArrayList<>();
+    VideoDecodeException incomplete = assertThrows(VideoDecodeException.class, () -> {
+      try (ClosableIterator<ExtractedFrame> iterator = new FfmpegKeyframeVideoFrameSource().frames(VideoClips.supplier(late), file,
+          new TypedProperties())) {
+        while (iterator.hasNext()) {
+          frames.add(iterator.next());
+        }
       }
-      warnings = logs.warnings();
-    }
-    assertEquals(Arrays.asList(0L, 2000L), timestamps);
-    assertEquals(1, warnings.size(), "one WARN per video: " + warnings);
-    assertTrue(warnings.get(0).contains(file.toString()) && warnings.get(0).contains("9224000000000"), warnings.get(0));
+    });
+    assertTrue(frames.isEmpty(), "no frame before the failure: " + frames.size());
+    assertTrue(incomplete.getMessage().contains(file.toString()) && incomplete.getMessage().contains("9224000000000")
+        && incomplete.getMessage().contains("refused as incomplete"), incomplete.getMessage());
   }
 
   /**

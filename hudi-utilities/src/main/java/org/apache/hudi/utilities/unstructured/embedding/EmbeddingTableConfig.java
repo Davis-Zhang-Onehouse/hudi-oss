@@ -757,7 +757,8 @@ public class EmbeddingTableConfig implements Serializable {
       .markAdvanced()
       .sinceVersion("1.3.0")
       .withDocumentation("The most bytes an image reader may need before subsampling applies (a full-resolution TIFF strip or tile, "
-          + "the coefficient buffers of a progressive JPEG), estimated from the image metadata; above it compute refuses the "
+          + "a BMP RLE bitmap read whole, full-width PNG or uncompressed BMP rows, the coefficient buffers of a progressive JPEG), "
+          + "estimated from the image header; above it compute refuses the "
           + "image before decode (PERMANENT for the row). Must be positive; default 67108864 (64 MiB). Refused under prep_only.");
   /** The {@link ImageDecoder} compute decodes images with; it must run this code's decoding logic; default in-process. */
   public static final ConfigProperty<String> COMPUTE_IMAGE_DECODER_CLASS = ConfigProperty

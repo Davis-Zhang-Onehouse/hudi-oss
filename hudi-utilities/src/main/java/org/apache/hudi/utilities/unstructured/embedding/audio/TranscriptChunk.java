@@ -51,7 +51,7 @@ public interface TranscriptChunk {
    */
   long startMs();
 
-  /** End of the last utterance in this chunk, milliseconds on the video's timeline. */
+  /** The latest end of the utterances in this chunk (ends need not be in order), milliseconds on the video's timeline. */
   long endMs();
 
   /** Distinct speaker labels in this chunk, in order of first appearance. */

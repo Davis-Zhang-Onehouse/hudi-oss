@@ -53,8 +53,9 @@ import java.util.Set;
  *       inside a turn (an overlap, a split utterance, a cut between utterances of one turn) gets it as a chunk prefix, counted
  *       in the chunk's token count. No cross-speaker rule: a chunk may hold several turns, one line each.
  *       Labels are generic ids ({@link SpeakerLabels}): a label with whitespace, a control char or a bracket fails the video.</li>
- *   <li>Times: {@code start_ms} of the first utterance any of whose text, overlap included, is in the chunk, {@code end_ms} of
- *       the last; a split piece carries its utterance's span (no per-word times). Speakers in order of first
+ *   <li>Times: {@code start_ms} of the first utterance any of whose text, overlap included, is in the chunk, {@code end_ms} the
+ *       latest end of those utterances (ends, unlike starts, need not be in order); a split piece carries its utterance's span
+ *       (no per-word times). Speakers in order of first
  *       appearance; first and last segment of those utterances.</li>
  *   <li>The end of the utterances ends the last chunk: no overlap is carried past a video's input.</li>
  *   <li>A chunk is the packer's slice: one cut after an utterance keeps that utterance's separator (a space, or the new line
@@ -70,7 +71,7 @@ import java.util.Set;
 public class TranscriptPacker implements TranscriptChunker {
 
   /** The packing logic; part of the audio logic line, so of every audio table's preprocessing style. */
-  public static final String LOGIC_VERSION = "transcript-pack-v1";
+  public static final String LOGIC_VERSION = "transcript-pack-v2";
 
   private static final PackFailures FAILURES = (kind, message, cause) ->
       new TranscriptPackingException("transcript packing " + kind + ": " + message, cause);
@@ -263,15 +264,19 @@ public class TranscriptPacker implements TranscriptChunker {
       Held first = heldAt(cut.firstMark());
       Held last = heldAt(cut.lastMark());
       Set<String> speakers = new LinkedHashSet<>();
+      // starts are non-decreasing, ends are not (an utterance may end before the one before it): the chunk ends where the
+      // latest of its utterances ends
+      long endMs = last.endMs;
       for (Held utterance : held) {
         if (utterance.mark > last.mark) {
           break;
         }
         if (utterance.mark >= first.mark) {
           speakers.add(utterance.label);
+          endMs = Math.max(endMs, utterance.endMs);
         }
       }
-      return new TranscriptChunkValue(ordinal++, cut.text(), cut.tokenCount(), first.startMs, last.endMs,
+      return new TranscriptChunkValue(ordinal++, cut.text(), cut.tokenCount(), first.startMs, endMs,
           new ArrayList<>(speakers), first.segment, last.segment);
     }
 
