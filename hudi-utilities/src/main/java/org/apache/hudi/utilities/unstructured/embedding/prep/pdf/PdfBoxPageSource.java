@@ -63,6 +63,15 @@ import java.util.stream.Stream;
  */
 public final class PdfBoxPageSource implements PageSource {
 
+  /**
+   * The logic of extracting page text with PDFBox (loading, the guarded stripper, the budgets on PDFBox's tokens), recorded in
+   * the PDF preprocessor's versioned name and so pinned on the table through the pdf extension's mapping
+   * ({@code hoodie.table.embedding.prep.extension.pdf}) instead of the PDFBox jar version. Bump
+   * only when a dependency upgrade or code change alters prep output; the golden test below proves it:
+   * {@code TestPdfFilePreprocessor#goldenRecordsPinned} and {@code TestTextPackingPins} pin the records of fixed PDFs.
+   */
+  public static final String LOGIC_VERSION = "pdf-text-extraction-v1";
+
   private static final int COPY_BUFFER = 64 * 1024;
 
   /** Builds the stream cache PDFBox keeps one file's scratch data in. */
@@ -293,10 +302,19 @@ public final class PdfBoxPageSource implements PageSource {
     scratchDir = null;
     if (dir != null) {
       try (Stream<Path> paths = Files.walk(dir)) {
-        paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+        paths.sorted(Comparator.reverseOrder()).forEach(PdfBoxPageSource::deleteQuietly);
       } catch (IOException | RuntimeException e) {
         dir.toFile().deleteOnExit();
       }
+    }
+  }
+
+  /** Deletes a scratch file or emptied directory; one that cannot be deleted is left, as the walk goes on with the rest. */
+  private static void deleteQuietly(Path path) {
+    try {
+      Files.deleteIfExists(path);
+    } catch (IOException e) {
+      // left behind: a scratch file the document no longer reads
     }
   }
 }

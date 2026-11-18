@@ -68,7 +68,7 @@ class TestFfmpegLibraryVersions {
       PreprocessorConfigurationException refused = assertThrows(PreprocessorConfigurationException.class,
           () -> FfmpegLibraryVersions.requireDeclared(executor));
       assertEquals("The FFmpeg libraries on this executor are not the versions this Hudi build declares and its prep logic"
-          + " version names (expected org.bytedeco/javacv:1.5.11, found org.bytedeco/javacv:1.5.10); add the declared"
+          + " was verified with (expected org.bytedeco/javacv:1.5.11, found org.bytedeco/javacv:1.5.10); add the declared"
           + " versions' jars to the job; nothing was prepared with FFmpeg", refused.getMessage());
     }
   }

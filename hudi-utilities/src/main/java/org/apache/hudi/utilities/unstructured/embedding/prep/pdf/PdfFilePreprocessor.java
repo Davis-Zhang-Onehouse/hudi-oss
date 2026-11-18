@@ -30,8 +30,6 @@ import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
 import org.apache.hudi.utilities.unstructured.embedding.source.PreprocessorConfigurationException;
 import org.apache.hudi.utilities.unstructured.embedding.text.Tokenizer;
 
-import org.apache.pdfbox.util.Version;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -49,9 +47,9 @@ import java.util.NoSuchElementException;
  * </ul>
  * {@link #name()} is the versioned implementation identity of the preprocessing, which identifies it in logs and error
  * text: it changes whenever {@link #IMPLEMENTATION_VERSION} is bumped, which every change to emitted records must do. The
- * name also records the PDFBox version. A PDFBox upgrade that changes the emitted records must bump
- * {@link #IMPLEMENTATION_VERSION} like any other change; the only automatic check is the pinned-records test, over one
- * synthetic PDF.
+ * name also records the PDF text extraction logic ({@link PdfBoxPageSource#LOGIC_VERSION}), never the PDFBox jar version: a
+ * PDFBox upgrade that changes the emitted records must bump that constant; the automatic checks are the pinned-records tests
+ * over synthetic PDFs.
  */
 public class PdfFilePreprocessor implements FilePreprocessor {
 
@@ -62,12 +60,6 @@ public class PdfFilePreprocessor implements FilePreprocessor {
   public static final String AUX_PAGE_END = "page_end";
   public static final String AUX_OVERLAP_CHARS = "overlap_chars";
   public static final String AUX_PREP_LOSS = "prep_loss";
-  /** The clause of {@link #name()} that records the PDFBox version. */
-  private static final String PDFBOX_CLAUSE = ";pdfbox=";
-
-  /** The runtime PDFBox version, read once from a jar resource. */
-  private static final String PDFBOX_VERSION = Version.getVersion();
-
   private final PdfChunker chunker;
   private final String name;
   private final PdfChunkerConfig.Cache config = new PdfChunkerConfig.Cache();
@@ -77,16 +69,11 @@ public class PdfFilePreprocessor implements FilePreprocessor {
   }
 
   PdfFilePreprocessor(PdfChunker chunker) {
-    this(chunker, PDFBOX_VERSION);
-  }
-
-  /** {@code pdfboxVersion} is the PDFBox version {@link #name()} records: the runtime one, or another one in tests. */
-  PdfFilePreprocessor(PdfChunker chunker, String pdfboxVersion) {
     this.chunker = chunker;
-    this.name = NAME_PREFIX + IMPLEMENTATION_VERSION + PDFBOX_CLAUSE + pdfboxVersion;
+    this.name = NAME_PREFIX + IMPLEMENTATION_VERSION + ";" + PdfBoxPageSource.LOGIC_VERSION;
   }
 
-  /** {@code pdf-chunker/<IMPLEMENTATION_VERSION>;pdfbox=<PDFBox version>}: the runtime PDFBox unless a test set another. */
+  /** {@code pdf-chunker/<IMPLEMENTATION_VERSION>;<PdfBoxPageSource.LOGIC_VERSION>}. */
   @Override
   public String name() {
     return name;

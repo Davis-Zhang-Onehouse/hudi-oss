@@ -128,7 +128,8 @@ class TestFfmpegTimestampSchedule {
               throw new AssertionError("timestamp pair changed at " + i);
             }
           }
-          if (next.invoke(frames) != null) {
+          long[] end = (long[]) next.invoke(frames);
+          if (end.length != 0) {
             throw new AssertionError("unexpected timestamp after the schedule ended");
           }
         }

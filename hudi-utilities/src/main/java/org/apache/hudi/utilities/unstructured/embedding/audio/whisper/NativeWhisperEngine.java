@@ -34,6 +34,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -49,10 +50,19 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 final class NativeWhisperEngine implements WhisperEngine {
 
+  /**
+   * The logic of transcribing through whisper-jni (the parameters this engine hands whisper.cpp and how it reads the result back),
+   * pinned in the audio prep logic version ({@link WhisperSegmentTranscriber#ENGINE_LOGIC_VERSION}) instead of the whisper-jni
+   * jar version. Bump only when a dependency upgrade or code change alters prep output; the golden test below proves it:
+   * {@code TestWhisperTranscriberModel} transcribes a pinned clip with the pinned models (gated on the model cache).
+   */
+  static final String LOGIC_VERSION = "whisper-jni-transcription-v1";
+
   private static final Logger LOG = LoggerFactory.getLogger(NativeWhisperEngine.class);
   private static final AtomicInteger LIVE = new AtomicInteger();
   private static final Object LOAD_LOCK = new Object();
-  private static volatile WhisperJNI whisper;
+  /** The loaded binding, set once per JVM under {@link #LOAD_LOCK}. */
+  private static final AtomicReference<WhisperJNI> WHISPER = new AtomicReference<>();
   /** Guards whisper-jni's JVM-wide context map: write for a context's create and free, read for every call on a context. */
   private static final ReentrantReadWriteLock CONTEXT_MAP_LOCK = new ReentrantReadWriteLock();
 
@@ -114,12 +124,12 @@ final class NativeWhisperEngine implements WhisperEngine {
    * @throws IllegalArgumentException when the native library is not available for this platform
    */
   static WhisperJNI library() {
-    WhisperJNI loaded = whisper;
+    WhisperJNI loaded = WHISPER.get();
     if (loaded != null) {
       return loaded;
     }
     synchronized (LOAD_LOCK) {
-      if (whisper == null) {
+      if (WHISPER.get() == null) {
         try {
           WhisperJNI.loadLibrary();
         } catch (IOException | LinkageError e) {
@@ -127,9 +137,9 @@ final class NativeWhisperEngine implements WhisperEngine {
               + "/" + System.getProperty("os.arch") + " (whisper-jni ships linux-arm64 and linux-x86_64); check "
               + AudioConfigKeys.TRANSCRIBER_CLASS.key(), e);
         }
-        whisper = new WhisperJNI();
+        WHISPER.set(new WhisperJNI());
       }
-      return whisper;
+      return WHISPER.get();
     }
   }
 
