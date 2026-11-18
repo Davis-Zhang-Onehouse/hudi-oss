@@ -1,0 +1,332 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.hudi.utilities.unstructured.embedding.image;
+
+import org.apache.hudi.common.config.TypedProperties;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+import javax.imageio.stream.ImageInputStream;
+
+import java.awt.image.BufferedImage;
+import java.io.IOException;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * The compute-side image preparation: header-only reads, the raster plan asserted before decode, the decode/resize logic,
+ * the decoder seam and the compute image settings.
+ */
+public class TestImagePreparation {
+
+  /** Lossless PNG output: these cases assert exact pixels. The default JPEG q90 output is covered by its own cases below. */
+  private static final ImagePreprocessingSpec DEFAULTS = new ImagePreprocessingSpec(
+      ImagePreprocessingSpec.DEFAULT_LONG_SIDE, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+      ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, ImagePreprocessingSpec.DEFAULT_INTERMEDIATE_BUDGET_BYTES,
+      InProcessImageDecoder.class.getName(), ImagePreprocessingSpec.ENCODING_PNG, ImagePreprocessingSpec.DEFAULT_JPEG_QUALITY);
+  /** The defaults: JPEG at quality 90. */
+  private static final ImagePreprocessingSpec JPEG_DEFAULTS = new ImagePreprocessingSpec(
+      ImagePreprocessingSpec.DEFAULT_LONG_SIDE, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+      ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, InProcessImageDecoder.class.getName());
+
+  @BeforeEach
+  public void resetCounters() {
+    CountingImageDecoder.CALLS.set(0);
+  }
+
+  @ParameterizedTest
+  @CsvSource({"png,png", "jpeg,jpeg", "gif,gif", "bmp,bmp", "tiff,tiff"})
+  public void headerOfEachFormat(String writeFormat, String expectedFormat) throws IOException {
+    ImageHeader header = header(ImageFixtures.image(writeFormat, 123, 45));
+    assertEquals(expectedFormat, header.getFormat());
+    assertEquals(123, header.getWidth());
+    assertEquals(45, header.getHeight());
+    assertEquals(123L * 45, header.pixels());
+  }
+
+  @Test
+  public void webpHeaderIsParsed() throws IOException {
+    ImageHeader header = header(ImageFixtures.webpHeader(300, 200));
+    assertEquals("webp", header.getFormat());
+    assertEquals(300, header.getWidth());
+    assertEquals(200, header.getHeight());
+  }
+
+  @Test
+  public void corruptHeaderThrows() {
+    ImageHeaderException truncated = assertThrows(ImageHeaderException.class, () -> header(ImageFixtures.truncatedPng()));
+    assertTrue(truncated.getMessage().startsWith("corrupt png image header"), truncated.getMessage());
+    ImageHeaderException garbage = assertThrows(ImageHeaderException.class, () -> header(ImageFixtures.garbage()));
+    assertEquals("no image reader recognises the content", garbage.getMessage());
+  }
+
+  @Test
+  public void smallImageIsNotUpscaled() throws IOException {
+    PreparedImage prepared = new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(ImageFixtures.image("png", 50, 30)));
+    assertEquals(1, prepared.getSubsampling());
+    assertEquals(50, prepared.getWidth());
+    assertEquals(30, prepared.getHeight());
+    assertEquals("image/png", prepared.getMimeType());
+    BufferedImage decoded = ImageFixtures.decode(prepared.getEncoded());
+    assertEquals(50, decoded.getWidth());
+    assertEquals(30, decoded.getHeight());
+  }
+
+  @Test
+  public void subsamplingIsChosenFromTheHeader() throws IOException {
+    byte[] jpeg = ImageFixtures.image("jpeg", 4000, 3000);
+    RasterPlan plan = new ImagePreparer(DEFAULTS).plan(ImageFixtures.source(jpeg));
+    // floor(4000 / 512) = 7; ceil(4000/7) x ceil(3000/7) x 3 bytes = 572 x 429 x 3 = 736164 <= 16 MiB
+    assertEquals(7, plan.subsampling());
+    assertEquals(572, plan.decodedWidth());
+    assertEquals(429, plan.decodedHeight());
+    assertEquals(572L * 429 * 3, plan.predictedBytes());
+    PreparedImage prepared = new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(jpeg));
+    assertEquals(7, prepared.getSubsampling());
+    assertEquals(512, prepared.getWidth());
+    assertEquals(384, prepared.getHeight());
+  }
+
+  @Test
+  public void rasterBudgetGrowsTheSubsampling() throws IOException {
+    ImagePreprocessingSpec tight = new ImagePreprocessingSpec(512, 100_000, ImagePreprocessingSpec.DEFAULT_MAX_PIXELS,
+        InProcessImageDecoder.class.getName());
+    RasterPlan plan = new ImagePreparer(tight).plan(ImageFixtures.source(ImageFixtures.image("png", 1000, 800)));
+    // floor rule gives s=1 (2.4 MB at 3 B/px); the budget pushes s until ceil(1000/s)*ceil(800/s)*3 <= 100000:
+    // s=4 is 250x200x3 = 150000, s=5 is 200x160x3 = 96000
+    assertEquals(5, plan.subsampling());
+    assertEquals(96000, plan.predictedBytes());
+    assertTrue(plan.predictedBytes() <= 100_000, plan.toString());
+    PreparedImage prepared = new ImagePreparer(tight).prepare(ImageFixtures.source(ImageFixtures.image("png", 1000, 800)));
+    assertEquals(200, prepared.getWidth());
+    assertEquals(160, prepared.getHeight());
+  }
+
+  @Test
+  public void oversizedImageIsRefusedBeforeDecode() {
+    ImagePreprocessingSpec guarded = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, 1000,
+        CountingImageDecoder.class.getName());
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class,
+        () -> new ImagePreparer(guarded).prepare(ImageFixtures.source(ImageFixtures.image("png", 100, 100))));
+    assertTrue(refused.getMessage().startsWith(ImageRefusedException.REFUSED_BEFORE_DECODE), refused.getMessage());
+    assertTrue(refused.getMessage().contains("10000 pixels"), refused.getMessage());
+    assertEquals(0, CountingImageDecoder.CALLS.get());
+  }
+
+  @Test
+  public void controlWithinTheGuardIsDecoded() throws IOException {
+    ImagePreprocessingSpec guarded = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, 10000,
+        CountingImageDecoder.class.getName());
+    new ImagePreparer(guarded).prepare(ImageFixtures.source(ImageFixtures.image("png", 100, 100)));
+    assertEquals(1, CountingImageDecoder.CALLS.get());
+  }
+
+  @Test
+  public void webpIsRefusedWithoutADecoder() {
+    ImagePreprocessingSpec counting = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, CountingImageDecoder.class.getName());
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class,
+        () -> new ImagePreparer(counting).prepare(ImageFixtures.source(ImageFixtures.webpHeader(300, 200))));
+    assertTrue(refused.getMessage().startsWith(ImageRefusedException.NO_DECODER), refused.getMessage());
+    assertEquals(0, CountingImageDecoder.CALLS.get());
+  }
+
+  @Test
+  public void grayPaletteAndAlphaBecomeRgb() throws IOException {
+    for (byte[] png : new byte[][] {ImageFixtures.grayPng(64, 48), ImageFixtures.palettePng(64, 48), ImageFixtures.alphaPng(64, 48)}) {
+      BufferedImage out = ImageFixtures.decode(new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(png)).getEncoded());
+      assertEquals(3, out.getColorModel().getNumComponents());
+      assertEquals(64, out.getWidth());
+    }
+    // fully transparent left column is flattened on white
+    BufferedImage alpha = ImageFixtures.decode(new ImagePreparer(DEFAULTS)
+        .prepare(ImageFixtures.source(ImageFixtures.alphaPng(64, 48))).getEncoded());
+    assertEquals(0xffffff, alpha.getRGB(0, 10) & 0xffffff);
+  }
+
+  @Test
+  public void multiFrameGifReadsTheFirstImage() throws IOException {
+    PreparedImage prepared = new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(ImageFixtures.image("gif", 80, 60)));
+    assertEquals(80, prepared.getWidth());
+    assertEquals(60, prepared.getHeight());
+  }
+
+  /**
+   * The default model input is JPEG at quality 90: a JPEG stream of the resized size, and at quality 90 smaller
+   * than the same pixels at quality 100 while decoding to the same dimensions; PNG stays available and is lossless.
+   */
+  @Test
+  public void defaultOutputIsJpegAtQuality90() throws IOException {
+    byte[] source = ImageFixtures.image("png", 1500, 1000);
+    PreparedImage jpeg = new ImagePreparer(JPEG_DEFAULTS).prepare(ImageFixtures.source(source));
+    assertEquals("image/jpeg", jpeg.getMimeType());
+    assertEquals((byte) 0xFF, jpeg.getEncoded()[0]);
+    assertEquals((byte) 0xD8, jpeg.getEncoded()[1]);
+    BufferedImage decoded = ImageFixtures.decode(jpeg.getEncoded());
+    assertEquals(512, decoded.getWidth());
+    assertEquals(341, decoded.getHeight());
+    ImagePreprocessingSpec q100 = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, ImagePreprocessingSpec.DEFAULT_INTERMEDIATE_BUDGET_BYTES,
+        InProcessImageDecoder.class.getName(), ImagePreprocessingSpec.ENCODING_JPEG, 100);
+    PreparedImage best = new ImagePreparer(q100).prepare(ImageFixtures.source(source));
+    assertTrue(jpeg.getEncoded().length < best.getEncoded().length, jpeg.getEncoded().length + " vs " + best.getEncoded().length);
+    PreparedImage png = new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(source));
+    assertEquals("image/png", png.getMimeType());
+    // the same resized pixels under both encodings; JPEG differs from them by its loss only
+    assertEquals(512, ImageFixtures.decode(png.getEncoded()).getWidth());
+  }
+
+  @Test
+  public void encodingAndQualityAreValidated() {
+    assertThrows(IllegalArgumentException.class, () -> new ImagePreprocessingSpec(512, 1L << 24, 1000, 1L << 26,
+        InProcessImageDecoder.class.getName(), "webp", 90));
+    assertThrows(IllegalArgumentException.class, () -> new ImagePreprocessingSpec(512, 1L << 24, 1000, 1L << 26,
+        InProcessImageDecoder.class.getName(), ImagePreprocessingSpec.ENCODING_JPEG, 0));
+    assertThrows(IllegalArgumentException.class, () -> new ImagePreprocessingSpec(512, 1L << 24, 1000, 1L << 26,
+        InProcessImageDecoder.class.getName(), ImagePreprocessingSpec.ENCODING_JPEG, 101));
+  }
+
+  @Test
+  public void anotherCodePathWithTheSameLogicGivesTheSameBytes() throws IOException {
+    ImagePreprocessingSpec handoff = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, ThreadHandoffImageDecoder.class.getName());
+    byte[] jpeg = ImageFixtures.image("jpeg", 1500, 1000);
+    PreparedImage inProcess = new ImagePreparer(JPEG_DEFAULTS).prepare(ImageFixtures.source(jpeg));
+    PreparedImage handedOff = new ImagePreparer(handoff).prepare(ImageFixtures.source(jpeg));
+    assertEquals("image-decoder-handoff", ThreadHandoffImageDecoder.LAST_THREAD.get());
+    assertArrayEquals(inProcess.getEncoded(), handedOff.getEncoded());
+  }
+
+  @Test
+  public void decoderRunningAnotherLogicIsRefused() {
+    ImagePreprocessingSpec foreign = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, ForeignLogicImageDecoder.class.getName());
+    assertThrows(ImageDecoderLogicMismatchException.class, () -> new ImagePreparer(foreign));
+  }
+
+  @Test
+  public void specFromComputeConfig() {
+    TypedProperties props = new TypedProperties();
+    ImagePreprocessingSpec defaults = EmbeddingTableConfig.from(props).imagePreprocessing();
+    assertEquals(ImagePreprocessingSpec.DEFAULT_LONG_SIDE, defaults.longSide());
+    assertEquals(ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES, defaults.rasterBudgetBytes());
+    assertEquals(ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, defaults.maxPixels());
+    assertEquals(ImagePreprocessingSpec.DEFAULT_INTERMEDIATE_BUDGET_BYTES, defaults.intermediateBudgetBytes());
+    assertEquals(InProcessImageDecoder.class.getName(), defaults.decoderClass());
+    assertEquals(ImagePreprocessingSpec.ENCODING_JPEG, defaults.encoding());
+    assertEquals(ImagePreprocessingSpec.DEFAULT_JPEG_QUALITY, defaults.jpegQuality());
+    props.setProperty(EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key(), "256");
+    props.setProperty(EmbeddingTableConfig.COMPUTE_IMAGE_MAX_PIXELS.key(), "5000");
+    props.setProperty(EmbeddingTableConfig.COMPUTE_IMAGE_INTERMEDIATE_BUDGET_BYTES.key(), "4096");
+    props.setProperty(EmbeddingTableConfig.COMPUTE_IMAGE_ENCODING.key(), "PNG");
+    props.setProperty(EmbeddingTableConfig.COMPUTE_IMAGE_JPEG_QUALITY.key(), "75");
+    ImagePreprocessingSpec spec = EmbeddingTableConfig.from(props).imagePreprocessing();
+    assertEquals(256, spec.longSide());
+    assertEquals(5000, spec.maxPixels());
+    assertEquals(4096, spec.intermediateBudgetBytes());
+    assertEquals(ImagePreprocessingSpec.ENCODING_PNG, spec.encoding());
+    assertEquals(75, spec.jpegQuality());
+    for (String[] bad : new String[][] {{EmbeddingTableConfig.COMPUTE_IMAGE_RASTER_BUDGET_BYTES.key(), "-1"},
+        {EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key(), "0"}, {EmbeddingTableConfig.COMPUTE_IMAGE_MAX_PIXELS.key(), "many"},
+        {EmbeddingTableConfig.COMPUTE_IMAGE_JPEG_QUALITY.key(), "101"}, {EmbeddingTableConfig.COMPUTE_IMAGE_ENCODING.key(), "webp"},
+        {EmbeddingTableConfig.COMPUTE_IMAGE_DECODER_CLASS.key(), String.class.getName()}}) {
+      TypedProperties badProps = new TypedProperties();
+      badProps.setProperty(bad[0], bad[1]);
+      IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+          () -> EmbeddingTableConfig.from(badProps).imagePreprocessing(), bad[0]);
+      assertTrue(refused.getMessage().contains(bad[0]), refused.getMessage());
+    }
+    props.setProperty(EmbeddingTableConfig.COMPUTE_IMAGE_DECODER_CLASS.key(), ForeignLogicImageDecoder.class.getName());
+    assertThrows(ImageDecoderLogicMismatchException.class, () -> EmbeddingTableConfig.from(props).imagePreprocessing());
+  }
+
+  @Test
+  public void onlyJdkReadersDecideTheHeaderAndThePixels() throws IOException {
+    // a third-party plugin ordered first must not change what image-resize-v1 decodes
+    ForeignPngReaderSpi foreign = ForeignPngReaderSpi.installFirst();
+    try {
+      byte[] png = ImageFixtures.image("png", 123, 45);
+      ImageHeader header = header(png);
+      assertEquals(123, header.getWidth());
+      assertEquals(45, header.getHeight());
+      PreparedImage prepared = new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(png));
+      assertEquals(123, prepared.getWidth());
+      assertEquals(45, prepared.getHeight());
+    } finally {
+      ForeignPngReaderSpi.uninstall(foreign);
+    }
+  }
+
+  @Test
+  public void singleStripTiffAboveTheIntermediateBudgetIsRefusedBeforeDecode() throws IOException {
+    // the JDK TIFF reader decodes a whole strip at full resolution before subsampling; 400x300x3 = 360000 B
+    byte[] tiff = ImageFixtures.singleStripTiff(400, 300);
+    ImagePreprocessingSpec tight = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, 100_000, CountingImageDecoder.class.getName());
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class,
+        () -> new ImagePreparer(tight).prepare(ImageFixtures.source(tiff)));
+    assertTrue(refused.getMessage().startsWith(ImageRefusedException.REFUSED_BEFORE_DECODE), refused.getMessage());
+    assertTrue(refused.getMessage().contains("360000"), refused.getMessage());
+    assertEquals(0, CountingImageDecoder.CALLS.get());
+    // control: the same file under the default budget decodes
+    PreparedImage prepared = new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(tiff));
+    assertEquals(400, prepared.getWidth());
+    assertEquals(300, prepared.getHeight());
+  }
+
+  @Test
+  public void tiledTiffIsChargedOneTile() throws IOException {
+    // neighbour: 64x64 tiles cost 64*64*3 = 12288 B, under a 100000 B budget although the image is 640000 B
+    byte[] tiff = ImageFixtures.tiledTiff(400, 300, 64);
+    ImagePreprocessingSpec tight = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, 100_000, InProcessImageDecoder.class.getName());
+    PreparedImage prepared = new ImagePreparer(tight).prepare(ImageFixtures.source(tiff));
+    assertEquals(400, prepared.getWidth());
+  }
+
+  @Test
+  public void progressiveJpegAboveTheIntermediateBudgetIsRefusedBeforeDecode() throws IOException {
+    // libjpeg holds every DCT coefficient of a progressive JPEG; 800x600 4:2:0 = (100*75 + 2*50*38) blocks * 128 B
+    byte[] progressive = ImageFixtures.progressiveJpeg(800, 600);
+    ImagePreprocessingSpec tight = new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, 1_000_000, CountingImageDecoder.class.getName());
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class,
+        () -> new ImagePreparer(tight).prepare(ImageFixtures.source(progressive)));
+    assertTrue(refused.getMessage().contains(String.valueOf((100L * 75 + 2L * 50 * 38) * 128)), refused.getMessage());
+    assertEquals(0, CountingImageDecoder.CALLS.get());
+    // neighbour: a baseline JPEG of the same size has no whole-image coefficient buffer and passes the same budget
+    PreparedImage baseline = new ImagePreparer(tight).prepare(ImageFixtures.source(ImageFixtures.image("jpeg", 800, 600)));
+    assertEquals(512, baseline.getWidth());
+    // control: the progressive file under the default budget decodes
+    assertEquals(512, new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(progressive)).getWidth());
+  }
+
+  private static ImageHeader header(byte[] bytes) throws IOException {
+    try (ImageInputStream in = ImageFixtures.source(bytes).open()) {
+      return ImageHeaderReader.read(in);
+    }
+  }
+}

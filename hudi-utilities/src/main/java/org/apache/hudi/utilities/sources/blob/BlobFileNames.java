@@ -37,6 +37,14 @@ public final class BlobFileNames {
 
   static {
     CONTENT_TYPES.put("pdf", "application/pdf");
+    CONTENT_TYPES.put("png", "image/png");
+    CONTENT_TYPES.put("jpg", "image/jpeg");
+    CONTENT_TYPES.put("jpeg", "image/jpeg");
+    CONTENT_TYPES.put("gif", "image/gif");
+    CONTENT_TYPES.put("bmp", "image/bmp");
+    CONTENT_TYPES.put("tif", "image/tiff");
+    CONTENT_TYPES.put("tiff", "image/tiff");
+    CONTENT_TYPES.put("webp", "image/webp");
   }
 
   private BlobFileNames() {
@@ -61,8 +69,8 @@ public final class BlobFileNames {
   }
 
   /**
-   * MIME type of a lower-case extension: {@code application/pdf} for {@code pdf}, null for every other extension, so the
-   * {@code content_type} of an image or video row is null.
+   * MIME type of a lower-case extension: {@code application/pdf} for {@code pdf}, the image type for png, jpg, jpeg, gif,
+   * bmp, tif, tiff and webp, null for any other extension, so the {@code content_type} of a video row is null.
    */
   public static String contentType(String extension) {
     return CONTENT_TYPES.get(extension);

@@ -184,6 +184,8 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       config.computeMaxAttempts();
       config.computeRetryBackoffMs();
       config.computeParallelism(1);
+      // the image settings and their decoder too, whether or not this model's client embeds images
+      config.imagePreprocessing();
     } else {
       checkNoModelOrComputeSettings(config);
     }

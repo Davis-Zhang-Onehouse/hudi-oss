@@ -242,6 +242,11 @@ public final class ImageFixtures {
     return "this is not an image, only text pretending to be one".getBytes(StandardCharsets.UTF_8);
   }
 
+  /** A source over in-memory bytes (tests only: production compute opens a seekable blob stream). */
+  public static ImageSource source(byte[] bytes) {
+    return () -> new MemoryCacheImageInputStream(new ByteArrayInputStream(bytes));
+  }
+
   public static BufferedImage decode(byte[] encoded) {
     try {
       return ImageIO.read(new ByteArrayInputStream(encoded));

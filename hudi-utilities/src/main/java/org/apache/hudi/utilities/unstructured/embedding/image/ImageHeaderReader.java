@@ -171,24 +171,12 @@ public final class ImageHeaderReader {
   /**
    * The first JDK built-in ImageIO writer of {@code format}, or null. Writers from any other plugin are ignored for the reason
    * {@link #firstReader} ignores their readers: a plugin that happens to be registered first must not change the bytes an image
-   * is encoded to. Writers not returned are disposed; a provider that fails to create its writer is skipped
-   * ({@link #nextCandidate}).
+   * is encoded to. Writers not returned are disposed. A provider that fails during the walk is skipped; the chosen writer is
+   * disposed too only when anything else fails the walk (a JVM Error, say), as {@code firstJdk} describes.
    */
   public static ImageWriter firstJdkWriter(String format) {
-    Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName(format);
-    ImageWriter chosen = null;
-    while (writers.hasNext()) {
-      ImageWriter writer = nextCandidate(writers);
-      if (writer == null) {
-        continue;
-      }
-      if (chosen == null && isJdkProvider(writer.getOriginatingProvider())) {
-        chosen = writer;
-      } else {
-        writer.dispose();
-      }
-    }
-    return chosen;
+    return firstJdk(ImageIO.getImageWritersByFormatName(format), writer -> isJdkProvider(writer.getOriginatingProvider()),
+        ImageWriter::dispose);
   }
 
   private static boolean isJdkProvider(ImageReaderWriterSpi provider) {
