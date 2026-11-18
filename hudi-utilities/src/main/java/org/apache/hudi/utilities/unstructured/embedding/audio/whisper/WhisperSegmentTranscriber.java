@@ -58,6 +58,10 @@ import java.util.regex.Pattern;
  */
 public class WhisperSegmentTranscriber implements SegmentTranscriber, AutoCloseable {
 
+  /** Bump whenever the same whisper utterances map to different transcript records. */
+  public static final String IMPLEMENTATION_VERSION = "whisper-transcriber-v1";
+
+
   /** Shortest input handed to whisper, 1.2 s at 16 kHz: whisper 1.7.1 returns no utterance for less than about 1.1 s. */
   static final int MIN_SAMPLES = 19_200;
 

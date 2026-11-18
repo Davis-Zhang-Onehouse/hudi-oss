@@ -42,6 +42,7 @@ import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.marker.TimelineServerBasedWriteMarkers;
 import org.apache.hudi.table.marker.WriteMarkers;
 import org.apache.hudi.table.marker.WriteMarkersFactory;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableVersion;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -51,6 +52,11 @@ import java.io.Serializable;
 import java.util.Properties;
 
 /**
+ * Managed blob layout version 1 ({@code hoodie.table.blob.layout.version=1}) writes under
+ * {@code .hoodie/.blob/<partition>/}, omitting an empty partition. Scheme-less external paths resolve against the table base
+ * path and denote Hudi-managed copies ({@code managed=true}); a URI with a scheme is used as given and denotes a user-managed
+ * reference ({@code managed=false}). Writers refuse the other ownership combinations. Any future cleaner must delete only
+ * table-relative references contained under {@code .hoodie/.blob/}, never a path based on the managed flag alone.
  * Writes managed blob and prepared payload files named in Hudi's base-file form, {@code <fileId>_<writeToken>_<instantTime>.bin}
  * ({@link FSUtils#makeBaseFileName}): a fresh file id per file, the write token of the writing Spark task (partition, stage,
  * attempt; outside a Spark task Hudi's default token {@code 0-0-0}, names staying unique by file id) and the write instant, all
@@ -69,6 +75,7 @@ public final class OutOfLineWriter {
   /** Suffix of every out-of-line file name. */
   private static final String FILE_EXTENSION = ".bin";
 
+  private final String layoutVersion;
   private final HoodieStorage storage;
   private final String basePath;
   private final String instantTime;
@@ -87,6 +94,13 @@ public final class OutOfLineWriter {
   @VisibleForTesting
   OutOfLineWriter(HoodieStorage storage, String basePath, String instantTime, Option<WriteMarkers> markers,
                   TaskContextSupplier taskContextSupplier) {
+    this(storage, basePath, instantTime, markers, taskContextSupplier, "1");
+  }
+
+  private OutOfLineWriter(HoodieStorage storage, String basePath, String instantTime, Option<WriteMarkers> markers,
+                          TaskContextSupplier taskContextSupplier, String layoutVersion) {
+    checkLayoutVersion(basePath, layoutVersion);
+    this.layoutVersion = layoutVersion;
     if (markers.isPresent() && !(markers.get() instanceof TimelineServerBasedWriteMarkers)) {
       throw new HoodieException("Out-of-line writes require TIMELINE_SERVER_BASED markers; direct-marker fallback is refused");
     }
@@ -112,6 +126,7 @@ public final class OutOfLineWriter {
       throw new HoodieValidationException("Out-of-line writes require target table version 9 or above: " + basePath
           + " is version " + version.versionCode());
     }
+    checkLayoutVersion(basePath, table.getMetaClient().getTableConfig().getString(UnstructuredTableVersion.BLOB_LAYOUT_VERSION));
     Factory factory = new Factory(basePath, table);
     factory.checkTimelineServerMarkers();
     return factory;
@@ -153,7 +168,8 @@ public final class OutOfLineWriter {
 
     /** A writer for {@code instant}, with no table, metaClient or write config built in the task. */
     public OutOfLineWriter forInstant(HoodieStorage storage, String instant) {
-      return new OutOfLineWriter(storage, basePath, instant, markers(instant));
+      return new OutOfLineWriter(storage, basePath, instant, markers(instant), new SparkTaskContextSupplier(),
+          table.getMetaClient().getTableConfig().getString(UnstructuredTableVersion.BLOB_LAYOUT_VERSION));
     }
 
     /** The instant's timeline-server markers, or none when {@code hoodie.write.blob.markers.enable} is false. */
@@ -199,7 +215,14 @@ public final class OutOfLineWriter {
    */
   public String newPath(String partition) {
     validatePartition(partition);
-    String directory = ManagedBlobPaths.FOLDER + (StringUtils.isNullOrEmpty(partition) ? "" : "/" + partition);
+    String directory;
+    switch (layoutVersion) {
+      case "1":
+        directory = ManagedBlobPaths.FOLDER + (StringUtils.isNullOrEmpty(partition) ? "" : "/" + partition);
+        break;
+      default:
+        throw new UnsupportedOperationException("Unknown blob layout version " + layoutVersion);
+    }
     String name = FSUtils.makeBaseFileName(instantTime, FSUtils.makeWriteToken(taskContextSupplier),
         FSUtils.createNewFileId(FSUtils.createNewFileIdPfx(), 0), FILE_EXTENSION);
     return directory + "/" + name;
@@ -210,6 +233,7 @@ public final class OutOfLineWriter {
    * once, as {@link #write} does; safe to call from any thread. Returns only after the file is closed.
    */
   public void writeAt(String relative, StreamingWrite stream) throws IOException {
+    StorageReferenceRules.validateWriteOwnership(relative, true);
     int slash = relative.lastIndexOf('/');
     String directory = relative.substring(0, slash);
     String name = relative.substring(slash + 1);
@@ -233,6 +257,14 @@ public final class OutOfLineWriter {
         }
       }
       throw failure;
+    }
+  }
+
+  /** Missing pins are refused too: a dev table made by an older build must be recreated. */
+  private static void checkLayoutVersion(String basePath, String version) {
+    if (!"1".equals(version)) {
+      throw new HoodieValidationException("Out-of-line writes to " + basePath + " require "
+          + UnstructuredTableVersion.BLOB_LAYOUT_VERSION.key() + "=1, stored " + version + "; create a new unstructured table");
     }
   }
 

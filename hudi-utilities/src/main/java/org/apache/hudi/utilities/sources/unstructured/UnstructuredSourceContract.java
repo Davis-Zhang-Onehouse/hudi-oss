@@ -21,6 +21,7 @@ package org.apache.hudi.utilities.sources.unstructured;
 import org.apache.hudi.common.config.ConfigProperty;
 import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.config.TypedProperties;
+import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.marker.MarkerType;
 import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.common.util.StringUtils;
@@ -33,11 +34,13 @@ import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobSourceSetup;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PrepLogicVersions;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Properties;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
@@ -53,6 +56,7 @@ public class UnstructuredSourceContract implements SourceContract {
       NonpartitionedKeyGenerator.class.getName());
 
   private final UnstructuredMode mode;
+  private final UnstructuredTableProperties tablePins;
 
   /**
    * The contract of the job of {@code props}.
@@ -61,6 +65,15 @@ public class UnstructuredSourceContract implements SourceContract {
    */
   public UnstructuredSourceContract(TypedProperties props) {
     this.mode = UnstructuredMode.from(props);
+    UnstructuredTableProperties.Builder pins = UnstructuredTableProperties.builder(UnstructuredSchemaContract.sourceName(mode))
+        .requireTableProperty(UnstructuredTableVersion.BLOB_LAYOUT_VERSION, "1")
+        .requireTableProperty(UnstructuredTableVersion.KIND, mode.configValue())
+        .requireTableProperty(UnstructuredTableVersion.SCHEMA_VERSION, "1")
+        .requireTableProperty(UnstructuredTableVersion.KEY_ENCODING_VERSION, "1");
+    if (mode == UnstructuredMode.EMBEDDING) {
+      PrepLogicVersions.from(props).requireTableProperties(pins);
+    }
+    this.tablePins = pins.build();
   }
 
   /** The job this contract is of. */
@@ -85,9 +98,25 @@ public class UnstructuredSourceContract implements SourceContract {
       setDefault(merged, HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME, "uncompressed");
       setDefault(merged, HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED, "false");
     }
+    merged = tablePins.apply(merged);
     checkKeyGenerator(UnstructuredSchemaContract.sourceName(mode), merged);
     validateJob(merged);
     return merged;
+  }
+
+  @Override
+  public Properties tableProperties() {
+    return tablePins.tableProperties();
+  }
+
+  /** The stream's exact persisted pins, independent of Hudi's generic source preparation. */
+  public UnstructuredTableProperties requiredTableProperties() {
+    return tablePins;
+  }
+
+  /** Checks the table's pins next to the record-key validation, before source construction. */
+  public void checkTable(String basePath, HoodieTableConfig table) {
+    tablePins.checkTable(basePath, table);
   }
 
   private void require(TypedProperties props, ConfigProperty<?> key, String value, UnaryOperator<String> normalize, String hint) {

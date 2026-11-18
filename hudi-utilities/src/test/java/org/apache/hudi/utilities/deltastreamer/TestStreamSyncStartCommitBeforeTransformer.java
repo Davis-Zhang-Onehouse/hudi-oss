@@ -19,20 +19,31 @@
 package org.apache.hudi.utilities.deltastreamer;
 
 import org.apache.hudi.client.SparkRDDWriteClient;
+import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
+import org.apache.hudi.client.validator.SparkPreCommitValidator;
 import org.apache.hudi.common.config.TypedProperties;
+import org.apache.hudi.common.data.HoodieData;
+import org.apache.hudi.common.engine.HoodieEngineContext;
+import org.apache.hudi.common.model.HoodieWriteStat;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.config.HoodieCleanConfig;
+import org.apache.hudi.config.HoodiePreCommitValidatorConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.exception.HoodieValidationException;
+import org.apache.hudi.table.HoodieSparkTable;
+import org.apache.hudi.table.action.HoodieWriteMetadata;
 import org.apache.hudi.table.action.rollback.RestorePlanActionExecutor;
 import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.exception.HoodieSourceTimeoutException;
 import org.apache.hudi.utilities.exception.HoodieTransformException;
 import org.apache.hudi.utilities.schema.FilebasedSchemaProvider;
+import org.apache.hudi.utilities.schema.SchemaProvider;
+import org.apache.hudi.utilities.sources.TestDataSource;
 import org.apache.hudi.utilities.transform.InstantAwareTransformer;
 import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 
@@ -51,8 +62,10 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -85,6 +98,74 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
   private static final List<String> SEEN_INSTANTS = new CopyOnWriteArrayList<>();
   /** One entry per call: the pending (requested or inflight) instants of the target table at the time of the call. */
   private static final List<List<HoodieInstant>> PENDING_AT_APPLY = new CopyOnWriteArrayList<>();
+  private static final List<String> COMMIT_EVENTS = new CopyOnWriteArrayList<>();
+  private static final List<String> TRANSFORMER_COMMITS = new CopyOnWriteArrayList<>();
+  private static final List<List<String>> COMPLETED_AT_CALLBACK = new CopyOnWriteArrayList<>();
+  private static final AtomicLong RECORDS_AT_FAILED_COMMIT = new AtomicLong(-1);
+
+  /** The ordinary trip source declares the managed layout its test transformers write at table creation. */
+  public static class ManagedPayloadSource extends TestDataSource {
+    public ManagedPayloadSource(TypedProperties props, JavaSparkContext jsc, SparkSession spark, SchemaProvider schemaProvider) {
+      super(props, jsc, spark, schemaProvider);
+    }
+  }
+
+  /** Records the source's existing commit callback so the transformer hook must follow it. */
+  public static class CommitRecordingSource extends ManagedPayloadSource {
+    public CommitRecordingSource(TypedProperties props, JavaSparkContext jsc, SparkSession spark, SchemaProvider schemaProvider) {
+      super(props, jsc, spark, schemaProvider);
+    }
+
+    @Override
+    public void onCommit(String checkpoint) {
+      super.onCommit(checkpoint);
+      COMMIT_EVENTS.add("source");
+    }
+  }
+
+  /** Records the completed timeline at callback time, before any later test-side observation. */
+  public static class CommitRecordingTransformer extends BlobWritingTransformer {
+    // Intentionally compiles before the interface introduces the commit callback.
+    public void onCommit(JavaSparkContext jsc, SparkSession spark, TypedProperties props, String instant) {
+      TRANSFORMER_COMMITS.add(instant);
+      COMPLETED_AT_CALLBACK.add(completedCommits(props.getString(TARGET_BASE_PATH)));
+      COMMIT_EVENTS.add("transformer");
+    }
+  }
+
+  public static class ThrowingCommitTransformer extends CommitRecordingTransformer {
+    public void onCommit(JavaSparkContext jsc, SparkSession spark, TypedProperties props, String instant) {
+      super.onCommit(jsc, spark, props, instant);
+      throw new IllegalStateException("injected transformer post-commit failure at " + instant);
+    }
+  }
+
+  /** Produces an empty write with a changed checkpoint, so the commit client can skip it. */
+  public static class EmptyCommitTransformer extends CommitRecordingTransformer {
+    @Override
+    public Dataset<Row> apply(JavaSparkContext jsc, SparkSession spark, Dataset<Row> rows, TypedProperties props, String instant) {
+      return super.apply(jsc, spark, rows, props, instant).limit(0);
+    }
+  }
+
+  /** Fails inside the actual commit call, after the round has written its records. */
+  public static class RejectingCommitValidator<T, I, K, O extends HoodieData<WriteStatus>>
+      extends SparkPreCommitValidator<T, I, K, O> {
+    public RejectingCommitValidator(HoodieSparkTable<T> table, HoodieEngineContext context, HoodieWriteConfig config) {
+      super(table, context, config);
+    }
+
+    @Override
+    public void validate(String instant, HoodieWriteMetadata<O> result, Dataset<Row> before, Dataset<Row> after) {
+      RECORDS_AT_FAILED_COMMIT.set(result.getWriteStats().get().stream().mapToLong(HoodieWriteStat::getNumWrites).sum());
+      throw new HoodieValidationException("injected commit failure after records were written");
+    }
+
+    @Override
+    protected void validateRecordsBeforeAndAfter(Dataset<Row> before, Dataset<Row> after, Set<String> partitions) {
+      throw new HoodieValidationException("injected commit failure after records were written");
+    }
+  }
 
   @BeforeEach
   void clearCalls() {
@@ -92,6 +173,10 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
     PAYLOADS.clear();
     PARTITIONED_PAYLOADS.clear();
     PENDING_AT_APPLY.clear();
+    COMMIT_EVENTS.clear();
+    TRANSFORMER_COMMITS.clear();
+    COMPLETED_AT_CALLBACK.clear();
+    RECORDS_AT_FAILED_COMMIT.set(-1);
   }
 
   /** Records each call; given an instant, writes a fresh marked file. */
@@ -108,6 +193,9 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
       record(properties, instantTime);
       try {
         String base = properties.getString(TARGET_BASE_PATH);
+        org.apache.hudi.common.table.HoodieTableConfig.update(storage,
+            new org.apache.hudi.storage.StoragePath(base, ".hoodie"),
+            org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties.layoutOne());
         String relative = org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter.forTable(storage.getConf(), base, properties)
             .forInstant(storage, instantTime)
             .write("", out -> { });
@@ -156,6 +244,9 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
       super.apply(jsc, sparkSession, rowDataset, properties, instantTime);
       try {
         String base = properties.getString(TARGET_BASE_PATH);
+        org.apache.hudi.common.table.HoodieTableConfig.update(storage,
+            new org.apache.hudi.storage.StoragePath(base, ".hoodie"),
+            org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties.layoutOne());
         String relative = org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter.forTable(storage.getConf(), base, properties)
             .forInstant(storage, instantTime)
             .write(PARTITION, out -> { });
@@ -221,7 +312,13 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
   }
 
   private static HoodieDeltaStreamer.Config config(String tableBasePath, boolean flag, List<String> transformers) {
-    HoodieDeltaStreamer.Config cfg = TestHelpers.makeConfig(tableBasePath, WriteOperationType.INSERT, transformers);
+    return config(tableBasePath, flag, transformers, WriteOperationType.INSERT);
+  }
+
+  private static HoodieDeltaStreamer.Config config(String tableBasePath, boolean flag, List<String> transformers,
+                                                   WriteOperationType operation) {
+    HoodieDeltaStreamer.Config cfg = TestHelpers.makeConfig(tableBasePath, operation, transformers);
+    cfg.sourceClassName = ManagedPayloadSource.class.getName();
     if (flag) {
       cfg.configs.add(HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key() + "=true");
     }
@@ -234,6 +331,13 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
 
   private static List<String> transformers(Class<?>... classes) {
     return Arrays.stream(classes).map(Class::getName).collect(Collectors.toList());
+  }
+
+  private static HoodieDeltaStreamer.Config commitHookConfig(String tableBasePath, boolean earlyCommit, Class<?> transformer) {
+    HoodieDeltaStreamer.Config cfg = config(tableBasePath, earlyCommit,
+        transformers(transformer, TestHoodieDeltaStreamer.TripsWithDistanceTransformer.class));
+    cfg.sourceClassName = CommitRecordingSource.class.getName();
+    return cfg;
   }
 
   private static HoodieTableMetaClient metaClient(String tableBasePath) {
@@ -251,6 +355,84 @@ public class TestStreamSyncStartCommitBeforeTransformer extends HoodieDeltaStrea
       messages.append(t).append(" | ");
     }
     return messages.toString();
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void transformerCommitCallbackRunsOnceAfterSourceAndDurableCommit(boolean earlyCommit) throws Exception {
+    String tableBasePath = basePath + "/transformer_commit_callback_" + earlyCommit;
+    HoodieDeltaStreamer.Config cfg = commitHookConfig(tableBasePath, earlyCommit, CommitRecordingTransformer.class);
+    syncOnce(new HoodieDeltaStreamer(cfg, jsc));
+
+    List<String> commits = completedCommits(tableBasePath);
+    assertEquals(1, commits.size(), "the round durably committed");
+    assertEquals(commits, TRANSFORMER_COMMITS, "the transformer is notified exactly once of that commit");
+    assertEquals(Collections.singletonList(commits), COMPLETED_AT_CALLBACK, "the instant was already completed at callback time");
+    assertEquals(Arrays.asList("source", "transformer"), COMMIT_EVENTS, "Source.onCommit runs before the transformer callback");
+    assertEquals(SQL_SOURCE_NUM_RECORDS, sqlContext.read().format("hudi").load(tableBasePath).count());
+  }
+
+  @Test
+  void transformerCommitCallbackDoesNotRunWhenActualCommitFails() throws Exception {
+    String tableBasePath = basePath + "/transformer_callback_failed_commit";
+    HoodieDeltaStreamer.Config cfg = commitHookConfig(tableBasePath, true, CommitRecordingTransformer.class);
+    cfg.configs.add(HoodiePreCommitValidatorConfig.VALIDATOR_CLASS_NAMES.key() + "=" + RejectingCommitValidator.class.getName());
+    Exception failure = assertThrows(Exception.class, () -> syncOnce(new HoodieDeltaStreamer(cfg, jsc)));
+
+    assertTrue(causes(failure).contains("pre-commit validation failed"), causes(failure));
+    assertTrue(RECORDS_AT_FAILED_COMMIT.get() > 0, "the validator rejected a commit after the actual write");
+    assertEquals(1, SEEN_INSTANTS.size(), "the transformer returned before the commit failed");
+    assertTrue(completedCommits(tableBasePath).isEmpty());
+    assertTrue(TRANSFORMER_COMMITS.isEmpty(), "a failed commit cannot publish transformer state");
+    assertTrue(COMMIT_EVENTS.isEmpty(), "neither source nor transformer receives a successful commit callback");
+  }
+
+  @Test
+  void transformerCommitCallbackDoesNotRunForAnUnchangedSourceCheckpoint() throws Exception {
+    String tableBasePath = basePath + "/transformer_callback_no_new_data";
+    HoodieDeltaStreamer.Config cfg = commitHookConfig(tableBasePath, true, CommitRecordingTransformer.class);
+    syncOnce(new HoodieDeltaStreamer(cfg, jsc));
+    List<String> before = completedCommits(tableBasePath);
+    TRANSFORMER_COMMITS.clear();
+    COMMIT_EVENTS.clear();
+    SEEN_INSTANTS.clear();
+    cfg.sourceLimit = 0;
+    syncOnce(new HoodieDeltaStreamer(cfg, jsc));
+
+    assertEquals(before, completedCommits(tableBasePath), "the empty source round adds no completed instant");
+    assertTrue(SEEN_INSTANTS.isEmpty(), "the unchanged checkpoint skips transformation");
+    assertTrue(TRANSFORMER_COMMITS.isEmpty());
+    assertTrue(COMMIT_EVENTS.isEmpty());
+  }
+
+  @Test
+  void transformerCommitCallbackDoesNotRunWhenAnEmptyWriteSkipsCommit() throws Exception {
+    String tableBasePath = basePath + "/transformer_callback_skipped_empty_commit";
+    HoodieDeltaStreamer.Config cfg = commitHookConfig(tableBasePath, true, EmptyCommitTransformer.class);
+    cfg.configs.add(HoodieWriteConfig.ALLOW_EMPTY_COMMIT.key() + "=false");
+    syncOnce(new HoodieDeltaStreamer(cfg, jsc));
+
+    assertEquals(1, SEEN_INSTANTS.size(), "the changed checkpoint reached the transformer and write path");
+    assertTrue(completedCommits(tableBasePath).isEmpty(), "empty commit suppression leaves no durable instant");
+    assertTrue(TRANSFORMER_COMMITS.isEmpty(), "a successful return for a skipped commit cannot publish transformer state");
+  }
+
+  @Test
+  void throwingTransformerCommitCallbackFailsTheRoundWithoutRollingBackCompletedData() throws Exception {
+    String tableBasePath = basePath + "/transformer_callback_throws_after_commit";
+    HoodieDeltaStreamer.Config cfg = commitHookConfig(tableBasePath, true, ThrowingCommitTransformer.class);
+    Exception failure = assertThrows(Exception.class, () -> syncOnce(new HoodieDeltaStreamer(cfg, jsc)));
+
+    assertTrue(causes(failure).contains("injected transformer post-commit failure"), causes(failure));
+    List<String> commits = completedCommits(tableBasePath);
+    assertEquals(1, commits.size(), "the durable commit survives a callback failure");
+    assertEquals(commits, TRANSFORMER_COMMITS);
+    assertEquals(Collections.singletonList(commits), COMPLETED_AT_CALLBACK);
+    assertEquals(Arrays.asList("source", "transformer"), COMMIT_EVENTS);
+    assertEquals(0, metaClient(tableBasePath).getActiveTimeline().getRollbackTimeline().countInstants(),
+        "completed data is not rolled back");
+    assertEquals(SQL_SOURCE_NUM_RECORDS, sqlContext.read().format("hudi").load(tableBasePath).count());
+    assertTrue(fs.exists(payloadPath(tableBasePath, commits.get(0))), "the committed managed payload survives too");
   }
 
   /** The default order: the transformer runs through the plain apply before any instant exists, and nothing is written. */

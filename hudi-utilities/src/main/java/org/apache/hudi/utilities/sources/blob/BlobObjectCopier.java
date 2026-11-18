@@ -96,13 +96,25 @@ public final class BlobObjectCopier {
     if (reference.isNullAt(managedIndex)) {
       throw new BlobCopyFailure(sourcePathSha, sourcePath, fileSize, STEP_READ, "out-of-line blob reference without a managed flag");
     }
-    if (!reference.getBoolean(managedIndex)) {
+    boolean managed = reference.getBoolean(managedIndex);
+    int pathIndex = referenceType.fieldIndex(HoodieSchema.Blob.EXTERNAL_REFERENCE_PATH);
+    String suppliedPath = reference.isNullAt(pathIndex) ? null : reference.getString(pathIndex);
+    // The source builder's pending managed copy has no path until its bytes have been copied.
+    if (!managed || (suppliedPath != null && !suppliedPath.isEmpty())) {
+      try {
+        StorageReferenceRules.validateWriteOwnership(suppliedPath, managed);
+      } catch (IllegalArgumentException invalidReference) {
+        throw new BlobCopyFailure(sourcePathSha, sourcePath, fileSize, STEP_READ, invalidReference.getMessage());
+      }
+    }
+    if (!managed) {
       return row;
     }
     Copy copy = new Copy(sourcePathSha, sourcePath, fileSize, partition);
     int bufferBytes = BlobTableConfig.copyBufferBytes(props);
     String externalPath = BlobTableConfig.copyRetry(props).call("blob copy of source_path_sha " + sourcePathSha,
         () -> copy(storage, copy, bufferBytes, writer), BlobObjectCopier::isTransientCopyFault);
+    StorageReferenceRules.validateWriteOwnership(externalPath, true);
     Object[] values = new Object[row.size()];
     for (int i = 0; i < values.length; i++) {
       values[i] = row.get(i);

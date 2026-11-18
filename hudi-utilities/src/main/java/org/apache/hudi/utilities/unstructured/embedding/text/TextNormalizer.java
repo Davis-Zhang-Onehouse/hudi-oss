@@ -53,6 +53,9 @@ import java.text.Normalizer;
  */
 public final class TextNormalizer {
 
+  /** Bump when the same text normalizes differently; version 2 preserves contextual word boundaries and joiners. */
+  public static final String LOGIC_VERSION = "text-normalizer-v2";
+
   private static final char REPLACEMENT = '\uFFFD';  // U+FFFD, the Unicode replacement character
   private static final char ZERO_WIDTH_SPACE = '\u200B';
   private static final char ZERO_WIDTH_NON_JOINER = '\u200C';

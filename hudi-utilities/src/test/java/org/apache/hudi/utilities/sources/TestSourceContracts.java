@@ -57,6 +57,7 @@ class TestSourceContracts {
       assertSame(props, contract.prepareJob(props));
       assertSame(chain, contract.transformerChain(chain));
       assertNull(contract.transformerChain(null));
+      assertTrue(contract.tableProperties().isEmpty());
     }
   }
 

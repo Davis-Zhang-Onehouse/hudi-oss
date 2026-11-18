@@ -30,6 +30,7 @@ import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.utilities.streamer.BaseErrorTableWriter;
 import org.apache.hudi.utilities.streamer.ErrorTableUtils;
 import org.apache.hudi.utilities.testutils.UtilitiesTestBase;
+import org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -87,7 +88,8 @@ public class TestBlobCopyTransformer extends UtilitiesTestBase {
 
   @BeforeEach
   public void initializeEmptyTable() throws IOException {
-    HoodieTableMetaClient.newTableBuilder().setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("blob_table")
+    HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("blob_table")
         .setRecordKeyFields(KEY_FIELDS).setPartitionFields(BlobTableSchema.SOURCE_FILE_EXTENSION)
         .initTable(HadoopFSUtils.getStorageConf(jsc.hadoopConfiguration()), temp.resolve("table").toUri().toString());
     HoodieWriteConfig config = HoodieWriteConfig.newBuilder().withPath(temp.resolve("table").toUri().toString())

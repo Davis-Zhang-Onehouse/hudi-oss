@@ -56,13 +56,12 @@ import scala.Option;
  * out-of-line file in memory.
  * <ul>
  *   <li>{@code INLINE}: a stream over {@code blob.data};</li>
- *   <li>{@code OUT_OF_LINE}: the object at {@code reference.external_path} when it is absolute (has a scheme or starts with '/');
+ *   <li>{@code OUT_OF_LINE}: the object at {@code reference.external_path} when it is absolute (has a URI scheme);
  *       restricted to {@code [offset, offset + length)} when those are set. A relative path is resolved only by a source built
  *       with a table base path (compute reading the embedding table's {@code prepared_image}, which the input store writes into
- *       the table's own {@code .hoodie/.blob} folder): a managed reference ({@code managed} true, or null, which this source
- *       counts as managed) resolves against the base as {@code read_blob()} resolves a managed one
+ *       the table's own {@code .hoodie/.blob} folder): every scheme-less reference resolves against the base, regardless of {@code managed}, as {@code read_blob()} does
  *       ({@link BatchedBlobReader#resolveReferencePath}) and must stay inside it;
- *       an unmanaged ({@code managed=false}) relative one has no defined base and is refused. A source without a base path (prep
+ *       writers require managed=true for scheme-less paths and managed=false for URIs. A source without a base path (prep
  *       reading source objects where the source announced them) refuses every relative path.</li>
  * </ul>
  * An absolute path is opened on the storage for its own {@code scheme://authority} (one storage per scheme+authority, cached); a
@@ -107,7 +106,7 @@ public class BlobBytesSource implements Serializable {
   }
 
   /**
-   * A source that resolves a managed relative path against {@code tableBasePath} and tries each open once
+   * A source that resolves a scheme-less path against {@code tableBasePath} and tries each open once
    * ({@link TransientRetry#NONE}).
    */
   public BlobBytesSource(String tableBasePath, StorageConfiguration<?> storageConf) {
@@ -115,7 +114,7 @@ public class BlobBytesSource implements Serializable {
   }
 
   /**
-   * @param tableBasePath the base path of the table whose managed references are relative to it, or null for a source of
+   * @param tableBasePath the base path of the table whose scheme-less references are relative to it, or null for a source of
    *     absolute paths only
    * @param openRetry the in-commit retry of a transient failure to open an OUT_OF_LINE blob
    */
@@ -183,7 +182,7 @@ public class BlobBytesSource implements Serializable {
    * @param blob the {@code blob} column value (a struct with fields type, data, reference)
    * @throws BlobReferenceException for a malformed row or reference: a null blob, INLINE without data, an unknown type,
    *     OUT_OF_LINE without a reference or with an empty or unparseable path, a relative one this source does not resolve
-   *     (no table base path, {@code managed=false}, or escaping the base), a range
+   *     (no table base path or escaping the base), a range
    *     {@code read_blob()} refuses (offset and length not both set or both null, or either negative; checked before any
    *     storage access), or a reference whose storage cannot be built for its own fault (an unserved scheme, an invalid or
    *     missing required authority, an out-of-range port)
@@ -345,7 +344,6 @@ public class BlobBytesSource implements Serializable {
       throw new BlobReferenceException("OUT_OF_LINE blob has null reference");
     }
     String externalPath = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_PATH);
-    checkUnmanagedIsAbsolute(reference, externalPath);
     StoragePath path = resolve(externalPath);
     Long offset = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_OFFSET);
     Long length = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_LENGTH);
@@ -487,30 +485,17 @@ public class BlobBytesSource implements Serializable {
           + "reads an object only by its absolute path");
     }
     try {
-      return new StoragePath(BatchedBlobReader.resolveReferencePath(externalPath, true, Option.apply(tableBasePath)));
+      return new StoragePath(BatchedBlobReader.resolveReferencePath(externalPath, true, Option.apply(tableBasePath), Option.apply("1")));
     } catch (IllegalArgumentException e) {
       throw new BlobReferenceException(e.getMessage(), e);
     }
   }
 
-  /**
-   * With a table base path, an unmanaged reference points at a file outside the table and must carry an absolute path: a relative
-   * one has no defined base, so it is refused rather than resolved against the table ({@code read_blob()} would resolve it against
-   * its working directory). Without a base path, {@link #resolve} refuses every relative path.
-   */
-  private void checkUnmanagedIsAbsolute(Row reference, String externalPath) throws IOException {
-    Boolean managed = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_IS_MANAGED);
-    if (tableBasePath != null && Boolean.FALSE.equals(managed) && externalPath != null && !externalPath.isEmpty() && !isAbsolute(externalPath)) {
-      throw new BlobReferenceException("OUT_OF_LINE blob with managed=false has a relative external_path '" + externalPath
-          + "'; an unmanaged reference must be absolute");
-    }
-  }
-
-  /** A scheme or a leading slash makes a path absolute, as {@code read_blob()} tests it. */
+  /** A URI scheme makes a path absolute; a scheme-less path belongs to its table. */
   private static boolean isAbsolute(String externalPath) throws BlobReferenceException {
     try {
       URI uri = new StoragePath(externalPath).toUri();
-      return uri.getScheme() != null || uri.getPath().startsWith(StoragePath.SEPARATOR);
+      return uri.getScheme() != null;
     } catch (IllegalArgumentException e) {
       throw new BlobReferenceException("Invalid blob path " + externalPath, e);
     }

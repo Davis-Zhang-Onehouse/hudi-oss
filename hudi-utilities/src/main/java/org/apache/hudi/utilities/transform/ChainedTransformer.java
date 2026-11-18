@@ -21,6 +21,7 @@ package org.apache.hudi.utilities.transform;
 import org.apache.hudi.HoodieSchemaConversionUtils;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.common.util.StringUtils;
@@ -94,6 +95,21 @@ public class ChainedTransformer implements InstantAwareTransformer {
     if (!(transformers.stream().allMatch(TransformerInfo::hasIdentifier)
         || transformers.stream().noneMatch(TransformerInfo::hasIdentifier))) {
       throw new HoodieTransformPlanException("Either all transformers should have identifier or none should");
+    }
+  }
+
+  @Override
+  public void onPreCommit(JavaSparkContext jsc, SparkSession sparkSession, TypedProperties properties, String instantTime,
+                          HoodieTableMetaClient table) {
+    for (TransformerInfo info : transformers) {
+      info.getTransformer().onPreCommit(jsc, sparkSession, info.getProperties(properties, transformers), instantTime, table);
+    }
+  }
+
+  @Override
+  public void onCommit(JavaSparkContext jsc, SparkSession sparkSession, TypedProperties properties, String instantTime) {
+    for (TransformerInfo info : transformers) {
+      info.getTransformer().onCommit(jsc, sparkSession, info.getProperties(properties, transformers), instantTime);
     }
   }
 

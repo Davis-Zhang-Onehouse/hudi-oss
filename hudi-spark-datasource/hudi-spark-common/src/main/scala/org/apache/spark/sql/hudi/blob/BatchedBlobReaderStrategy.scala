@@ -57,7 +57,8 @@ case class BatchedBlobReaderStrategy(sparkSession: SparkSession) extends SparkSt
         lookaheadSize,
         read.blobAttr,
         tableBasePath,
-        read.output
+        read.output,
+        BlobTableBasePath.resolveLayoutVersion(child, read.blobAttr)
       ) :: Nil
 
     case _ => Nil

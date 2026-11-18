@@ -25,6 +25,7 @@ import org.apache.hudi.common.table.marker.MarkerType;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties;
 import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 
 import org.apache.hadoop.conf.Configuration;
@@ -52,7 +53,8 @@ public class TestPreparedInputsWriterSetup {
   @Test
   public void directMarkersAreRefusedOnTheDriver() throws IOException {
     String base = temp.resolve("embedding").toUri().toString();
-    HoodieTableMetaClient.newTableBuilder().setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
+    HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
         .initTable(HadoopFSUtils.getStorageConf(new Configuration()), base);
     TypedProperties props = new TypedProperties();
     props.setProperty(HoodieWriteConfig.MARKERS_TYPE.key(), MarkerType.DIRECT.name());

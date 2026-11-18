@@ -19,6 +19,7 @@
 package org.apache.hudi.utilities.unstructured.storage;
 
 import org.apache.hudi.storage.StorageConfiguration;
+import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.StorageSchemes;
 
 import org.apache.hadoop.conf.Configuration;
@@ -34,8 +35,8 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * The rules that tell a storage reference's own fault from the platform's, used by the blob reader
- * ({@code BlobBytesSource}). A caller keeps its own classification precedence and exception mapping; these rules only answer:
+ * Write-reference ownership and the rules that tell a storage reference's own fault from the platform's, used by the blob reader
+ * ({@code BlobBytesSource}). A caller keeps its own classification precedence and exception mapping; the read rules only answer:
  * is a scheme served, and is a construction failure the reference's own (an invalid authority, a missing required authority, an
  * out-of-range port).
  */
@@ -52,6 +53,24 @@ public final class StorageReferenceRules {
   private static final int MAX_PORT = 65535;
 
   private StorageReferenceRules() {
+  }
+
+  /**
+   * Enforces layout-one ownership when writing a completed blob reference. A scheme-less path (including a leading slash)
+   * belongs to its table and requires {@code managed=true}; a URI with a scheme names user-owned bytes and requires
+   * {@code managed=false}. A pending copy's empty path is internal staging state, never a completed reference.
+   */
+  public static void validateWriteOwnership(String externalPath, boolean managed) {
+    if (externalPath == null || externalPath.isEmpty()) {
+      throw new IllegalArgumentException("A written blob reference must have a non-empty external_path");
+    }
+    boolean hasScheme = new StoragePath(externalPath).toUri().getScheme() != null;
+    if (hasScheme && managed) {
+      throw new IllegalArgumentException("Blob external_path '" + externalPath + "' has a URI scheme and requires managed=false");
+    }
+    if (!hasScheme && !managed) {
+      throw new IllegalArgumentException("Blob external_path '" + externalPath + "' is table-relative and requires managed=true");
+    }
   }
 
   /**

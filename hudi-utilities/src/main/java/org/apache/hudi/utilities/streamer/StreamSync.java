@@ -41,6 +41,7 @@ import org.apache.hudi.common.config.RecordMergeMode;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.config.metrics.HoodieMetricsConfig;
 import org.apache.hudi.common.model.DefaultHoodieRecordPayload;
+import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecord.HoodieRecordType;
@@ -150,6 +151,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -527,7 +529,8 @@ public class StreamSync implements Serializable, Closeable {
         DataSourceWriteOptions.PARTITION_EXTRACTOR_CLASS().key(),
         props.getString(HoodieSyncConfig.META_SYNC_PARTITION_EXTRACTOR_CLASS.key(),
             HoodieSyncConfig.META_SYNC_PARTITION_EXTRACTOR_CLASS.defaultValue()));
-    return tableBuilder.setTableType(cfg.tableType)
+    return tableBuilder.setAdditionalProperties(SourceContracts.of(cfg.sourceClassName, props).tableProperties())
+        .setTableType(cfg.tableType)
         .setTableName(cfg.targetTableName)
         .setArchiveLogFolder(TIMELINE_HISTORY_PATH.defaultValue())
         .setPayloadClassName(payloadClass)
@@ -1162,7 +1165,9 @@ public class StreamSync implements Serializable, Closeable {
 
         // Step 5: Commit. No WriteStatusValidator callback — all checks are above.
         success = writeClient.commit(instantTime, writeStatusRDD, Option.of(checkpointCommitMetadata),
-            commitActionType, partitionToReplacedFileIds, Option.empty());
+            commitActionType, partitionToReplacedFileIds,
+            transformer.<BiConsumer<HoodieTableMetaClient, HoodieCommitMetadata>>map(member -> (table, metadata) -> member.onPreCommit(hoodieSparkContext.jsc(), sparkSession,
+                TypedProperties.copy(writeClient.getConfig().getProps()), instantTime, table)));
       } finally {
         if (shouldUnpersist) {
           writeStatusRDD.unpersist();
@@ -1173,6 +1178,12 @@ public class StreamSync implements Serializable, Closeable {
         log.info("Commit {} successful!", instantTime);
         this.formatAdapter.getSource().onCommit(inputBatch.getCheckpointForNextBatch() != null
             ? inputBatch.getCheckpointForNextBatch().getCheckpointKey() : null);
+        // A successful return can also mean that an empty commit was skipped. Notify only a durable completed instant.
+        if (transformer.isPresent()
+            && CompletedWrite.exists(metaClient, instantTime)) {
+          transformer.get().onCommit(hoodieSparkContext.jsc(), sparkSession,
+              TypedProperties.copy(writeClient.getConfig().getProps()), instantTime);
+        }
         // Schedule compaction if needed
         if (cfg.isAsyncCompactionEnabled()) {
           scheduledCompactionInstant = writeClient.scheduleCompaction(Option.empty());

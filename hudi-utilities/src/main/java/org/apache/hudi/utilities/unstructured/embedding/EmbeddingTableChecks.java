@@ -28,6 +28,9 @@ import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableProperties;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableVersion;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PrepLogicVersions;
 
 import java.io.IOException;
 
@@ -86,13 +89,21 @@ public final class EmbeddingTableChecks {
     if (!tableExists(basePath, storageConf)) {
       return;
     }
-    HoodieTableVersion tableVersion = HoodieTableMetaClient.builder().setConf(storageConf.newInstance())
-        .setBasePath(basePath).build().getTableConfig().getTableVersion();
+    HoodieTableConfig table = HoodieTableMetaClient.builder().setConf(storageConf.newInstance())
+        .setBasePath(basePath).build().getTableConfig();
+    HoodieTableVersion tableVersion = table.getTableVersion();
     if (!tableVersion.greaterThanOrEquals(MIN_TABLE_VERSION)) {
       throw new EmbeddingTableVersionException("Embedding table " + basePath + " is at "
           + HoodieTableConfig.VERSION.key() + "=" + tableVersion.versionCode() + " but the embedding write path requires "
           + "table version " + MIN_TABLE_VERSION.versionCode() + " or above; build a NEW embedding table. Nothing was "
           + "written");
     }
+    UnstructuredTableProperties.builder("Embedding prep")
+        .requireTableProperty(UnstructuredTableVersion.BLOB_LAYOUT_VERSION, "1")
+        .requireTableProperty(UnstructuredTableVersion.KIND, "embedding")
+        .requireTableProperty(UnstructuredTableVersion.SCHEMA_VERSION, "1")
+        .requireTableProperty(UnstructuredTableVersion.KEY_ENCODING_VERSION, "1")
+        .build().checkTable(basePath, table);
+    PrepLogicVersions.from(config.getProps()).checkTable(basePath, table);
   }
 }

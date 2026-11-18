@@ -22,6 +22,7 @@ import org.apache.hudi.ApiMaturityLevel;
 import org.apache.hudi.PublicAPIClass;
 import org.apache.hudi.PublicAPIMethod;
 import org.apache.hudi.common.config.TypedProperties;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
 
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Dataset;
@@ -46,6 +47,20 @@ public interface Transformer {
    */
   @PublicAPIMethod(maturity = ApiMaturityLevel.STABLE)
   Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties);
+
+  /**
+   * Invoked on the driver after a durable table commit and the source's commit callback. The default performs no action.
+   * A failure stops post-commit processing; the completed table commit is retained.
+   */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  default void onCommit(JavaSparkContext jsc, SparkSession sparkSession, TypedProperties properties, String instantTime) {
+  }
+
+  /** Driver validation inside the data-table commit transaction. Implementations must not reacquire the table lock. */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  default void onPreCommit(JavaSparkContext jsc, SparkSession sparkSession, TypedProperties properties, String instantTime,
+                           HoodieTableMetaClient table) {
+  }
 
   @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
   default StructType transformedSchema(JavaSparkContext jsc, SparkSession sparkSession, StructType incomingStruct, TypedProperties properties) {

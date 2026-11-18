@@ -28,6 +28,7 @@ import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.utilities.config.CloudSourceConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
@@ -150,7 +151,8 @@ public class TestPreprocessingIterator {
   public void reset() throws IOException {
     // an existing (empty) embedding table
     embeddingTable = temp.resolve("embedding").toUri().toString();
-    HoodieTableMetaClient.newTableBuilder().setTableType(HoodieTableType.MERGE_ON_READ).setTableName("embedding")
+    HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
+        .setTableType(HoodieTableType.MERGE_ON_READ).setTableName("embedding")
         .setRecordKeyFields(String.join(",", EmbeddingTableSchema.KEY_COLUMNS)).initTable(HadoopFSUtils.getStorageConf(new Configuration()), embeddingTable);
     PipeSplitPreprocessor.OPENED.set(0);
     PipeSplitPreprocessor.CLOSED.set(0);
@@ -197,6 +199,35 @@ public class TestPreprocessingIterator {
       rows.add(iterator.next());
     }
     return rows;
+  }
+
+  @Test
+  public void executorMustMatchDriverPinsBeforeOpeningAFile() {
+    TypedProperties matching = props();
+    PrepLogicVersions driver = PrepLogicVersions.from(matching);
+    for (String kind : Arrays.asList("text", "image", "video", "audio")) {
+      matching.setProperty("hoodie.table.embedding.prep." + kind + ".logic.version", driver.version(kind));
+    }
+    assertEquals(1, drain(iterator(matching, blobRow("control", "txt", "alpha"))).size());
+    int opened = PipeSplitPreprocessor.OPENED.get();
+    TypedProperties changed = TypedProperties.copy(matching);
+    changed.setProperty("hoodie.table.embedding.prep.text.logic.version", "different-driver-runtime");
+    assertThrows(IllegalArgumentException.class, () -> iterator(changed, blobRow("refused", "txt", "beta")));
+    assertEquals(opened, PipeSplitPreprocessor.OPENED.get(), "the refused executor opened no source file");
+    TypedProperties incomplete = TypedProperties.copy(matching);
+    incomplete.remove("hoodie.table.embedding.prep.audio.logic.version");
+    assertThrows(IllegalArgumentException.class, () -> iterator(incomplete, blobRow("missing", "txt", "gamma")));
+  }
+
+  @Test
+  public void textRowsCarryOnePrepLogicVersion() {
+    List<Row> rows = drain(iterator(props(), blobRow("sha-a", "txt", "alpha beta")));
+    assertEquals(1, rows.size());
+    Map<String, String> aux = rows.get(0).getJavaMap(10);
+    assertTrue(aux.containsKey("prep_logic_version"));
+    assertFalse(aux.containsKey("input_logic"));
+    assertFalse(aux.containsKey("video_logic"));
+    assertFalse(aux.containsKey("audio_logic"));
   }
 
   @Test

@@ -21,12 +21,18 @@ package org.apache.hudi.utilities.sources;
 import org.apache.hudi.common.config.TypedProperties;
 
 import java.util.List;
+import java.util.Properties;
 
 /** Resource-free preparation of a source's job before the streamer builds its consumers. */
 public interface SourceContract {
 
   /** Returns the job's settings, rejecting conflicts without changing the caller's properties. */
   TypedProperties prepareJob(TypedProperties props);
+
+  /** Opaque properties to persist when this source creates a new table. */
+  default Properties tableProperties() {
+    return new Properties();
+  }
 
   /** Returns the transformers to run, including any the source requires. */
   default List<String> transformerChain(List<String> configured) {

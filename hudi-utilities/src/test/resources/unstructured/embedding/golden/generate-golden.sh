@@ -34,7 +34,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 WT="$SCRATCH/golden-wt"
 OUT="$SCRATCH/golden-out"
 export JAVA_HOME="${JAVA_HOME:?set JAVA_HOME to a Java 11 JDK}"
-rm -rf "$OUT"
+rm -rf "${SCRATCH:?}/golden-out"
 mkdir -p "$SCRATCH" "$OUT"
 git -C "$REPO" worktree remove --force "$WT" 2>/dev/null || true
 git -C "$REPO" worktree add --detach "$WT" "$GENERATOR_COMMIT"
@@ -78,7 +78,14 @@ public class EmbeddingGoldenGenerator extends SparkClientFunctionalTestHarness {
     List<FixtureFile> files = new ArrayList<>();
     for (Map.Entry<String, byte[]> pdf : pdfs.entrySet()) {
       Files.write(corpus.resolve(pdf.getKey()), pdf.getValue());
-      files.add(new FixtureFile("s3a://parity/" + pdf.getKey(), pdf.getValue()));
+      // Key encoding v1: scheme-free UTF-8 bucket/key, with no path normalization.
+      byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+          .digest(("parity/" + pdf.getKey()).getBytes(StandardCharsets.UTF_8));
+      StringBuilder hex = new StringBuilder();
+      for (byte value : digest) {
+        hex.append(String.format("%02x", value));
+      }
+      files.add(new FixtureFile("s3a://parity/" + pdf.getKey(), pdf.getValue(), hex.substring(0, 32)));
     }
     String blob = basePath() + "/blob";
     String table = basePath() + "/emb";

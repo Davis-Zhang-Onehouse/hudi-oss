@@ -28,6 +28,7 @@ import org.apache.hudi.utilities.unstructured.embedding.image.ImageContentTypes;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.storage.OutOfLineWritePool;
 import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter;
+import org.apache.hudi.utilities.unstructured.storage.StorageReferenceRules;
 
 import org.apache.spark.SparkEnv;
 import org.apache.spark.TaskContext;
@@ -210,6 +211,7 @@ public final class PreparedInputs implements Serializable, Closeable {
   }
 
   private static Row outOfLine(String externalPath, long sizeBytes) {
+    StorageReferenceRules.validateWriteOwnership(externalPath, true);
     Row reference = new GenericRowWithSchema(new Object[] {externalPath, 0L, sizeBytes, true}, REFERENCE_STRUCT);
     return new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.OUT_OF_LINE, null, reference}, BLOB_STRUCT);
   }

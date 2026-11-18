@@ -35,6 +35,7 @@ import org.apache.hudi.utilities.unstructured.embedding.balance.BalancedRows;
 import org.apache.hudi.utilities.unstructured.embedding.balance.RowBalancer;
 import org.apache.hudi.utilities.unstructured.embedding.input.PayloadDestination;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PrepCounters;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PrepLogicVersions;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PrepSideOutput;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessingIterator;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
@@ -269,13 +270,16 @@ final class PrepRound {
    * only the table has is NULL. The last output column is {@value #CORRUPT_RECORD}.
    */
   private static int[] layoutOf(StructType outputSchema, StructType iteratorSchema) {
+    EmbeddingTableSchema.checkBaseColumns(outputSchema);
     List<String> iteratorColumns = Arrays.asList(iteratorSchema.fieldNames());
     return Arrays.stream(outputSchema.fieldNames()).mapToInt(iteratorColumns::indexOf).toArray();
   }
 
   private static FlatMapFunction<Iterator<Row>, Row> preprocessFunction(
-      EmbeddingTableConfig config, String instant, StorageConfiguration<?> storageConf, PayloadDestination destination,
+      EmbeddingTableConfig driverConfig, String instant, StorageConfiguration<?> storageConf, PayloadDestination destination,
       PrepCounters counters, int[] layout, StructType outputSchema, long prefetchMaxBytes) {
+    EmbeddingTableConfig config = EmbeddingTableConfig.from(PrepLogicVersions.from(driverConfig.getProps())
+        .executionProperties(driverConfig.getProps()));
     return blobRows -> {
       Deque<PrepSideOutput> sideOutputs = new ArrayDeque<>();
       PreprocessingIterator rows = new PreprocessingIterator(blobRows, config, instant,

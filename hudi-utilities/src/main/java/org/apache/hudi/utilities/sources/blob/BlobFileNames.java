@@ -50,10 +50,30 @@ public final class BlobFileNames {
   private BlobFileNames() {
   }
 
-  /** First 32 lowercase hex characters of SHA-256 over the UTF-8 source file path. */
-  public static String sourcePathSha(String canonicalSourcePath) {
-    byte[] digest = sha256().digest(canonicalSourcePath.getBytes(StandardCharsets.UTF_8));
+  /**
+   * Key encoding version 1: first 32 lowercase SHA-256 hex characters of UTF-8 {@code bucket/key} for cloud objects.
+   * S3, S3A, S3N and GS prefixes are removed without decoding or normalizing the bucket/key text. Other paths are hashed
+   * as supplied. Blob and embedding rows share this encoding; the source path used to open bytes is unchanged.
+   */
+  public static String sourcePathSha(String sourcePath) {
+    byte[] digest = sha256().digest(keyEncodingInput(sourcePath).getBytes(StandardCharsets.UTF_8));
     return toHex(digest).substring(0, SOURCE_PATH_SHA_HEX_LENGTH);
+  }
+
+  private static String keyEncodingInput(String sourcePath) {
+    int separator = sourcePath.indexOf("://");
+    if (separator < 0) {
+      return sourcePath;
+    }
+    switch (sourcePath.substring(0, separator).toLowerCase(Locale.ROOT)) {
+      case "s3":
+      case "s3a":
+      case "s3n":
+      case "gs":
+        return sourcePath.substring(separator + 3);
+      default:
+        return sourcePath;
+    }
   }
 
   /** Last path segment of a path or URI string. */

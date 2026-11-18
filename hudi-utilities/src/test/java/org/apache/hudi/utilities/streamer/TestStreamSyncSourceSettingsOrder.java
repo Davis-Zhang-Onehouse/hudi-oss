@@ -57,6 +57,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Path;
 import java.util.Collections;
@@ -142,6 +145,7 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   private void createTableWithKey(String recordKey) throws Exception {
     HoodieTableMetaClient.newTableBuilder().setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("settings_order")
         .setRecordKeyFields(recordKey).setKeyGeneratorClassProp("org.apache.hudi.keygen.NonpartitionedKeyGenerator")
+        .setAdditionalProperties(new org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract(jobProps()).tableProperties())
         .initTable(HadoopFSUtils.getStorageConf(jsc.hadoopConfiguration()), table());
   }
 
@@ -152,6 +156,51 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
       assertEquals("true", sync.getProps().getString(DECLARED_ONLY));
     }
     assertEquals(REQUIRED_KEY, tableConfig().getString(HoodieTableConfig.RECORDKEY_FIELDS));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"blob", "embedding"})
+  void streamCreationPersistsKeyEncodingAndTablePins(String mode) throws Exception {
+    TypedProperties props = jobProps();
+    props.setProperty(UnstructuredSourceConfig.MODE.key(), mode);
+    if ("embedding".equals(mode)) {
+      props.setProperty("hoodie.unstructured.embedding.mode", "prep_only");
+    }
+    try (StreamSync ignored = streamSync(props)) {
+      // Construction creates the table before it builds the source; it fetches no input.
+    }
+    HoodieTableConfig stored = tableConfig();
+    assertEquals("1", stored.getProps().getProperty("hoodie.table.unstructured.key.encoding.version"));
+    assertEquals("1", stored.getProps().getProperty("hoodie.table.blob.layout.version"));
+    assertEquals(mode, stored.getProps().getProperty("hoodie.table.unstructured.kind"));
+    assertEquals("1", stored.getProps().getProperty("hoodie.table.unstructured.schema.version"));
+  }
+
+  @ParameterizedTest
+  @CsvSource({"blob,missing", "blob,2", "embedding,missing", "embedding,2"})
+  void streamRefusesKeyEncodingBeforeConstructingSource(String mode, String version) throws Exception {
+    TypedProperties props = jobProps();
+    props.setProperty(UnstructuredSourceConfig.MODE.key(), mode);
+    if ("embedding".equals(mode)) {
+      props.setProperty("hoodie.unstructured.embedding.mode", "prep_only");
+    }
+    try (StreamSync ignored = streamSync(props)) {
+      // Establish a table carrying this build's other valid pins.
+    }
+    ContractTestSource.BUILT.set(0);
+    String key = "hoodie.table.unstructured.key.encoding.version";
+    org.apache.hudi.common.table.HoodieTableMetaClient meta = org.apache.hudi.common.table.HoodieTableMetaClient.builder()
+        .setBasePath(table()).setConf(HadoopFSUtils.getStorageConf(jsc.hadoopConfiguration())).build();
+    if ("missing".equals(version)) {
+      HoodieTableConfig.delete(meta.getStorage(), meta.getMetaPath(), Collections.singleton(key));
+    } else {
+      java.util.Properties changed = new java.util.Properties();
+      changed.setProperty(key, version);
+      HoodieTableConfig.update(meta.getStorage(), meta.getMetaPath(), changed);
+    }
+    IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> streamSync(props));
+    assertTrue(error.getMessage().contains(key + "=1"), error.getMessage());
+    assertEquals(0, ContractTestSource.BUILT.get());
   }
 
   /** The source is built from the merged properties, so it sees the settings the writer uses; the job's own are not changed. */

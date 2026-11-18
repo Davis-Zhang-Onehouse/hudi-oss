@@ -21,6 +21,7 @@ package org.apache.spark.sql.hudi.blob
 
 import org.apache.hudi.blob.BlobTestHelpers.blobMetadata
 import org.apache.hudi.common.schema.HoodieSchema
+import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient}
 import org.apache.hudi.storage.StoragePath
 import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration
 import org.apache.hudi.testutils.HoodieClientTestBase
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Assertions._
 
 import java.io.File
 import java.nio.file.Files
+import java.util.Properties
 
 /**
  * The resolution rule for blob reference paths and the DataFrame API entry point that
@@ -44,19 +46,27 @@ class TestBatchedBlobReaderBasePath extends HoodieClientTestBase {
 
   private def assertResolves(expected: String, externalPath: String, managed: Boolean, base: Option[String]): Unit =
     assertEquals(new StoragePath(expected),
-      new StoragePath(BatchedBlobReader.resolveReferencePath(externalPath, managed, base)))
+      new StoragePath(BatchedBlobReader.resolveReferencePath(externalPath, managed, base, Some("1"))))
+
+  @Test
+  def testLegacyPathsPreserveApacheResolution(): Unit = {
+    assertEquals("/abs/key.pdf", BatchedBlobReader.resolveReferencePath("/abs/key.pdf", managed = true, Some("/tmp/t")))
+    assertEquals("rel/key.pdf", BatchedBlobReader.resolveReferencePath("rel/key.pdf", managed = false, Some("/tmp/t")))
+    assertEquals("rel/key.pdf", BatchedBlobReader.resolveReferencePath("rel/key.pdf", managed = false, None))
+  }
 
   @Test
   def testAbsoluteReferencesAreOpenedAsWritten(): Unit = {
     assertResolves("s3a://bucket/key.pdf", "s3a://bucket/key.pdf", managed = true, Some("/tmp/t"))
-    assertResolves("/abs/key.pdf", "/abs/key.pdf", managed = true, Some("/tmp/t"))
+    assertResolves("/tmp/t/abs/key.pdf", "/abs/key.pdf", managed = true, Some("/tmp/t"))
     assertResolves("file:/abs/key.pdf", "file:/abs/key.pdf", managed = false, None)
   }
 
   @Test
-  def testUnmanagedRelativeReferenceIsOpenedAsWritten(): Unit = {
-    assertEquals("rel/key.pdf", BatchedBlobReader.resolveReferencePath("rel/key.pdf", managed = false, Some("/tmp/t")))
-    assertEquals("rel/key.pdf", BatchedBlobReader.resolveReferencePath("rel/key.pdf", managed = false, None))
+  def testUnmanagedRelativeReferenceResolvesAgainstTheTable(): Unit = {
+    assertResolves("/tmp/t/rel/key.pdf", "rel/key.pdf", managed = false, Some("/tmp/t"))
+    assertThrows(classOf[IllegalArgumentException],
+      () => BatchedBlobReader.resolveReferencePath("rel/key.pdf", managed = false, None, Some("1")))
   }
 
   @Test
@@ -106,10 +116,67 @@ class TestBatchedBlobReaderBasePath extends HoodieClientTestBase {
 
     val result = BatchedBlobReader.readBatched(df,
       new HadoopStorageConfiguration(sparkSession.sparkContext.hadoopConfiguration),
-      columnName = Some("blob"), tableBasePath = Some(base.getAbsolutePath))
+      columnName = Some("blob"), tableBasePath = Some(base.getAbsolutePath), tableLayoutVersion = Some("1"))
       .collect().map(r => r.getString(0) -> r.getAs[Array[Byte]]("blob")).toMap
 
     assertArrayEquals(first, result("a"))
     assertArrayEquals(second, result("b"))
   }
+
+  @Test
+  def testUnknownLayoutDoesNotReinterpretSchemeLessPaths(): Unit = {
+    Seq("2", "mixed").foreach { version =>
+      assertThrows(classOf[IllegalArgumentException],
+        () => BatchedBlobReader.resolveReferencePath("/abs/key.pdf", managed = false, Some("/tmp/t"), Some(version)))
+    }
+  }
+
+  /** Physical planning must carry the table version, while an unversioned table keeps absolute references. */
+  @Test
+  def testSqlResolvesPathsUsingTheProducingTableVersion(): Unit = {
+    val conf = new HadoopStorageConfiguration(sparkSession.sparkContext.hadoopConfiguration)
+    Seq(false, true).foreach { versioned =>
+      val table = new File(tempDir.toFile, s"layout_$versioned")
+      val external = new File(tempDir.toFile, s"external_$versioned.bin")
+      val payload = Array[Byte](11, 23, 47)
+      Files.write(external.toPath, if (versioned) Array[Byte](99) else payload)
+      val reference = external.getAbsolutePath
+      val blob = Row(HoodieSchema.Blob.OUT_OF_LINE, null, Row(reference, null, null, false))
+      val schema = StructType(Seq(
+        StructField("fid", StringType, nullable = false),
+        StructField("blob", BlobType().asInstanceOf[StructType], nullable = true, blobMetadata)))
+      val df = sparkSession.createDataFrame(sparkSession.sparkContext.parallelize(Seq(Row("a", blob)), 1), schema)
+      df.write.format("hudi")
+        .option("hoodie.table.name", s"layout_$versioned")
+        .option("hoodie.datasource.write.recordkey.field", "fid")
+        .option("hoodie.datasource.write.operation", "bulk_insert")
+        .mode("overwrite").save(table.getAbsolutePath)
+      if (versioned) {
+        val stored = new File(table, reference.stripPrefix("/"))
+        stored.getParentFile.mkdirs()
+        Files.write(stored.toPath, payload)
+        val meta = HoodieTableMetaClient.builder().setConf(conf).setBasePath(table.getAbsolutePath).build()
+        val properties = new Properties()
+        properties.setProperty("hoodie.table.blob.layout.version", "1")
+        HoodieTableConfig.update(meta.getStorage, meta.getMetaPath, properties)
+      }
+      val query = sparkSession.read.format("hudi").load(table.getAbsolutePath)
+        .selectExpr("fid", "read_blob(blob) AS data")
+      val rows = query.collect()
+      assertEquals(1, rows.length)
+      assertArrayEquals(payload, rows.head.getAs[Array[Byte]]("data"), s"versioned=$versioned")
+      if (versioned) {
+        val union = sparkSession.read.format("hudi").load(table.getAbsolutePath).select("fid", "blob").unionByName(df)
+        val resolvedBranches = union.selectExpr("fid", "read_blob(blob) AS data").collect()
+        assertEquals(Seq(1, 3), resolvedBranches.map(_.getAs[Array[Byte]]("data").length).sorted.toSeq)
+        // The non-deterministic expression keeps the projection above the union, where the base is ambiguous.
+        val ambiguous = union.selectExpr("fid", "rand() AS nonce", "read_blob(blob) AS data")
+        val error = assertThrows(classOf[Exception], () => {
+          ambiguous.collect()
+        })
+        assertTrue(error.toString.contains("ambiguous blob layout version"), error.toString)
+      }
+    }
+  }
+
 }
