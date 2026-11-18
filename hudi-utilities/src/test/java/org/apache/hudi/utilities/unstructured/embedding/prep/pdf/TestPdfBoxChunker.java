@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -339,14 +340,18 @@ public class TestPdfBoxChunker {
 
   // ------------------------------------------------------------------ staging and loading
 
-  @Test
-  public void oversizeDeclaredRejectedWithoutRead() {
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void oversizeDeclaredRejectedWithoutRead(boolean explicitCap) {
     AtomicInteger opened = new AtomicInteger();
     List<PdfChunk> chunks = new ArrayList<>();
+    // Both the default and an explicit limit refuse a larger declared size before any read.
+    PdfChunkerConfig capped = explicitCap
+        ? config(BPE, EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "21474836480") : defaults();
     try (PdfChunkIterator iterator = chunker().open(() -> {
       opened.incrementAndGet();
       throw new IOException("must not be read");
-    }, new PdfFileMeta("big", "big.pdf", 20L * 1024 * 1024 * 1024 + 1), defaults(), warnings::add)) {
+    }, new PdfFileMeta("big", "big.pdf", 20L * 1024 * 1024 * 1024 + 1), capped, warnings::add)) {
       while (iterator.hasNext()) {
         chunks.add(iterator.next());
       }
@@ -354,6 +359,23 @@ public class TestPdfBoxChunker {
     assertEquals(0, opened.get());
     assertEquals(PdfChunk.Status.FAILED, chunks.get(0).status());
     assertTrue(chunks.get(0).statusDetail().startsWith("INPUT_LIMIT: "));
+  }
+
+  @Test
+  public void largeDeclaredSizeIsPreparedByDefault() throws IOException {
+    // 1 GiB declared is below the default 20 GiB cap.
+    byte[] pdf = textPdf(3, 30);
+    List<PdfChunk> chunks = new ArrayList<>();
+    try (PdfChunkIterator iterator = chunker().open(() -> new ByteArrayInputStream(pdf), new PdfFileMeta("big", "big.pdf", 1L << 30),
+        defaults(), warnings::add)) {
+      while (iterator.hasNext()) {
+        chunks.add(iterator.next());
+      }
+    }
+    assertFalse(chunks.isEmpty());
+    for (PdfChunk chunk : chunks) {
+      assertEquals(PdfChunk.Status.OK, chunk.status(), chunk.statusDetail());
+    }
   }
 
   @Test

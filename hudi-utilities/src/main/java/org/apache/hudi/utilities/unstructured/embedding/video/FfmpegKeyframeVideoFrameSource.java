@@ -23,6 +23,7 @@ import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageContentTypes;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageRefusedException;
+import org.apache.hudi.utilities.unstructured.embedding.prep.FfmpegLibraryVersions;
 import org.apache.hudi.utilities.unstructured.embedding.prep.video.ExtractedFrame;
 import org.apache.hudi.utilities.unstructured.embedding.prep.video.FrameExtractionStrategy;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
@@ -618,7 +619,10 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
     }
   }
 
-  /** FFmpeg's own logging is quiet (errors only) and set once per JVM, before the first grabber. */
+  /**
+   * Once per JVM, before the first grabber: the FFmpeg jars must be the versions the prep logic version names (else the task
+   * fails, {@link FfmpegLibraryVersions#requireDeclared}), and FFmpeg's own logging is quiet (errors only).
+   */
   private static final class Natives {
     private static volatile boolean initialized;
 
@@ -626,6 +630,7 @@ public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
       if (!initialized) {
         synchronized (Natives.class) {
           if (!initialized) {
+            FfmpegLibraryVersions.requireDeclared(Natives.class.getClassLoader());
             avutil.av_log_set_level(avutil.AV_LOG_ERROR);
             initialized = true;
           }

@@ -56,7 +56,7 @@ import java.util.NoSuchElementException;
 public class PdfFilePreprocessor implements FilePreprocessor {
 
   /** Bump on ANY change to the records this preprocessor emits for the same bytes and config. */
-  public static final int IMPLEMENTATION_VERSION = 4;  // 4: durable skipped-stream and decode-loss metadata
+  public static final int IMPLEMENTATION_VERSION = 5;  // 5: bounded PDFBox tokens; 4: durable decode loss
   public static final String NAME_PREFIX = "pdf-chunker/";
   public static final String AUX_PAGE_START = "page_start";
   public static final String AUX_PAGE_END = "page_end";

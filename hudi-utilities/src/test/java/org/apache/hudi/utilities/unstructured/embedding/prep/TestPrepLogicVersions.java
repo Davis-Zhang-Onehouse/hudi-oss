@@ -28,10 +28,12 @@ import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableVersion;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableChecks;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioConfigKeys;
+import org.apache.hudi.utilities.unstructured.embedding.audio.whisper.WhisperConfig;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.net.URL;
@@ -45,8 +47,11 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class TestPrepLogicVersions {
@@ -87,31 +92,10 @@ class TestPrepLogicVersions {
       out.write(("version=" + version + "\n").getBytes(StandardCharsets.UTF_8));
       out.closeEntry();
     }
-    ClassLoader parent = PrepLogicVersions.class.getClassLoader();
-    try (URLClassLoader loader = new URLClassLoader(new URL[] {jar.toUri().toURL()}, parent) {
+    try (ComposerLoader loader = new ComposerLoader(new URL[] {jar.toUri().toURL()}) {
       @Override
       public URL getResource(String name) {
         return resource.equals(name) ? findResource(name) : super.getResource(name);
-      }
-
-      @Override
-      protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-        if (!PrepLogicVersions.class.getName().equals(name) && !name.startsWith(PrepLogicVersions.class.getName() + "$")) {
-          return super.loadClass(name, resolve);
-        }
-        Class<?> loaded = findLoadedClass(name);
-        if (loaded == null) {
-          try (InputStream bytes = parent.getResourceAsStream(name.replace('.', '/') + ".class")) {
-            byte[] code = bytes.readAllBytes();
-            loaded = defineClass(name, code, 0, code.length);
-          } catch (java.io.IOException e) {
-            throw new ClassNotFoundException(name, e);
-          }
-        }
-        if (resolve) {
-          resolveClass(loaded);
-        }
-        return loaded;
       }
     }) {
       Class<?> composer = loader.loadClass(PrepLogicVersions.class.getName());
@@ -122,6 +106,69 @@ class TestPrepLogicVersions {
       Method library = composer.getDeclaredMethod("library", String.class);
       library.setAccessible(true);
       return (String) library.invoke(null, resource);
+    }
+  }
+
+  /** Loads its own copy of {@link PrepLogicVersions}, so the composer's class-loader lookups go through this loader. */
+  private static class ComposerLoader extends URLClassLoader {
+    private final ClassLoader classes;
+
+    ComposerLoader(URL[] urls) {
+      super(urls, PrepLogicVersions.class.getClassLoader());
+      this.classes = PrepLogicVersions.class.getClassLoader();
+    }
+
+    @Override
+    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+      if (!PrepLogicVersions.class.getName().equals(name) && !name.startsWith(PrepLogicVersions.class.getName() + "$")) {
+        return super.loadClass(name, resolve);
+      }
+      synchronized (getClassLoadingLock(name)) {
+        Class<?> loaded = findLoadedClass(name);
+        if (loaded == null) {
+          try (InputStream bytes = classes.getResourceAsStream(name.replace('.', '/') + ".class")) {
+            byte[] code = bytes.readAllBytes();
+            loaded = defineClass(name, code, 0, code.length);
+          } catch (IOException e) {
+            throw new ClassNotFoundException(name, e);
+          }
+        }
+        if (resolve) {
+          resolveClass(loaded);
+        }
+        return loaded;
+      }
+    }
+  }
+
+  /**
+   * A deployment adds FFmpeg's jars to the executors only: a driver without them must pin the version an executor with them
+   * computes, so the executor's check lets the round run.
+   */
+  @Test
+  void driverWithoutFfmpegPinsWhatAnExecutorWithFfmpegChecks() throws Exception {
+    TypedProperties props = new TypedProperties();
+    props.setProperty(AudioConfigKeys.ENABLED.key(), "true");
+    props.setProperty(WhisperConfig.MODEL_DIR.key(), "/models");
+    PrepLogicVersions executor = PrepLogicVersions.from(props);
+    assertNotNull(PrepLogicVersions.class.getClassLoader().getResource("org/bytedeco/javacv/FFmpegFrameGrabber.class"),
+        "the executor side has FFmpeg");
+    try (ComposerLoader driverLoader = new ComposerLoader(new URL[0]) {
+      @Override
+      public URL getResource(String name) {
+        return name.startsWith("org/bytedeco/") ? null : super.getResource(name);
+      }
+    }) {
+      assertNull(driverLoader.getResource("org/bytedeco/javacv/FFmpegFrameGrabber.class"), "the driver side has no FFmpeg");
+      Class<?> composer = driverLoader.loadClass(PrepLogicVersions.class.getName());
+      assertNotEquals(PrepLogicVersions.class, composer, "the driver's composer is its own copy");
+      Object driver = composer.getMethod("from", TypedProperties.class).invoke(null, props);
+      for (String kind : new String[] {"video", "audio"}) {
+        assertEquals(executor.version(kind), composer.getMethod("version", String.class).invoke(driver, kind), kind);
+      }
+      TypedProperties execution = (TypedProperties) composer.getMethod("executionProperties", TypedProperties.class)
+          .invoke(driver, props);
+      assertDoesNotThrow(() -> executor.checkExecution(execution));
     }
   }
 
@@ -137,6 +184,25 @@ class TestPrepLogicVersions {
     for (String kind : new String[] {"text", "image", "video", "audio"}) {
       assertEquals(PrepLogicVersions.from(implicit).version(kind), PrepLogicVersions.from(explicit).version(kind), kind);
     }
+  }
+
+  /** Input size caps are pinned at their effective defaults; another value changes only its source kind. */
+  @Test
+  void inputSizeCapsArePinnedAtTheirEffectiveDefaults() {
+    PrepLogicVersions defaults = PrepLogicVersions.from(new TypedProperties());
+    TypedProperties pdfCap = new TypedProperties();
+    pdfCap.setProperty(EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "536870912");
+    PrepLogicVersions pdfCapped = PrepLogicVersions.from(pdfCap);
+    assertNotEquals(defaults.version("text"), pdfCapped.version("text"));
+    assertEquals(defaults.version("video"), pdfCapped.version("video"));
+    TypedProperties videoCap = new TypedProperties();
+    videoCap.setProperty(EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "2147483648");
+    PrepLogicVersions videoCapped = PrepLogicVersions.from(videoCap);
+    assertNotEquals(defaults.version("video"), videoCapped.version("video"));
+    assertEquals(defaults.version("text"), videoCapped.version("text"));
+    TypedProperties blank = new TypedProperties();
+    blank.setProperty(EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "21474836480");
+    assertEquals(defaults.version("text"), PrepLogicVersions.from(blank).version("text"), "an explicit default matches the implicit default");
   }
 
   @Test

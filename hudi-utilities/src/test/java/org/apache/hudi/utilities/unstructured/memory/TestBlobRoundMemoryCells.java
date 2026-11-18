@@ -507,6 +507,8 @@ public class TestBlobRoundMemoryCells {
         || line.startsWith("EVENTS "))
         .forEach(line -> System.out.println("child: " + line));
     System.out.println("child exit " + child.exitValue());
+    // the child prints RESULT ok before stopping Spark: a shutdown that throws or exhausts the heap fails the cell too
+    assertEquals(0, child.exitValue(), "the cell's child exited nonzero, see " + log.toAbsolutePath());
     return output;
   }
 }

@@ -122,6 +122,7 @@ public class TestPdfChunkerConfig {
         {EmbeddingTableConfig.CHUNK_SENTENCE_LOCALE.key(), "not a tag!"},
         {EmbeddingTableConfig.CHUNK_NORMALIZE_DEHYPHENATE.key(), "true"},
         {EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "0"},
+        {EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "-1"},
         {EmbeddingTableConfig.PDF_MAX_PAGES.key(), "0"},
         {EmbeddingTableConfig.PDF_MAX_PAGE_CHARS.key(), "8191"},
         {EmbeddingTableConfig.PDF_MAX_PAGE_GLYPHS.key(), "262143"},
@@ -157,9 +158,12 @@ public class TestPdfChunkerConfig {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PDF_MAX_PAGES.key(), "10001");
     assertTrue(PdfChunkerConfig.from(props, BPE).aboveEnvelope());
+    // the input size is not a heap cap (the file is staged to disk; heap follows the per-page caps): any value stays inside
     TypedProperties bytes = new TypedProperties();
-    bytes.setProperty(EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), String.valueOf(20L * 1024 * 1024 * 1024 + 1));
-    assertTrue(PdfChunkerConfig.from(bytes, BPE).aboveEnvelope());
+    bytes.setProperty(EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), String.valueOf(536_870_913L));
+    PdfChunkerConfig capped = PdfChunkerConfig.from(bytes, BPE);
+    assertFalse(capped.aboveEnvelope());
+    assertEquals(536_870_913L, capped.maxInputBytes());
     // every per-page and per-stream cap above its benchmarked default leaves the envelope too
     String[][] above = {
         {EmbeddingTableConfig.PDF_MAX_PAGE_CHARS.key(), "262145"},

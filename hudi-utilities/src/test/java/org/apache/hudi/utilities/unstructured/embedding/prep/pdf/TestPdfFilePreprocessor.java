@@ -146,7 +146,7 @@ public class TestPdfFilePreprocessor {
 
   @Test
   public void nameCarriesImplementationVersion() {
-    assertEquals("pdf-chunker/4;pdfbox=3.0.8", new PdfFilePreprocessor().name());
+    assertEquals("pdf-chunker/5;pdfbox=3.0.8", new PdfFilePreprocessor().name());
     assertEquals(new PdfFilePreprocessor().name(), new PreprocessorRegistry(new TypedProperties()).forExtension("pdf").get().name(),
         "the identity the registry's pdf preprocessor carries");
   }

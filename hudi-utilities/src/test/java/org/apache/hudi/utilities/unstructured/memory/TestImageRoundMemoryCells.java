@@ -376,6 +376,8 @@ public class TestImageRoundMemoryCells extends EmbeddingRoundTestBase {
     output.stream().filter(line -> line.startsWith("ROUND ") || line.startsWith("IMAGE_INPUTS ")
         || line.startsWith("HEAP_POOL_PEAKS_SUM_BYTES ") || line.startsWith("RESULT ")).forEach(line -> System.out.println("child: " + line));
     System.out.println("child exit " + child.exitValue());
+    // the child prints RESULT ok before stopping Spark: a shutdown that throws or exhausts the heap fails the cell too
+    assertEquals(0, child.exitValue(), "the cell's child exited nonzero, see " + log.toAbsolutePath());
     return output;
   }
 }

@@ -24,6 +24,7 @@ import org.apache.hudi.utilities.unstructured.embedding.audio.AudioConfigKeys;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioInput;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioSegment;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioSegmentSource;
+import org.apache.hudi.utilities.unstructured.embedding.prep.FfmpegLibraryVersions;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobBytesSupplier;
@@ -662,7 +663,10 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
     }
   }
 
-  /** FFmpeg's own logging is quiet (errors only) and set once per JVM, before the first grabber. */
+  /**
+   * Once per JVM, before the first grabber: the FFmpeg jars must be the versions the prep logic version names (else the task
+   * fails, {@link FfmpegLibraryVersions#requireDeclared}), and FFmpeg's own logging is quiet (errors only).
+   */
   private static final class Natives {
     private static volatile boolean initialized;
 
@@ -670,6 +674,7 @@ public class FfmpegAudioSegmentSource implements AudioSegmentSource {
       if (!initialized) {
         synchronized (Natives.class) {
           if (!initialized) {
+            FfmpegLibraryVersions.requireDeclared(Natives.class.getClassLoader());
             avutil.av_log_set_level(avutil.AV_LOG_ERROR);
             initialized = true;
           }

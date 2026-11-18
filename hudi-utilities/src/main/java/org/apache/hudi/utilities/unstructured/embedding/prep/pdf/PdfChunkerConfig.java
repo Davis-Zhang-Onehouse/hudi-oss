@@ -98,8 +98,16 @@ public final class PdfChunkerConfig {
       throw new IllegalArgumentException("Config " + CHUNK_NORMALIZE_DEHYPHENATE.key() + "=" + dehyphenate
           + ": only false is supported");
     }
-    this.maxInputBytes = positive(PDF_MAX_INPUT_BYTES.key(),
-        longValue(props, PDF_MAX_INPUT_BYTES, EmbeddingTableConfig.DEFAULT_PDF_MAX_INPUT_BYTES));
+    String inputCap = ConfigUtils.getStringWithAltKeys(props, PDF_MAX_INPUT_BYTES, null);
+    if (inputCap == null || inputCap.trim().isEmpty()) {
+      this.maxInputBytes = EmbeddingTableConfig.DEFAULT_PDF_MAX_INPUT_BYTES;
+    } else {
+      long cap = longValue(props, PDF_MAX_INPUT_BYTES, 0);
+      if (cap <= 0) {
+        throw invalid(PDF_MAX_INPUT_BYTES.key(), cap, "> 0 (a byte count)");
+      }
+      this.maxInputBytes = cap;
+    }
     this.maxPages = (int) positive(PDF_MAX_PAGES.key(), intValue(props, PDF_MAX_PAGES, EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGES));
     this.maxPageChars = intValue(props, PDF_MAX_PAGE_CHARS, EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_CHARS);
     if (maxPageChars < windowChars) {
@@ -117,17 +125,17 @@ public final class PdfChunkerConfig {
     if (maxGraphicsDepth < MAX_GRAPHICS_DEPTH_LOWER) {
       throw invalid(PDF_MAX_GRAPHICS_DEPTH.key(), maxGraphicsDepth, ">= " + MAX_GRAPHICS_DEPTH_LOWER);
     }
-    // every memory cap above its benchmarked default leaves the envelope
-    this.aboveEnvelope = maxInputBytes > EmbeddingTableConfig.DEFAULT_PDF_MAX_INPUT_BYTES
-        || maxPages > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGES
+    // every memory cap above its benchmarked default leaves the envelope; the input size is not one (the file is staged to
+    // local disk and PDFBox reads it from there, so it bounds disk, not heap)
+    this.aboveEnvelope = maxPages > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGES
         || maxPageChars > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_CHARS
         || maxPageGlyphs > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_GLYPHS
         || maxDecodedStreamBytes > EmbeddingTableConfig.DEFAULT_PDF_MAX_DECODED_STREAM_BYTES
         || maxPageFontBytes > EmbeddingTableConfig.DEFAULT_PDF_MAX_PAGE_FONT_BYTES
         || maxGraphicsDepth > EmbeddingTableConfig.DEFAULT_PDF_MAX_GRAPHICS_DEPTH;
     if (aboveEnvelope) {
-      LOG.warn("PDF caps above the benchmarked envelope ({}={}, {}={}, {}={}, {}={}, {}={}, {}={}, {}={}): memory is not qualified "
-          + "for such files", PDF_MAX_INPUT_BYTES.key(), maxInputBytes, PDF_MAX_PAGES.key(), maxPages,
+      LOG.warn("PDF caps above the benchmarked envelope ({}={}, {}={}, {}={}, {}={}, {}={}, {}={}): memory is not qualified "
+          + "for such files", PDF_MAX_PAGES.key(), maxPages,
           PDF_MAX_PAGE_CHARS.key(), maxPageChars, PDF_MAX_PAGE_GLYPHS.key(), maxPageGlyphs, PDF_MAX_DECODED_STREAM_BYTES.key(),
           maxDecodedStreamBytes, PDF_MAX_PAGE_FONT_BYTES.key(), maxPageFontBytes, PDF_MAX_GRAPHICS_DEPTH.key(), maxGraphicsDepth);
     }
@@ -193,6 +201,7 @@ public final class PdfChunkerConfig {
     return locale;
   }
 
+  /** The input size cap in bytes ({@link EmbeddingTableConfig#PDF_MAX_INPUT_BYTES}, its default when unset). */
   public long maxInputBytes() {
     return maxInputBytes;
   }

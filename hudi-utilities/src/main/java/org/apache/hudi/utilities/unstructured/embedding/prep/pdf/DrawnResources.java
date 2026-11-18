@@ -23,6 +23,7 @@ import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdfparser.PDFStreamParser;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -47,7 +48,8 @@ final class DrawnResources {
   /** Distinct names kept per stream; past it the record means every resource. */
   static final int MAX_NAMES = 1024;
 
-  private final Map<Category, Set<String>> names = new EnumMap<>(Category.class);
+  /** By COSName, which compares the name's bytes as PDFBox resolves them (a name need not be UTF-8). */
+  private final Map<Category, Set<COSName>> names = new EnumMap<>(Category.class);
   private int size;
   private boolean everything;
 
@@ -100,8 +102,14 @@ final class DrawnResources {
     if (everything) {
       return true;
     }
-    Set<String> drawn = names.get(category);
-    return drawn != null && drawn.contains(name.getName());
+    Set<COSName> drawn = names.get(category);
+    return drawn != null && drawn.contains(name);
+  }
+
+  /** The names recorded for {@code category}; empty when none, and meaningless when the record means every resource. */
+  Set<COSName> names(Category category) {
+    Set<COSName> drawn = names.get(category);
+    return drawn == null ? Collections.emptySet() : Collections.unmodifiableSet(drawn);
   }
 
   boolean drawsEverything() {
@@ -117,7 +125,7 @@ final class DrawnResources {
     if (everything) {
       return;
     }
-    if (names.computeIfAbsent(category, c -> new HashSet<>()).add(name.getName()) && ++size > MAX_NAMES) {
+    if (names.computeIfAbsent(category, c -> new HashSet<>()).add(name) && ++size > MAX_NAMES) {
       everything = true;
       names.clear();
     }

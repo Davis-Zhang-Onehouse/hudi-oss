@@ -52,17 +52,19 @@ import java.util.jar.JarEntry;
 /**
  * The preparation contract persisted at table creation and stamped on every row. Versions include resolved implementation
  * identities, runtime libraries and effective output-changing configuration, including defaults. Performance settings are
- * excluded. Missing table pins are refused, never inferred or upgraded in place.
+ * excluded. Missing table pins are refused, never inferred or upgraded in place. Bundled libraries are identified by the jar
+ * the class path holds, the same on the driver and the executors; FFmpeg, which only the executors hold, by the versions this
+ * build declares ({@link FfmpegLibraryVersions}), which each executor checks its jars against before decoding.
  */
 public final class PrepLogicVersions {
 
   private static final String PREFIX = "hoodie.table.embedding.prep.";
   private static final Map<String, String> LIBRARIES = new ConcurrentHashMap<>();
+  /** The pinned value of an output setting that has no default and is not configured. */
+  static final String UNSET = "<unset>";
   private static final Map<String, String> DEPENDENCIES = Map.of(
       "com/knuddels/jtokkit/Encodings.class", "com.knuddels/jtokkit",
       "org/apache/pdfbox/util/Version.class", "org.apache.pdfbox/pdfbox",
-      "org/bytedeco/ffmpeg/global/avutil.class", "org.bytedeco/ffmpeg",
-      "org/bytedeco/javacv/FFmpegFrameGrabber.class", "org.bytedeco/javacv",
       "org/jcodec/api/FrameGrab.class", "org.jcodec/jcodec",
       "org/jcodec/scale/AWTUtil.class", "org.jcodec/jcodec-javase",
       "io/github/givimad/whisperjni/WhisperJNI.class", "io.github.givimad/whisper-jni");
@@ -120,8 +122,8 @@ public final class PrepLogicVersions {
         } else if (kind.equals("video")) {
           identity.put("ffmpeg.logic", FfmpegKeyframeVideoFrameSource.LOGIC_VERSION);
           identity.put("jcodec.logic", JcodecKeyframeVideoFrameSource.LOGIC_VERSION);
-          identity.put("ffmpeg", library("org/bytedeco/ffmpeg/global/avutil.class"));
-          identity.put("javacv", library("org/bytedeco/javacv/FFmpegFrameGrabber.class"));
+          identity.put("ffmpeg", FfmpegLibraryVersions.FFMPEG);    // declared: executors only hold the jars
+          identity.put("javacv", FfmpegLibraryVersions.JAVACV);
           identity.put("jcodec", library("org/jcodec/api/FrameGrab.class"));
           identity.put("jcodec.javase", library("org/jcodec/scale/AWTUtil.class"));
         } else if (kind.equals("audio")) {
@@ -129,8 +131,8 @@ public final class PrepLogicVersions {
           identity.put("enabled", String.valueOf(audio.enabled()));
           if (audio.enabled()) {
             identity.putAll(audio.logicStyle(tokenizer));
-            identity.put("ffmpeg", library("org/bytedeco/ffmpeg/global/avutil.class"));
-            identity.put("javacv", library("org/bytedeco/javacv/FFmpegFrameGrabber.class"));
+            identity.put("ffmpeg", FfmpegLibraryVersions.FFMPEG);
+            identity.put("javacv", FfmpegLibraryVersions.JAVACV);
             if (ConfigUtils.getStringWithAltKeys(props, AudioConfigKeys.TRANSCRIBER_CLASS,
                 AudioConfig.DEFAULT_TRANSCRIBER_CLASS).trim().equals(AudioConfig.DEFAULT_TRANSCRIBER_CLASS)) {
               identity.put("whisper.jni", library("io/github/givimad/whisperjni/WhisperJNI.class"));
@@ -212,7 +214,9 @@ public final class PrepLogicVersions {
   private static Map<String, String> effectiveSettings(TypedProperties props) {
     Map<String, String> settings = new TreeMap<>();
     for (ConfigProperty<?> key : OUTPUT_SETTINGS) {
-      settings.put(key.key(), ConfigUtils.getStringWithAltKeys(props, key, String.valueOf(key.defaultValue())).trim());
+      // A key without a default is pinned as "<unset>" when not configured.
+      String unset = key.hasDefaultValue() ? String.valueOf(key.defaultValue()) : UNSET;
+      settings.put(key.key(), ConfigUtils.getStringWithAltKeys(props, key, unset).trim());
     }
     int maxTokens = Integer.parseInt(settings.get(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key()));
     settings.put(EmbeddingTableConfig.CHUNK_OVERLAP_TOKENS.key(), ConfigUtils.getStringWithAltKeys(props,

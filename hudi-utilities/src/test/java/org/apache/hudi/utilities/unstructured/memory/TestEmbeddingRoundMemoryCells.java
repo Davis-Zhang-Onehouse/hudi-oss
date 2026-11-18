@@ -112,9 +112,8 @@ public class TestEmbeddingRoundMemoryCells extends EmbeddingRoundTestBase {
    * (PdfBoxPageSource.java:136-146). PDFBox resolves objects from the exact xref only when they are reached, and nothing reaches
    * the bulk stream: the decode guard walks only each page's /Contents and the forms and fonts of its /Resources
    * (StreamDecodeGuard.java:167-186, 201-228), and the stripper extracts one page's content (PdfBoxPageSource.java:257-260). The
-   * file is above the PDF max input bytes default (512 MiB), so the cell raises that key to
-   * {@value #PDF_OVER_HEAP_MAX_INPUT_BYTES} in its job (outside the benchmarked envelope, which the chunker logs); the light cell
-   * sets the same key so both run the same code path.
+   * PDF max input bytes key has no default (no cap); the cell sets it to {@value #PDF_OVER_HEAP_MAX_INPUT_BYTES} in its job so
+   * the capped path is exercised, and the light cell sets the same key so both run the same code path.
    *
    * <p>Asserted: one round and one commit; the PDF's text chunks are in the table, each with an embedding; the PDF row's stored
    * size equals the fixture's and, in the heavy cell, exceeds the child's {@code Runtime.maxMemory()} (both printed); the source
@@ -385,6 +384,8 @@ public class TestEmbeddingRoundMemoryCells extends EmbeddingRoundTestBase {
     output.stream().filter(line -> line.startsWith("ROUND ") || line.startsWith("COMPUTE_PARTITIONS ")
         || line.startsWith("HEAP_POOL_PEAKS_SUM_BYTES ") || line.startsWith("MAX_HEAP_BYTES ") || line.startsWith("RESULT ")).forEach(line -> System.out.println("child: " + line));
     System.out.println("child exit " + child.exitValue());
+    // the child prints RESULT ok before stopping Spark: a shutdown that throws or exhausts the heap fails the cell too
+    assertEquals(0, child.exitValue(), "the cell's child exited nonzero, see " + log.toAbsolutePath());
     return output;
   }
 }

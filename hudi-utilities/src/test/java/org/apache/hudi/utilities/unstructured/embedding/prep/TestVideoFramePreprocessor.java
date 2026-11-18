@@ -154,6 +154,29 @@ public class TestVideoFramePreprocessor {
     assertEquals(1, strategy.closed.get());
   }
 
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void videoAboveTwentyGiBIsRefusedBeforeReading(boolean explicitCap) {
+    TypedProperties props = new TypedProperties();
+    if (explicitCap) {
+      props.setProperty(EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "21474836480");
+    }
+    ScriptedStrategy strategy = new ScriptedStrategy(1, -1, null);
+    PreprocessingException refused = assertThrows(PreprocessingException.class, () -> drain(new ScriptedPreprocessor(strategy).open(
+        video(), file(20L * 1024 * 1024 * 1024 + 1), null, props)));
+    assertTrue(refused.getMessage().contains(" = 21474836480;"), refused.getMessage());
+    assertEquals(0, strategy.opened.get());
+  }
+
+  @Test
+  public void videoAboveTwoGiBIsPreparedByDefault() throws IOException {
+    ScriptedStrategy strategy = new ScriptedStrategy(3, -1, null);
+    try (ClosableIterator<Chunk> chunks = new ScriptedPreprocessor(strategy).open(video(), file(3L << 30), null, new TypedProperties())) {
+      assertTrue(chunks.hasNext());
+    }
+    assertEquals(1, strategy.opened.get());
+  }
+
   /** The default (FFmpeg) preprocessor checks the frame keys itself, without loading FFmpeg, naming the offending key. */
   @Test
   public void configurationIsValidatedOnTheDriverNamingTheKey() {
@@ -161,6 +184,7 @@ public class TestVideoFramePreprocessor {
     preprocessor.validateConfig(new TypedProperties(), null);
     String[][] bad = {
         {EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "0"},
+        {EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "-1"},
         {EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "2GiB"},
         {EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS.key(), "-1"},
         {EmbeddingTableConfig.PREP_VIDEO_DEDUP_METHOD.key(), "phash"},
