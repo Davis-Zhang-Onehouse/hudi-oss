@@ -21,7 +21,6 @@ package org.apache.hudi.utilities.sources.unstructured;
 import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.table.HoodieTableConfig;
-import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.keygen.ComplexKeyGenerator;
 import org.apache.hudi.keygen.NonpartitionedKeyGenerator;
@@ -31,17 +30,14 @@ import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.SourceContracts;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
-import org.apache.hudi.utilities.sources.blob.BlobCopyTransformer;
 import org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector;
 import org.apache.hudi.utilities.sources.blob.BlobTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingParquetConfigInjector;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
-import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingTableTransformer;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -81,7 +77,7 @@ class TestUnstructuredSourceContract {
   /** What {@code contract}'s settings add to a job that sets only its mode and cloud. */
   private static Map<String, String> settingsOfAnEmptyJob(UnstructuredSourceContract contract) {
     TypedProperties job = mode(contract.mode().configValue());
-    Map<String, String> added = asMap(contract.requiredSettings(job).apply(job));
+    Map<String, String> added = asMap(contract.prepareJob(job));
     added.keySet().removeAll(job.stringPropertyNames());
     return added;
   }
@@ -95,7 +91,7 @@ class TestUnstructuredSourceContract {
   }
 
   private static String refusal(UnstructuredSourceContract contract, TypedProperties jobProps) {
-    return assertThrows(IllegalArgumentException.class, () -> contract.requiredSettings(jobProps).apply(jobProps)).getMessage();
+    return assertThrows(IllegalArgumentException.class, () -> contract.prepareJob(jobProps)).getMessage();
   }
 
   /** The streamer finds the contract on the source class from its name, before the source is built. */
@@ -104,7 +100,6 @@ class TestUnstructuredSourceContract {
     SourceContract resolved = SourceContracts.of(UnstructuredDataSource.class.getName(), mode("embedding"));
     assertTrue(resolved instanceof UnstructuredSourceContract, resolved.getClass().getName());
     assertEquals(UnstructuredMode.EMBEDDING, ((UnstructuredSourceContract) resolved).mode());
-    assertEquals("UnstructuredDataSource", resolved.sourceName());
   }
 
   @Test
@@ -122,16 +117,16 @@ class TestUnstructuredSourceContract {
     assertKeyGenerators(contract);
 
     TypedProperties markersOff = mode("blob");
-    markersOff.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    markersOff.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
     markersOff.setProperty(MARKERS, "DIRECT");
-    TypedProperties merged = contract.requiredSettings(markersOff).apply(markersOff);
+    TypedProperties merged = contract.prepareJob(markersOff);
     assertEquals("DIRECT", merged.getString(MARKERS), "with out-of-line markers off, the markers are the job's");
     assertFalse(merged.containsKey(ROLLBACK));
 
     TypedProperties own = mode("blob");
     own.setProperty(CODEC, "zstd");
     own.setProperty(BLOOM, "true");
-    TypedProperties kept = contract.requiredSettings(own).apply(own);
+    TypedProperties kept = contract.prepareJob(own);
     assertEquals("zstd", kept.getString(CODEC), "the codec is a default");
     assertEquals("true", kept.getString(BLOOM), "the bloom filter is a default");
   }
@@ -156,31 +151,17 @@ class TestUnstructuredSourceContract {
     for (String accepted : new String[] {ComplexKeyGenerator.class.getName(), NonpartitionedKeyGenerator.class.getName()}) {
       TypedProperties props = mode(contract.mode().configValue());
       props.setProperty(KEY_GENERATOR, accepted);
-      contract.requiredSettings(props).apply(props);
+      contract.prepareJob(props);
     }
     TypedProperties partitioned = mode(contract.mode().configValue());
     partitioned.setProperty(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key(), "source_file_extension");
-    contract.requiredSettings(partitioned).apply(partitioned);
+    contract.prepareJob(partitioned);
     for (String refused : new String[] {SimpleKeyGenerator.class.getName(), " " + ComplexKeyGenerator.class.getName() + " "}) {
       TypedProperties props = mode(contract.mode().configValue());
       props.setProperty(KEY_GENERATOR, refused);
       assertEquals(UnstructuredDataSource.name(contract.mode()) + " supports only " + ComplexKeyGenerator.class.getName() + " or "
           + NonpartitionedKeyGenerator.class.getName() + ", configured: " + refused, refusal(contract, props));
     }
-  }
-
-  @Test
-  void transformersPerMode() {
-    UnstructuredSourceContract blob = contract("blob");
-    assertEquals(Option.of(BlobCopyTransformer.class), blob.requiredTransformer());
-    assertEquals(Collections.singleton(EmbeddingTableTransformer.class), blob.excludedTransformers());
-    assertEquals(Option.of(UnstructuredSchemaGuard.class), blob.closingTransformer());
-    assertEquals(UnstructuredMode.BLOB, blob.mode());
-    UnstructuredSourceContract embedding = contract("embedding");
-    assertEquals(Option.of(EmbeddingTableTransformer.class), embedding.requiredTransformer());
-    assertEquals(Collections.singleton(BlobCopyTransformer.class), embedding.excludedTransformers());
-    assertEquals(Option.of(UnstructuredSchemaGuard.class), embedding.closingTransformer());
-    assertEquals(UnstructuredMode.EMBEDDING, embedding.mode());
   }
 
   /** A job that sets every required setting itself, to the same value, keeps its properties: the merge changes none of them. */
@@ -200,7 +181,7 @@ class TestUnstructuredSourceContract {
         props.setProperty(CODEC, "uncompressed");
         props.setProperty(BLOOM, "false");
       }
-      TypedProperties merged = new UnstructuredSourceContract(props).requiredSettings(props).apply(props);
+      TypedProperties merged = new UnstructuredSourceContract(props).prepareJob(props);
       assertEquals(asMap(props), asMap(merged), "mode " + mode);
     }
   }
@@ -219,15 +200,14 @@ class TestUnstructuredSourceContract {
     for (String[] c : cases) {
       TypedProperties props = mode("blob");
       props.setProperty(c[0], c[1]);
-      Exception refused = assertThrows(RuntimeException.class, () -> new UnstructuredSourceContract(props).requiredSettings(props)
-          .apply(props), c[0]);
+      Exception refused = assertThrows(RuntimeException.class, () -> new UnstructuredSourceContract(props).prepareJob(props), c[0]);
       assertTrue(refused.getMessage().contains(c[2]), refused.getMessage());
     }
     TypedProperties gcsWithS3Prefix = mode("blob");
     gcsWithS3Prefix.setProperty(UnstructuredSourceConfig.CLOUD.key(), "gcs");
     gcsWithS3Prefix.setProperty("hoodie.streamer.source.s3incr.fs.prefix", "s3a");
     assertTrue(assertThrows(IllegalArgumentException.class, () -> new UnstructuredSourceContract(gcsWithS3Prefix)
-        .requiredSettings(gcsWithS3Prefix).apply(gcsWithS3Prefix)).getMessage()
+        .prepareJob(gcsWithS3Prefix)).getMessage()
         .startsWith("UnstructuredDataSource (mode blob) refuses hoodie.streamer.source.s3incr.fs.prefix"));
   }
 
@@ -250,7 +230,7 @@ class TestUnstructuredSourceContract {
     HoodieTableConfig blobTable = new HoodieTableConfig();
     blobTable.setValue(HoodieTableConfig.RECORDKEY_FIELDS, BLOB_KEY);
     IllegalArgumentException table = assertThrows(IllegalArgumentException.class,
-        () -> contract("embedding").requiredSettings(new TypedProperties()).checkTable("file:/tables/blob", blobTable));
+        () -> UnstructuredDataSource.validate(contract("embedding").mode(), "file:/tables/blob", blobTable));
     assertEquals("UnstructuredDataSource (mode embedding) requires the table's " + HoodieTableConfig.RECORDKEY_FIELDS.key() + "="
         + EMBEDDING_KEY + ": the table at file:/tables/blob stores " + BLOB_KEY + "; write this job to a new table", table.getMessage());
 
@@ -260,4 +240,35 @@ class TestUnstructuredSourceContract {
     assertThrows(IllegalArgumentException.class, () -> SourceContracts.of(UnstructuredDataSource.class.getName(), mode("video")),
         "the contract constructor's refusal reaches the caller as thrown");
   }
+
+  @Test
+  void preparationCanonicalizesRequiredValuesWithoutMutatingTheJob() {
+    TypedProperties props = mode("blob");
+    props.setProperty(START_COMMIT, " TRUE ");
+    props.setProperty(RECORD_KEY, " " + BLOB_KEY.replace(",", " , ") + " ");
+    props.setProperty(INJECTOR, " " + BlobParquetConfigInjector.class.getName() + " ");
+    props.setProperty(CODEC, "zstd");
+    TypedProperties before = TypedProperties.copy(props);
+    TypedProperties merged = contract("blob").prepareJob(props);
+    assertEquals("true", merged.getString(START_COMMIT));
+    assertEquals(BLOB_KEY, merged.getString(RECORD_KEY));
+    assertEquals(BlobParquetConfigInjector.class.getName(), merged.getString(INJECTOR));
+    assertEquals("zstd", merged.getString(CODEC));
+    assertEquals(before, props);
+  }
+
+  @Test
+  void blankSettingsAreFilledAndUnrelatedSettingsAreKept() {
+    TypedProperties props = mode("blob");
+    props.setProperty(START_COMMIT, " ");
+    props.setProperty(RECORD_KEY, " ");
+    props.setProperty(CODEC, " ");
+    props.setProperty("user.setting", "kept");
+    TypedProperties prepared = contract("blob").prepareJob(props);
+    assertEquals("true", prepared.getString(START_COMMIT));
+    assertEquals(BLOB_KEY, prepared.getString(RECORD_KEY));
+    assertEquals("uncompressed", prepared.getString(CODEC));
+    assertEquals("kept", prepared.getString("user.setting"));
+  }
+
 }

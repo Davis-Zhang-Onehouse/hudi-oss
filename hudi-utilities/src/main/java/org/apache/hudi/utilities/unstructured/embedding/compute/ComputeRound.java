@@ -50,7 +50,7 @@ import java.util.List;
  * The compute half of an embedding round: spreads the round's prepared rows over the compute tasks, embeds them
  * ({@link MicroBatchEmbeddingIterator}, retries inside) and shapes the rows the round's commit writes.
  * <ul>
- *   <li>{@link #roundRobin}: the prepared rows hash partitioned by the five key columns over P tasks ({@link HashSpread}), one
+ *   <li>{@link #hashPartitionByKey}: the prepared rows hash partitioned by the five key columns over P tasks ({@link HashSpread}), one
  *   shuffle, so task row counts are balanced in expectation and a row's task depends on its own keys and P alone: a retried or
  *   recomputed compute task over the same rows reads the same rows.</li>
  *   <li>{@link #embed}: the model calls, persisted at {@code hoodie.write.tagged.record.storage.level} and counted, so every call
@@ -117,7 +117,7 @@ public final class ComputeRound {
    * recomputation after a lost block that reads the same rows, deal every row to the same task. Task row counts are
    * binomial(N, 1/parallelism), balanced in expectation rather than exactly; adaptive execution never coalesces the tasks.
    */
-  public static JavaRDD<Row> roundRobin(Dataset<Row> rows, int parallelism) {
+  public static JavaRDD<Row> hashPartitionByKey(Dataset<Row> rows, int parallelism) {
     if (parallelism <= 0) {
       throw new IllegalArgumentException("The compute parallelism must be positive, got " + parallelism);
     }

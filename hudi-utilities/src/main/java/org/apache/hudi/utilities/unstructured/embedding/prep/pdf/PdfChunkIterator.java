@@ -195,6 +195,10 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
       pageFailed(page, PdfFailureCode.PAGE_ERROR, e);
       return;
     }
+    if (raw.skippedContentStreams() > 0) {
+      stats.streamsSkipped += raw.skippedContentStreams();
+      pageWarning(PdfFailureCode.DECODE_ERROR, page, raw.skippedContentStreams() + " content streams skipped", null);
+    }
     TextNormalizer.Result normalized = normalizer.normalize(raw.text());
     if (raw.truncated() || normalized.truncated()) {
       stats.pagesTruncated++;
@@ -217,6 +221,9 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
         break;
       case DECODE_LIMIT:
         stats.decodeLimited++;
+        break;
+      case DECODE_ERROR:
+        stats.decodeFailed++;
         break;
       case GRAPHICS_DEPTH_LIMIT:
         stats.graphicsLimited++;
@@ -261,14 +268,15 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
       end(lost() ? held.withStatusDetail(lossSummary()) : held);
       return;
     }
-    boolean pagesLost = stats.pagesFailed + stats.pagesTruncated + stats.glyphLimited + stats.decodeLimited
-        + stats.graphicsLimited > 0;
+    boolean otherPageFailures = stats.pagesFailed + stats.pagesTruncated + stats.glyphLimited + stats.decodeLimited + stats.graphicsLimited > 0;
+    boolean decodeLoss = stats.decodeFailed + stats.streamsSkipped > 0;
     if (pageLimitHit) {
       // the pages past max.pages were never read, so the file is not known to have no text
       end(PdfChunk.marker(meta.sourcePathSha(), tokenizerId, PdfChunk.Status.FAILED, PdfFailureCode.PAGE_LIMIT.name()
           + ": no text in the first " + config.maxPages() + " pages, " + lossSummary()));
-    } else if (pagesLost) {
-      end(PdfChunk.marker(meta.sourcePathSha(), tokenizerId, PdfChunk.Status.FAILED, PdfFailureCode.ALL_PAGES_FAILED.name()
+    } else if (otherPageFailures || decodeLoss) {
+      PdfFailureCode code = decodeLoss && !otherPageFailures ? PdfFailureCode.DECODE_ERROR : PdfFailureCode.ALL_PAGES_FAILED;
+      end(PdfChunk.marker(meta.sourcePathSha(), tokenizerId, PdfChunk.Status.FAILED, code.name()
           + ": no page yielded text, " + lossSummary()));
     } else {
       end(PdfChunk.marker(meta.sourcePathSha(), tokenizerId, PdfChunk.Status.NO_TEXT, null));
@@ -292,7 +300,8 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
   }
 
   private boolean lost() {
-    return stats.pagesFailed + stats.pagesTruncated + stats.glyphLimited + stats.decodeLimited + stats.graphicsLimited > 0
+    return stats.pagesFailed + stats.pagesTruncated + stats.glyphLimited + stats.decodeLimited + stats.decodeFailed
+        + stats.streamsSkipped + stats.graphicsLimited > 0
         || pageLimitHit || fileError != null;
   }
 
@@ -300,7 +309,9 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
   private String lossSummary() {
     return String.format(Locale.ROOT, "PAGES_LOST failed=%d truncated=%d glyph_limited=%d decode_limited=%d "
             + "graphics_limited=%d page_limit=%b file_error=%s", stats.pagesFailed, stats.pagesTruncated, stats.glyphLimited,
-        stats.decodeLimited, stats.graphicsLimited, pageLimitHit, fileError == null ? "none" : fileError.name());
+        stats.decodeLimited, stats.graphicsLimited, pageLimitHit, fileError == null ? "none" : fileError.name())
+        + (stats.decodeFailed > 0 ? " decode_failed=" + stats.decodeFailed : "")
+        + (stats.streamsSkipped > 0 ? " streams_skipped=" + stats.streamsSkipped : "");
   }
 
   private void pageWarning(PdfFailureCode code, long page, String detail, Throwable cause) {

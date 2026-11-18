@@ -29,6 +29,8 @@ public final class PdfChunkerStats {
   long pagesEmpty;
   long glyphLimited;
   long decodeLimited;
+  long decodeFailed;
+  long streamsSkipped;
   long graphicsLimited;
   long chunksEmitted;
   long forcedSplits;
@@ -60,6 +62,16 @@ public final class PdfChunkerStats {
     return decodeLimited;
   }
 
+  /** Pages whose content streams all failed to decode. */
+  public long decodeFailed() {
+    return decodeFailed;
+  }
+
+  /** Undecodable content streams skipped on partially decodable pages, including repeated uses. */
+  public long streamsSkipped() {
+    return streamsSkipped;
+  }
+
   public long graphicsLimited() {
     return graphicsLimited;
   }
@@ -86,7 +98,8 @@ public final class PdfChunkerStats {
   public String toString() {
     return "pagesSeen=" + pagesSeen + " pagesFailed=" + pagesFailed + " pagesTruncated=" + pagesTruncated + " pagesEmpty="
         + pagesEmpty + " glyphLimited=" + glyphLimited + " decodeLimited=" + decodeLimited + " graphicsLimited="
-        + graphicsLimited + " chunksEmitted=" + chunksEmitted + " forcedSplits=" + forcedSplits + " stagedBytes="
+        + graphicsLimited + " decodeFailed=" + decodeFailed + " streamsSkipped=" + streamsSkipped
+        + " chunksEmitted=" + chunksEmitted + " forcedSplits=" + forcedSplits + " stagedBytes="
         + stagedBytes + " elapsedMillis=" + elapsedMillis;
   }
 }

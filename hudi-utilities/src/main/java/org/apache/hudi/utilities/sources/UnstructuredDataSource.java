@@ -22,6 +22,7 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.schema.HoodieSchemaType;
+import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.checkpoint.Checkpoint;
 import org.apache.hudi.common.table.checkpoint.StreamerCheckpointV1;
 import org.apache.hudi.common.table.timeline.TimelineUtils.HollowCommitHandling;
@@ -41,6 +42,7 @@ import org.apache.hudi.utilities.sources.unstructured.UnstructuredCloud;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredMode;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredObjectMaterializer;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSchemaContract;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredSchemaGuard;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract;
 import org.apache.hudi.utilities.streamer.DefaultStreamContext;
 import org.apache.hudi.utilities.streamer.StreamContext;
@@ -50,8 +52,10 @@ import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.StructType;
 
 import java.util.Collections;
+import java.util.List;
 
 import static org.apache.hudi.common.util.ConfigUtils.checkRequiredConfigProperties;
 import static org.apache.hudi.common.util.ConfigUtils.getIntWithAltKeys;
@@ -89,7 +93,6 @@ import static org.apache.hudi.utilities.sources.helpers.IncrSourceHelper.getMiss
  * round reads anything or starts its instant, since a provider may change its schema between rounds.
  */
 @Slf4j
-@SourceContractClass(UnstructuredSourceContract.class)
 public class UnstructuredDataSource extends HoodieIncrSource {
 
   private final UnstructuredMode mode;
@@ -153,6 +156,23 @@ public class UnstructuredDataSource extends HoodieIncrSource {
    */
   private static TypedProperties validate(TypedProperties props) {
     return UnstructuredSourceContract.validateJob(props);
+  }
+
+  /** Refuses an existing table with a different record key before the writer's stock table checks. */
+  public static void validate(UnstructuredMode mode, String basePath, HoodieTableConfig table) {
+    String expected = String.join(",", mode.keyColumns());
+    String stored = table.getString(HoodieTableConfig.RECORDKEY_FIELDS);
+    if (stored == null || !expected.equals(UnstructuredSourceContract.fields(stored))) {
+      throw new IllegalArgumentException(name(mode) + " requires the table's " + HoodieTableConfig.RECORDKEY_FIELDS.key() + "=" + expected
+          + ": the table at " + basePath + " stores " + (stored == null ? "none" : stored) + "; write this job to a new table");
+    }
+  }
+
+  /** Plans the job's chain without reading source data, before constructing the source. */
+  public static void validate(UnstructuredMode mode, JavaSparkContext jsc, SparkSession spark, List<String> chain,
+                              TypedProperties props, Option<HoodieSchema> targetSchema, Option<StructType> tableSchema) {
+    UnstructuredSchemaContract.checkChainPlan(mode, mode.requiredTransformer(), UnstructuredSchemaGuard.class, chain,
+        jsc, spark, props, targetSchema, tableSchema);
   }
 
   /** The name every refusal of {@code mode}'s job carries, such as {@code UnstructuredDataSource (mode blob)}. */

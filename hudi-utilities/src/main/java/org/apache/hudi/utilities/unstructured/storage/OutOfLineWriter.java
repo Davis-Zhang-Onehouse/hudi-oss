@@ -42,7 +42,6 @@ import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.marker.TimelineServerBasedWriteMarkers;
 import org.apache.hudi.table.marker.WriteMarkers;
 import org.apache.hudi.table.marker.WriteMarkersFactory;
-import org.apache.hudi.utilities.sources.RequiredSourceSettings;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -56,7 +55,7 @@ import java.util.Properties;
  * ({@link FSUtils#makeBaseFileName}): a fresh file id per file, the write token of the writing Spark task (partition, stage,
  * attempt; outside a Spark task Hudi's default token {@code 0-0-0}, names staying unique by file id) and the write instant, all
  * independent of the table's data files. The name encodes no record identity. With
- * {@code hoodie.write.out.of.line.markers.enable=true} (the default) each write creates its instant's timeline-server CREATE
+ * {@code hoodie.write.blob.markers.enable=true} (the default) each write creates its instant's timeline-server CREATE
  * marker before a single non-overwriting create, and in-flight rollback deletes every marked file. With {@code false} no marker
  * is created: the files of a failed round are left under {@code .hoodie/.blob}, referenced by no row. Files the committed round
  * does not reference stay under {@code .hoodie/.blob} after the commit: those of successful task retries or recomputes, and a
@@ -101,7 +100,7 @@ public final class OutOfLineWriter {
   /**
    * Builds the write config and table once, on the driver, from the running write client's effective configuration,
    * including its timeline-server address. Refuses a target below table version 9 before copying, even when the job uses a
-   * newer write version, and, with {@code hoodie.write.out.of.line.markers.enable=true}, a configuration whose markers would fall
+   * newer write version, and, with {@code hoodie.write.blob.markers.enable=true}, a configuration whose markers would fall
    * back to direct markers in every task (an HDFS base path, or no embedded or remote timeline server). Tasks create their
    * writers from the returned factory.
    */
@@ -139,7 +138,7 @@ public final class OutOfLineWriter {
      * them ({@link OutOfLineWriter}).
      */
     private void checkTimelineServerMarkers() {
-      if (!table.getConfig().isOutOfLineMarkersEnabled()) {
+      if (!table.getConfig().isBlobMarkersEnabled()) {
         return;
       }
       MarkerType markerType = table.getConfig().getMarkersType();
@@ -148,7 +147,7 @@ public final class OutOfLineWriter {
         throw new HoodieValidationException("Out-of-line writes to " + basePath + " require TIMELINE_SERVER_BASED markers served by "
             + "a timeline server, but the write gets direct markers (" + HoodieWriteConfig.MARKERS_TYPE.key() + "=" + markerType
             + ", an HDFS base path, or no embedded or remote timeline server). Set "
-            + HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key() + "=false to write out-of-line files without markers");
+            + HoodieWriteConfig.BLOB_MARKERS_ENABLE.key() + "=false to write out-of-line files without markers");
       }
     }
 
@@ -157,10 +156,10 @@ public final class OutOfLineWriter {
       return new OutOfLineWriter(storage, basePath, instant, markers(instant));
     }
 
-    /** The instant's timeline-server markers, or none when {@code hoodie.write.out.of.line.markers.enable} is false. */
+    /** The instant's timeline-server markers, or none when {@code hoodie.write.blob.markers.enable} is false. */
     @VisibleForTesting
     Option<WriteMarkers> markers(String instant) {
-      if (!table.getConfig().isOutOfLineMarkersEnabled()) {
+      if (!table.getConfig().isBlobMarkersEnabled()) {
         return Option.empty();
       }
       MarkerType markerType = table.getConfig().getMarkersType();
@@ -171,23 +170,8 @@ public final class OutOfLineWriter {
     }
   }
 
-  /**
-   * Declares the marker settings out-of-line writes need while {@code hoodie.write.out.of.line.markers.enable} is true, its
-   * default: hoodie.write.markers.type=TIMELINE_SERVER_BASED, and hoodie.rollback.using.markers=true (listing-based rollback does
-   * not list {@code .hoodie/.blob/}). Unset, the streamer sets them; another value refuses the job. With the embedded timeline
-   * server off, the timeline-server markers are served by the job's remote timeline server. With out-of-line markers off, both are
-   * left to the job.
-   */
-  public static RequiredSourceSettings.Builder requireMarkers(RequiredSourceSettings.Builder settings, Properties props) {
-    if (markersEnabled(props)) {
-      settings.requireIgnoringCase(HoodieWriteConfig.MARKERS_TYPE, MarkerType.TIMELINE_SERVER_BASED.name())
-          .requireIgnoringCase(HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE, "true");
-    }
-    return settings;
-  }
-
   private static boolean markersEnabled(Properties props) {
-    return ConfigUtils.getBooleanWithAltKeys(props, HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE);
+    return ConfigUtils.getBooleanWithAltKeys(props, HoodieWriteConfig.BLOB_MARKERS_ENABLE);
   }
 
   /** A bounded streaming operation; callers classify source and target failures using their existing contracts. */

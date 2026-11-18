@@ -62,6 +62,7 @@ final class GuardedPageStripper extends PDFTextStripper {
   private int markedDepth;
   /** Graphics states held by the streams enclosing the one being processed. */
   private int outerStates;
+  private int skippedContentStreams;
 
   GuardedPageStripper(int maxGlyphs, int maxChars, int maxDepth) {
     this(maxGlyphs, maxChars, maxDepth, null);
@@ -85,6 +86,11 @@ final class GuardedPageStripper extends PDFTextStripper {
     this.document = document;
     this.output = out;
     processPage(page);
+  }
+
+  /** Invoked form streams whose extraction failed with an I/O error PDFBox handles by skipping the form. */
+  int skippedContentStreams() {
+    return skippedContentStreams;
   }
 
   @Override
@@ -126,6 +132,9 @@ final class GuardedPageStripper extends PDFTextStripper {
     int enclosing = enterNestedStream();
     try {
       super.showForm(form);
+    } catch (IOException e) {
+      skippedContentStreams++;
+      throw e;
     } finally {
       outerStates = enclosing;
     }
@@ -136,6 +145,9 @@ final class GuardedPageStripper extends PDFTextStripper {
     int enclosing = enterNestedStream();
     try {
       super.processTransparencyGroup(group);
+    } catch (IOException e) {
+      skippedContentStreams++;
+      throw e;
     } finally {
       outerStates = enclosing;
     }

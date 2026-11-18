@@ -436,7 +436,7 @@ public class TestPreprocessingIteratorPrefetch {
     props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "mp4");
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), "0");
     // no timeline server here: the files are written without markers
-    props.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    props.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
     return props;
   }
 

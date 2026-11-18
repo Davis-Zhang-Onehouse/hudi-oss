@@ -71,7 +71,7 @@ import org.apache.hudi.utilities.ingestion.HoodieIngestionMetrics;
 import org.apache.hudi.utilities.ingestion.HoodieIngestionService;
 import org.apache.hudi.utilities.schema.SchemaProvider;
 import org.apache.hudi.utilities.sources.JsonDFSSource;
-import org.apache.hudi.utilities.sources.RequiredSourceSettings;
+import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.SourceContracts;
 
 import com.beust.jcommander.JCommander;
@@ -754,10 +754,12 @@ public class HoodieStreamer implements Serializable {
       this.sparkSession = SparkSession.builder().config(hoodieSparkContext.getConf()).getOrCreate();
       this.asyncCompactService = Option.empty();
       this.asyncClusteringService = Option.empty();
+      Pair<SourceContract, TypedProperties> prepared = prepareJob(cfg, properties.get());
+      this.props = prepared.getRight();
       this.postWriteTerminationStrategy = StringUtils.isNullOrEmpty(cfg.postWriteTerminationStrategyClass) ? Option.empty() :
-          TerminationStrategyUtils.createPostWriteTerminationStrategy(properties.get(), cfg.postWriteTerminationStrategyClass);
+          TerminationStrategyUtils.createPostWriteTerminationStrategy(props, cfg.postWriteTerminationStrategyClass);
       this.configurationHotUpdateStrategyOpt = StringUtils.isNullOrEmpty(cfg.configHotUpdateStrategyClass) ? Option.empty() :
-          ConfigurationHotUpdateStrategyUtils.createConfigurationHotUpdateStrategy(cfg.configHotUpdateStrategyClass, cfg, properties.get());
+          ConfigurationHotUpdateStrategyUtils.createConfigurationHotUpdateStrategy(cfg.configHotUpdateStrategyClass, cfg, props);
 
       if (this.storage.exists(new StoragePath(cfg.targetBasePath))) {
         try {
@@ -771,13 +773,9 @@ public class HoodieStreamer implements Serializable {
           if (cfg.baseFileFormat == null) {
             cfg.baseFileFormat = "PARQUET"; // default for backward compatibility
           }
-          // the settings the source's contract requires and its table's stored fields are checked first, so that a conflict names
-          // the source; the table is then validated against the settings the job runs with, which StreamSync merges again
-          RequiredSourceSettings requiredSettings = SourceContracts.of(cfg.sourceClassName, properties.get()).requiredSettings(properties.get());
-          TypedProperties jobProps = requiredSettings.apply(properties.get());
-          requiredSettings.checkTable(cfg.targetBasePath, meta.getTableConfig());
+          SourceContracts.validate(prepared.getLeft(), cfg.targetBasePath, meta.getTableConfig());
           Map<String, String> propsToValidate = new HashMap<>();
-          jobProps.forEach((k, v) -> propsToValidate.put(k.toString(), v.toString()));
+          props.forEach((k, v) -> propsToValidate.put(k.toString(), v.toString()));
           HoodieWriterUtils.validateTableConfig(this.sparkSession, org.apache.hudi.HoodieConversionUtils.mapAsScalaImmutableMap(propsToValidate), meta.getTableConfig());
         } catch (HoodieIOException e) {
           log.warn("Full exception msg {},  msg {}", e.getLocalizedMessage(), e.getMessage());
@@ -794,7 +792,6 @@ public class HoodieStreamer implements Serializable {
       checkArgument(!cfg.filterDupes || cfg.operation != WriteOperationType.UPSERT,
           "'--filter-dupes' needs to be disabled when '--op' is 'UPSERT' to ensure updates are not missed.");
 
-      this.props = properties.get();
       log.info(toSortedTruncatedString(props));
 
       this.schemaProvider = UtilHelpers.wrapSchemaProviderWithPostProcessor(
@@ -802,7 +799,7 @@ public class HoodieStreamer implements Serializable {
           props, hoodieSparkContext.jsc(), cfg.transformerClassNames);
 
       streamSync = new StreamSync(cfg, sparkSession, props, hoodieSparkContext,
-          fs, conf, this::onInitializingWriteClient, new DefaultStreamContext(schemaProvider, sourceProfileSupplier));
+          fs, conf, this::onInitializingWriteClient, new DefaultStreamContext(schemaProvider, sourceProfileSupplier), prepared.getLeft());
     }
 
     public StreamSyncService(HoodieStreamer.Config cfg,
@@ -817,6 +814,12 @@ public class HoodieStreamer implements Serializable {
       this(cfg, hoodieSparkContext, fs, conf, properties, Option.empty());
     }
 
+    /** Shared by the service and direct StreamSync callers; each construction prepares exactly once. */
+    static Pair<SourceContract, TypedProperties> prepareJob(Config cfg, TypedProperties props) {
+      SourceContract contract = SourceContracts.of(cfg.sourceClassName, props);
+      return Pair.of(contract, contract.prepareJob(props));
+    }
+
     private void initializeTableTypeAndBaseFileFormat() {
       tableType = HoodieTableType.valueOf(cfg.tableType);
       if (cfg.baseFileFormat == null) {
@@ -828,9 +831,11 @@ public class HoodieStreamer implements Serializable {
       if (streamSync != null) {
         streamSync.close();
       }
+      Pair<SourceContract, TypedProperties> prepared = prepareJob(cfg, props);
+      this.props = prepared.getRight();
       streamSync = new StreamSync(cfg, sparkSession, props, hoodieSparkContext,
           (FileSystem) storage.getFileSystem(), hiveConf, this::onInitializingWriteClient,
-          new DefaultStreamContext(schemaProvider, Option.empty()));
+          new DefaultStreamContext(schemaProvider, Option.empty()), prepared.getLeft());
     }
 
     @Override

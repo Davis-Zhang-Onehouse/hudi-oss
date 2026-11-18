@@ -33,7 +33,8 @@ import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.hadoop.HoodieHadoopStorage;
 import org.apache.hudi.table.marker.TimelineServerBasedWriteMarkers;
-import org.apache.hudi.utilities.sources.RequiredSourceSettings;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceConfig;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract;
 
 import org.apache.hadoop.conf.Configuration;
 import org.junit.jupiter.api.Test;
@@ -125,7 +126,7 @@ class TestOutOfLineWriter {
     String base = initTable();
     StorageConfiguration<?> conf = HadoopFSUtils.getStorageConf(new Configuration());
     Properties props = new Properties();
-    props.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    props.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
     OutOfLineWriter.Factory factory = javaRoundTrip(OutOfLineWriter.forTable(conf, base, props));
     Files.delete(temp.resolve("table/.hoodie/hoodie.properties"));
     HoodieStorage storage = new HoodieHadoopStorage(new StoragePath(base), conf);
@@ -143,7 +144,10 @@ class TestOutOfLineWriter {
 
   /** The marker settings out-of-line writes need, merged into a job: {@code props} with the declared markers applied. */
   private static TypedProperties markers(TypedProperties props) {
-    return OutOfLineWriter.requireMarkers(RequiredSourceSettings.builder(OutOfLineWriter.class.getSimpleName()), props).build().apply(props);
+    TypedProperties job = TypedProperties.copy(props);
+    job.setProperty(UnstructuredSourceConfig.MODE.key(), "blob");
+    job.setProperty(UnstructuredSourceConfig.CLOUD.key(), "s3");
+    return new UnstructuredSourceContract(job).prepareJob(job);
   }
 
   /**
@@ -164,8 +168,8 @@ class TestOutOfLineWriter {
       String value = key.equals(HoodieWriteConfig.MARKERS_TYPE.key()) ? "DIRECT" : "false";
       conflicting.setProperty(key, value);
       IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> markers(conflicting));
-      assertTrue(refused.getMessage().startsWith("OutOfLineWriter requires " + key + "="), refused.getMessage());
-      conflicting.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+      assertTrue(refused.getMessage().startsWith("UnstructuredDataSource (mode blob) requires " + key + "="), refused.getMessage());
+      conflicting.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
       assertEquals(value, markers(conflicting).getString(key), "disabled markers keep the job's writer settings");
     }
   }
@@ -181,7 +185,7 @@ class TestOutOfLineWriter {
     assertEquals("TIMELINE_SERVER_BASED", markers(unset).getString(HoodieWriteConfig.MARKERS_TYPE.key()));
 
     TypedProperties disabled = TypedProperties.copy(unset);
-    disabled.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    disabled.setProperty("hoodie.write.blob.markers.enable", "false");
     assertFalse(markers(disabled).containsKey(HoodieWriteConfig.MARKERS_TYPE.key()));
   }
 
@@ -209,10 +213,10 @@ class TestOutOfLineWriter {
     props.setProperty(HoodieWriteConfig.EMBEDDED_TIMELINE_SERVER_ENABLE.key(), "false");
     HoodieValidationException failure = assertThrows(HoodieValidationException.class,
         () -> OutOfLineWriter.forTable(conf, base, props));
-    assertTrue(failure.getMessage().contains(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key() + "=false"), failure.getMessage());
+    assertTrue(failure.getMessage().contains(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key() + "=false"), failure.getMessage());
     assertFalse(Files.exists(temp.resolve("table/.hoodie/.blob")), "refusal precedes any copy");
 
-    props.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    props.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
     OutOfLineWriter.forTable(conf, base, props);
   }
 

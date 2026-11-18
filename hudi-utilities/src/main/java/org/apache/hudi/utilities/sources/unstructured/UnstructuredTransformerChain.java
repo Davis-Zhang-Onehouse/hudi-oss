@@ -17,11 +17,10 @@
  * under the License.
  */
 
-package org.apache.hudi.utilities.transform;
+package org.apache.hudi.utilities.sources.unstructured;
 
-import org.apache.hudi.common.util.Option;
 import org.apache.hudi.utilities.exception.HoodieTransformPlanException;
-import org.apache.hudi.utilities.sources.SourceContract;
+import org.apache.hudi.utilities.transform.Transformer;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -29,41 +28,19 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/**
- * The transformer chain the streamer runs for its source: the job's {@code --transformer-class} list, plus the transformer a
- * source's contract requires ({@link SourceContract#requiredTransformer}). A job that does not name the required transformer gets it first in the chain, so
- * its own transformers run on the rows it produced. A job that names it once keeps that position; a source's contract may still
- * refuse entries before it (the unstructured data source does). When named more than once, only its first entry is kept. A
- * transformer the source excludes is refused. A source's closing transformer runs last, after the job's own; a job may not
- * name it.
- */
-public final class RequiredTransformerChain {
+/** Composition rules of an unstructured job's required transformer and final schema guard. */
+final class UnstructuredTransformerChain {
 
-  /** The delimiter of a chain entry's {@code <id>:<class>} form ({@link ChainedTransformer}). */
+  /** The delimiter of a chain entry's {@code <id>:<class>} form ({@link org.apache.hudi.utilities.transform.ChainedTransformer}). */
   private static final String ID_DELIMITER = ":";
 
-  private RequiredTransformerChain() {
+  private UnstructuredTransformerChain() {
   }
 
-  /**
-   * The chain to run for the source of {@code contract}.
-   *
-   * @param contract   the contract of the streamer's source
-   * @param configured the job's {@code --transformer-class} entries, or null when it configures none
-   * @return {@code configured} itself for a source that requires no transformer, or when it names the required one exactly
-   *     once and the source has no closing transformer; otherwise a new list keeping its first required entry, or adding it first
-   *     when absent, then the source's closing transformer ({@link SourceContract#closingTransformer}) last. When the
-   *     job's entries take the {@code <id>:<class>} form, an added entry takes its transformer's simple class name as its id.
-   * @throws HoodieTransformPlanException when the chain names an excluded or the closing transformer, or already uses the id an
-   *     added entry would take
-   */
-  public static List<String> compose(SourceContract contract, List<String> configured) {
-    List<String> chain = composeRequired(contract, configured);
-    Option<Class<? extends Transformer>> closing = contract.closingTransformer();
-    if (!closing.isPresent()) {
-      return chain;
-    }
-    String sourceName = contract.sourceName();
+  static List<String> compose(UnstructuredMode mode, List<String> configured) {
+    List<String> chain = composeRequired(mode, configured);
+    Class<? extends Transformer> closing = UnstructuredSchemaGuard.class;
+    String sourceName = "UnstructuredDataSource";
     boolean withIds = false;
     Set<String> ids = new HashSet<>();
     for (String entry : chain) {
@@ -73,18 +50,18 @@ public final class RequiredTransformerChain {
         withIds = true;
         ids.add(trimmed.substring(0, delimiter).trim());
       }
-      if (isA(trimmed.substring(delimiter + 1).trim(), closing.get())) {
-        throw new HoodieTransformPlanException(sourceName + " runs " + closing.get().getName() + " last itself: remove it from "
+      if (isA(trimmed.substring(delimiter + 1).trim(), closing)) {
+        throw new HoodieTransformPlanException(sourceName + " runs " + closing.getName() + " last itself: remove it from "
             + "--transformer-class. Transformers configured: " + configured);
       }
     }
-    String id = closing.get().getSimpleName();
+    String id = closing.getSimpleName();
     if (withIds && ids.contains(id)) {
       throw new HoodieTransformPlanException("--transformer-class uses the id " + id + ", which " + sourceName + " gives the "
-          + closing.get().getName() + " it adds last: rename that entry. Transformers configured: " + configured);
+          + closing.getName() + " it adds last: rename that entry. Transformers configured: " + configured);
     }
     List<String> closed = new ArrayList<>(chain);
-    closed.add(withIds ? id + ID_DELIMITER + closing.get().getName() : closing.get().getName());
+    closed.add(withIds ? id + ID_DELIMITER + closing.getName() : closing.getName());
     return closed;
   }
 
@@ -97,14 +74,11 @@ public final class RequiredTransformerChain {
   }
 
   /** {@link #compose} before its closing transformer: the required transformer joins the job's entries. */
-  private static List<String> composeRequired(SourceContract contract, List<String> configured) {
-    Option<Class<? extends Transformer>> requiredOption = contract.requiredTransformer();
-    Set<Class<? extends Transformer>> excludedTransformers = contract.excludedTransformers();
-    if (!requiredOption.isPresent() && excludedTransformers.isEmpty()) {
-      return configured;
-    }
+  private static List<String> composeRequired(UnstructuredMode mode, List<String> configured) {
+    Class<? extends Transformer> required = mode.requiredTransformer();
+    Set<Class<? extends Transformer>> excludedTransformers = mode.excludedTransformers();
     List<String> entries = configured == null ? Collections.emptyList() : configured;
-    String sourceName = contract.sourceName();
+    String sourceName = "UnstructuredDataSource";
     int requiredEntries = 0;
     boolean withIds = false;
     Set<String> ids = new HashSet<>();
@@ -120,11 +94,11 @@ public final class RequiredTransformerChain {
       for (Class<? extends Transformer> excluded : excludedTransformers) {
         if (isA(className, excluded)) {
           throw new HoodieTransformPlanException(sourceName + " does not run with " + excluded.getName() + ": --transformer-class names "
-              + className + ". " + requiredOption.map(required -> sourceName + " runs " + required.getName() + ". ").orElse("")
+              + className + ". " + (sourceName + " runs " + required.getName() + ". ")
               + "Transformers configured: " + entries);
         }
       }
-      if (requiredOption.isPresent() && isA(className, requiredOption.get())) {
+      if (isA(className, required)) {
         requiredEntries++;
         if (requiredEntries > 1) {
           continue;
@@ -132,13 +106,9 @@ public final class RequiredTransformerChain {
       }
       chain.add(entry);
     }
-    if (!requiredOption.isPresent()) {
-      return configured;
-    }
     if (requiredEntries > 0) {
       return requiredEntries == 1 ? configured : chain;
     }
-    Class<? extends Transformer> required = requiredOption.get();
     if (withIds) {
       String id = required.getSimpleName();
       if (ids.contains(id)) {
@@ -163,7 +133,7 @@ public final class RequiredTransformerChain {
       return true;
     }
     try {
-      return transformer.isAssignableFrom(Class.forName(className, false, RequiredTransformerChain.class.getClassLoader()));
+      return transformer.isAssignableFrom(Class.forName(className, false, UnstructuredTransformerChain.class.getClassLoader()));
     } catch (ClassNotFoundException e) {
       return false;
     }

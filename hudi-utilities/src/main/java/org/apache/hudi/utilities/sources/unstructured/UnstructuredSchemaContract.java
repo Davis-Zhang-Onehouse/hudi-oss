@@ -29,7 +29,6 @@ import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.config.HoodieErrorTableConfig;
 import org.apache.hudi.utilities.config.CloudSourceConfig;
 import org.apache.hudi.utilities.sources.blob.BlobTableSchema;
-import org.apache.hudi.utilities.transform.RequiredTransformerChain;
 import org.apache.hudi.utilities.transform.Transformer;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingTableTransformer;
@@ -188,7 +187,7 @@ public final class UnstructuredSchemaContract {
     String source = sourceName(mode);
     int requiredIndex = -1;
     for (int i = 0; i < chain.size() && requiredIndex < 0; i++) {
-      if (RequiredTransformerChain.names(chain.get(i), required)) {
+      if (UnstructuredTransformerChain.names(chain.get(i), required)) {
         requiredIndex = i;
       }
     }
@@ -211,7 +210,7 @@ public final class UnstructuredSchemaContract {
     // the round passes each entry the rows as the previous one left them, a column added again given twice; only the closing
     // guard resolves it, so each entry is planned against the unresolved columns and the add-only rule reads the resolved ones
     for (String entry : chain.subList(requiredIndex + 1, chain.size())) {
-      if (RequiredTransformerChain.names(entry, closing)) {
+      if (UnstructuredTransformerChain.names(entry, closing)) {
         continue;
       }
       StructType unresolved = plan(mode, entry, ids, schema, jsc, spark, props);

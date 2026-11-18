@@ -18,10 +18,8 @@
 
 package org.apache.hudi.utilities.sources.unstructured;
 
-import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.util.StringUtils;
-import org.apache.hudi.utilities.sources.RequiredSourceSettings;
 import org.apache.hudi.utilities.sources.blob.BlobCopyTransformer;
 import org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector;
 import org.apache.hudi.utilities.sources.blob.BlobTableConfig;
@@ -40,6 +38,21 @@ import java.util.Set;
  * The job of an unstructured data source ({@link UnstructuredSourceConfig#MODE}): which table it writes, the transformer the
  * streamer runs in every round, the transformer it refuses, the Parquet config injector the table is written with, and the checks
  * of the job's own properties that belong to that job.
+ *
+ * <p>The blob table's physical write settings are job properties, not persisted table configuration. Every job that rewrites
+ * its files, including a separate compaction or clustering job, must carry the ingestion job's physical settings:
+ * <ul>
+ *   <li>{@code hoodie.parquet.compression.codec=uncompressed} and {@code hoodie.parquet.bloom.filter.enabled=false}, the blob
+ *       job's defaults. Bloom is off under the memory-pressure write defaults. An explicit user value is kept;
+ *       carry any explicit ingestion overrides into the table-service job as well;</li>
+ *   <li>{@code hoodie.parquet.write.config.injector.class=org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector},
+ *       which also supplies the per-record page checks and writer-buffer settings;</li>
+ *   <li>{@code parquet.enable.dictionary#blob.data=false}, and {@code parquet.column.statistics.enabled#blob.data=false} on
+ *       Parquet 1.14 or later, where the per-column statistics switch is supported. The injector applies these per-column
+ *       settings after any delegate injector.</li>
+ * </ul>
+ * Without these properties, a table-service job rewrites files with Hudi's default physical settings. A job with its own
+ * injector carries it under {@link BlobParquetConfigInjector#DELEGATE_CLASS} so the blob injector still runs.
  */
 public enum UnstructuredMode {
 
@@ -104,22 +117,6 @@ public enum UnstructuredMode {
   /** The key under which a job's own Parquet config injector goes; it runs before {@link #injectorClass()}. */
   public String injectorDelegateKey() {
     return injectorDelegateKey;
-  }
-
-  /**
-   * Adds this job's settings to {@code settings}: {@code hoodie.parquet.write.config.injector.class=}{@link #injectorClass()}, whose
-   * refusal names where a job's own injector goes ({@link #injectorDelegateKey()}); and for the blob job's stored-as-is bytes
-   * {@code hoodie.parquet.compression.codec=uncompressed} and {@code hoodie.parquet.bloom.filter.enabled=false}, two defaults a job
-   * may set to any value. The embedding job keeps Hudi's codec and bloom filter.
-   */
-  public RequiredSourceSettings.Builder addSettings(RequiredSourceSettings.Builder settings) {
-    settings.require(HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS, injectorClass)
-        .hint("a job's own injector goes under " + injectorDelegateKey + ", and runs first");
-    if (this == BLOB) {
-      settings.withDefault(HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME, "uncompressed")
-          .withDefault(HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED, "false");
-    }
-    return settings;
   }
 
   /**

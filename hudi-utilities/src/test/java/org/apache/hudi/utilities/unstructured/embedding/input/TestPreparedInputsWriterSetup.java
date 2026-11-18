@@ -60,7 +60,7 @@ public class TestPreparedInputsWriterSetup {
     HoodieValidationException failure = assertThrows(HoodieValidationException.class,
         () -> new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), base, props));
     assertTrue(failure.getMessage().contains("TIMELINE_SERVER_BASED"), failure.getMessage());
-    assertTrue(failure.getMessage().contains(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key() + "=false"), failure.getMessage());
+    assertTrue(failure.getMessage().contains(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key() + "=false"), failure.getMessage());
     assertFalse(Files.exists(temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER)), "no payload file");
   }
 }

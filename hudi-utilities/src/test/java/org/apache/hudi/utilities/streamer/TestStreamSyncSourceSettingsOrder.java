@@ -22,27 +22,32 @@ import org.apache.hudi.client.common.HoodieSparkEngineContext;
 import org.apache.hudi.common.config.RecordMergeMode;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.HoodieTableType;
+import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.common.schema.internal.HoodieSchemaException;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.HoodieTableVersion;
 import org.apache.hudi.common.table.checkpoint.Checkpoint;
+import org.apache.hudi.common.table.checkpoint.StreamerCheckpointV1;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.common.util.collection.Triple;
-import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.metrics.Metrics;
+import org.apache.hudi.utilities.config.HoodieIncrSourceConfig;
+import org.apache.hudi.utilities.config.HoodieStreamerConfig;
 import org.apache.hudi.utilities.exception.HoodieTransformPlanException;
+import org.apache.hudi.utilities.ingestion.HoodieIngestionMetrics;
 import org.apache.hudi.utilities.schema.SchemaProvider;
-import org.apache.hudi.utilities.sources.InputBatch;
-import org.apache.hudi.utilities.sources.RequiredSourceSettings;
-import org.apache.hudi.utilities.sources.Source;
 import org.apache.hudi.utilities.sources.SourceContract;
-import org.apache.hudi.utilities.sources.SourceContractClass;
+import org.apache.hudi.utilities.sources.SourceContracts;
+import org.apache.hudi.utilities.sources.UnstructuredDataSource;
+import org.apache.hudi.utilities.sources.unstructured.TestUnstructuredChainPlan;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceConfig;
 import org.apache.hudi.utilities.testutils.UtilitiesTestBase;
-import org.apache.hudi.utilities.transform.Transformer;
+import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingTableTransformer;
 
-import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -54,9 +59,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -75,9 +78,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
 
   private static final String RECORD_KEY = KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key();
-  private static final String REQUIRED_KEY = "a,b";
+  private static final String REQUIRED_KEY = "source_path_sha,source_modification_time,source_file_size";
   /** A setting only the source declares, to see where the merged settings reach. */
-  private static final String DECLARED_ONLY = "hoodie.upsert.shuffle.parallelism";
+  private static final String DECLARED_ONLY = HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER.key();
 
   @TempDir
   Path tempDir;
@@ -119,6 +122,9 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   private static TypedProperties jobProps() {
     TypedProperties props = new TypedProperties();
     props.setProperty("hoodie.datasource.write.keygenerator.class", "org.apache.hudi.keygen.NonpartitionedKeyGenerator");
+    props.setProperty(UnstructuredSourceConfig.MODE.key(), "blob");
+    props.setProperty(UnstructuredSourceConfig.CLOUD.key(), "s3");
+    props.setProperty(HoodieIncrSourceConfig.HOODIE_SRC_BASE_PATH.key(), "file:/unused-events");
     return props;
   }
 
@@ -143,7 +149,7 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   void settingsReachWriteConfigAndNewTable() throws Exception {
     try (StreamSync sync = streamSync(jobProps())) {
       assertEquals(REQUIRED_KEY, sync.getProps().getString(RECORD_KEY));
-      assertEquals("7", sync.getProps().getString(DECLARED_ONLY));
+      assertEquals("true", sync.getProps().getString(DECLARED_ONLY));
     }
     assertEquals(REQUIRED_KEY, tableConfig().getString(HoodieTableConfig.RECORDKEY_FIELDS));
   }
@@ -157,9 +163,106 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
       TypedProperties seen = ContractTestSource.SEEN.get();
       assertNotNull(seen, "the source was not built");
       assertEquals(REQUIRED_KEY, seen.getString(RECORD_KEY));
-      assertEquals("7", seen.getString(DECLARED_ONLY));
+      assertEquals("true", seen.getString(DECLARED_ONLY));
       assertEquals(before, props, "the job's properties changed");
     }
+  }
+
+  @Test
+  void schemaProviderSeesTheSamePreparedPropertiesAsTheSource() throws Exception {
+    TypedProperties props = jobProps();
+    TypedProperties before = TypedProperties.copy(props);
+    HoodieStreamer.Config cfg = config();
+    cfg.schemaProviderClassName = RecordingSchemaProvider.class.getName();
+    RecordingSchemaProvider.SEEN.set(null);
+    HoodieStreamer streamer = new HoodieStreamer(cfg, jsc, Option.of(props));
+    try {
+      assertNotNull(RecordingSchemaProvider.SEEN.get());
+      assertEquals("true", RecordingSchemaProvider.SEEN.get().getString(DECLARED_ONLY, null));
+      assertEquals(REQUIRED_KEY, RecordingSchemaProvider.SEEN.get().getString(RECORD_KEY, null));
+      assertEquals("true", ContractTestSource.SEEN.get().getString(DECLARED_ONLY));
+      assertEquals(before, props, "preparing the job must not change the caller's properties");
+    } finally {
+      streamer.shutdownGracefully();
+    }
+  }
+
+  public static class RecordingSchemaProvider extends SchemaProvider {
+    static final AtomicReference<TypedProperties> SEEN = new AtomicReference<>();
+
+    public RecordingSchemaProvider(TypedProperties props, JavaSparkContext jsc) {
+      super(props, jsc);
+      SEEN.set(TypedProperties.copy(props));
+    }
+
+    @Override
+    public HoodieSchema getSourceHoodieSchema() {
+      return null;
+    }
+  }
+
+  @Test
+  void preparedConstructionDoesNotMergeTheSourceSettingsAgain() throws Exception {
+    TypedProperties prepared = SourceContracts.of(ContractTestSource.class.getName(), jobProps()).prepareJob(jobProps());
+    SourceContract alreadyPrepared = props -> {
+      throw new AssertionError("the service's prepared properties were merged again");
+    };
+    try (StreamSync sync = new StreamSync(config(), sparkSession, prepared, new HoodieSparkEngineContext(jsc), fs,
+        jsc.hadoopConfiguration(), client -> true, new DefaultStreamContext(null, Option.empty()), alreadyPrepared)) {
+      assertEquals("true", sync.getProps().getString(DECLARED_ONLY));
+      assertEquals(1, ContractTestSource.BUILT.get());
+    }
+  }
+
+  @Test
+  void hotUpdatePreparesReplacementPropertiesBeforeReinitializingTheWriter() throws Exception {
+    HoodieStreamer.Config cfg = config();
+    cfg.continuousMode = true;
+    cfg.configHotUpdateStrategyClass = UnpreparedHotUpdate.class.getName();
+    cfg.postWriteTerminationStrategyClass = NoNewDataTerminationStrategy.class.getName();
+    TypedProperties props = jobProps();
+    props.setProperty(NoNewDataTerminationStrategy.MAX_ROUNDS_WITHOUT_NEW_DATA_TO_SHUTDOWN, "1");
+    HoodieStreamer streamer = new HoodieStreamer(cfg, jsc, Option.of(props));
+    try {
+      streamer.sync();
+      TypedProperties updated = ((HoodieStreamer.StreamSyncService) streamer.getIngestionService()).getProps();
+      assertEquals("true", updated.getString(DECLARED_ONLY, null));
+      assertEquals(REQUIRED_KEY, updated.getString(RECORD_KEY, null));
+      assertEquals("updated", updated.getString("test.hot.update"));
+      assertEquals(2, ContractTestSource.BUILT.get(), "the hot update reconstructs the source once");
+    } finally {
+      streamer.shutdownGracefully();
+    }
+  }
+
+  public static class UnpreparedHotUpdate extends ConfigurationHotUpdateStrategy {
+    public UnpreparedHotUpdate(HoodieStreamer.Config cfg, TypedProperties props) {
+      super(cfg, props);
+    }
+
+    @Override
+    public Option<TypedProperties> updateProperties(TypedProperties current) {
+      if (current.containsKey("test.hot.update")) {
+        return Option.empty();
+      }
+      TypedProperties updated = TypedProperties.copy(current);
+      updated.remove(DECLARED_ONLY);
+      updated.remove(RECORD_KEY);
+      updated.setProperty("test.hot.update", "updated");
+      return Option.of(updated);
+    }
+  }
+
+  @Test
+  void schemaPlanningRejectsDroppedColumnsBeforeConstructingTheSource() {
+    HoodieStreamer.Config cfg = config();
+    cfg.transformerClassNames = Collections.singletonList(TestUnstructuredChainPlan.DropColumnTransformer.class.getName());
+    TypedProperties props = jobProps();
+    props.setProperty("test.drop.column", "source_file_size");
+    assertThrows(HoodieSchemaException.class, () -> new StreamSync(cfg, sparkSession, props,
+        new HoodieSparkEngineContext(jsc), fs, jsc.hadoopConfiguration(), client -> true,
+        new DefaultStreamContext(null, Option.empty())));
+    assertEquals(0, ContractTestSource.BUILT.get());
   }
 
   @Test
@@ -167,7 +270,7 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     TypedProperties props = jobProps();
     props.setProperty(RECORD_KEY, "b,a");
     IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> streamSync(props));
-    assertEquals(ContractTestSource.NAME + " requires " + RECORD_KEY + "=a,b (these fields, in this order), configured: b,a",
+    assertEquals(ContractTestSource.NAME + " requires " + RECORD_KEY + "=" + REQUIRED_KEY + " (these fields, in this order), configured: b,a",
         refused.getMessage());
     assertEquals(0, ContractTestSource.BUILT.get(), "the refused job built its source");
   }
@@ -192,19 +295,19 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     TypedProperties conflicting = jobProps();
     conflicting.setProperty(RECORD_KEY, "y");
     String sourceRefusal = causes(assertThrows(Exception.class, () -> new HoodieStreamer(config(), jsc, Option.of(conflicting))));
-    assertTrue(sourceRefusal.contains(ContractTestSource.NAME + " requires " + RECORD_KEY + "=a,b"), sourceRefusal);
+    assertTrue(sourceRefusal.contains(ContractTestSource.NAME + " requires " + RECORD_KEY + "=" + REQUIRED_KEY), sourceRefusal);
 
     TypedProperties partitioned = jobProps();
-    partitioned.setProperty(RECORD_KEY, " a , b");
+    partitioned.setProperty(RECORD_KEY, " " + REQUIRED_KEY.replace(",", " , "));
     partitioned.setProperty(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key(), "p");
-    partitioned.setProperty("hoodie.datasource.write.keygenerator.class", "org.apache.hudi.keygen.SimpleKeyGenerator");
+    partitioned.setProperty("hoodie.datasource.write.keygenerator.class", "org.apache.hudi.keygen.ComplexKeyGenerator");
     String stockRefusal = causes(assertThrows(Exception.class, () -> new HoodieStreamer(config(), jsc, Option.of(partitioned))));
     assertTrue(stockRefusal.contains("Config conflict"), stockRefusal);
     assertFalse(stockRefusal.contains("RecordKey"), "the job's key is compared in its required form: " + stockRefusal);
     assertFalse(stockRefusal.contains(ContractTestSource.NAME), stockRefusal);
 
     TypedProperties same = jobProps();
-    same.setProperty(RECORD_KEY, " a , b");
+    same.setProperty(RECORD_KEY, " " + REQUIRED_KEY.replace(",", " , "));
     new HoodieStreamer(config(), jsc, Option.of(same)).shutdownGracefully();
   }
 
@@ -241,11 +344,11 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
   @Test
   void excludedTransformerRefusedBeforeTheSourceIsBuilt() {
     HoodieStreamer.Config cfg = config();
-    cfg.transformerClassNames = Collections.singletonList(ExcludedTransformer.class.getName());
+    cfg.transformerClassNames = Collections.singletonList(EmbeddingTableTransformer.class.getName());
     HoodieTransformPlanException refused = assertThrows(HoodieTransformPlanException.class,
         () -> new StreamSync(cfg, sparkSession, jobProps(), new HoodieSparkEngineContext(jsc), fs, jsc.hadoopConfiguration(),
             client -> true, new DefaultStreamContext(null, Option.empty())));
-    assertTrue(refused.getMessage().startsWith("ContractTestSource does not run with " + ExcludedTransformer.class.getName()),
+    assertTrue(refused.getMessage().startsWith("UnstructuredDataSource does not run with " + EmbeddingTableTransformer.class.getName()),
         refused.getMessage());
     assertEquals(0, ContractTestSource.BUILT.get(), "the refused job built its source");
   }
@@ -261,14 +364,6 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     assertEquals(0, ContractTestSource.BUILT.get(), "the refused job built its source");
   }
 
-  /** A transformer the test contract excludes; never run. */
-  public static class ExcludedTransformer implements Transformer {
-    @Override
-    public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rows, TypedProperties props) {
-      return rows;
-    }
-  }
-
   private static String causes(Throwable failure) {
     StringBuilder messages = new StringBuilder();
     for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
@@ -277,47 +372,22 @@ public class TestStreamSyncSourceSettingsOrder extends UtilitiesTestBase {
     return messages.toString();
   }
 
-  /** A source with a contract, which records the properties its constructor saw, counts its builds and reads nothing. */
-  @SourceContractClass(ContractTestSourceContract.class)
-  public static class ContractTestSource extends Source<JavaRDD<String>> {
-    static final String NAME = "ContractTestSource (mode test)";
+  /** A registered source subclass that records construction without reading source data. */
+  public static class ContractTestSource extends UnstructuredDataSource {
+    static final String NAME = "UnstructuredDataSource (mode blob)";
     static final AtomicReference<TypedProperties> SEEN = new AtomicReference<>();
     static final AtomicInteger BUILT = new AtomicInteger();
 
     public ContractTestSource(TypedProperties props, JavaSparkContext sparkContext, SparkSession sparkSession,
-                              SchemaProvider schemaProvider) {
-      super(props, sparkContext, sparkSession, schemaProvider, SourceType.JSON);
+                              HoodieIngestionMetrics metrics, StreamContext streamContext) {
+      super(props, sparkContext, sparkSession, metrics, streamContext);
       SEEN.set(TypedProperties.copy(props));
       BUILT.incrementAndGet();
     }
 
     @Override
-    protected InputBatch<JavaRDD<String>> fetchNewData(Option<String> lastCkptStr, long sourceLimit) {
-      return new InputBatch<>(Option.empty(), (Checkpoint) null);
-    }
-  }
-
-  /** The contract of {@link ContractTestSource}: a record key, a setting only it declares, and an excluded transformer. */
-  public static class ContractTestSourceContract implements SourceContract {
-    public ContractTestSourceContract(TypedProperties props) {
-    }
-
-    @Override
-    public String sourceName() {
-      return "ContractTestSource";
-    }
-
-    @Override
-    public Set<Class<? extends Transformer>> excludedTransformers() {
-      return Collections.singleton(ExcludedTransformer.class);
-    }
-
-    @Override
-    public RequiredSourceSettings requiredSettings(TypedProperties jobProps) {
-      return RequiredSourceSettings.builder(ContractTestSource.NAME)
-          .requireFields(KeyGeneratorOptions.RECORDKEY_FIELD_NAME, Arrays.asList("a", "b"), HoodieTableConfig.RECORDKEY_FIELDS)
-          .require(HoodieWriteConfig.UPSERT_PARALLELISM_VALUE, "7")
-          .build();
+    public Pair<Option<Dataset<Row>>, Checkpoint> fetchNextBatch(Option<Checkpoint> checkpoint, long sourceLimit) {
+      return Pair.of(Option.empty(), new StreamerCheckpointV1("0"));
     }
   }
 }

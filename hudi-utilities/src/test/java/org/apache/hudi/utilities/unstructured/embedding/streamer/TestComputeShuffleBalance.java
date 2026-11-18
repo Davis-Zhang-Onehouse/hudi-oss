@@ -121,7 +121,7 @@ public class TestComputeShuffleBalance extends SparkClientFunctionalTestHarness 
     assertEquals(61, (int) Collections.max(before), "the fixture is skewed: " + before);
     assertEquals(1, (int) Collections.min(before), before.toString());
 
-    JavaRDD<Row> dealt = ComputeRound.roundRobin(input, 4);
+    JavaRDD<Row> dealt = ComputeRound.hashPartitionByKey(input, 4);
     List<Integer> after = counts(dealt);
 
     assertEquals(4, after.size(), "one task per configured parallelism");
@@ -135,7 +135,7 @@ public class TestComputeShuffleBalance extends SparkClientFunctionalTestHarness 
   public void largeInputIsBalancedInExpectation() {
     int parallelism = 4;
     Dataset<Row> input = skewed(4000, 0, 0);
-    List<Integer> after = counts(ComputeRound.roundRobin(input, parallelism));
+    List<Integer> after = counts(ComputeRound.hashPartitionByKey(input, parallelism));
     assertEquals(parallelism, after.size());
     assertEquals(4000, after.stream().mapToInt(Integer::intValue).sum());
     double mean = 4000.0 / parallelism;
@@ -176,7 +176,7 @@ public class TestComputeShuffleBalance extends SparkClientFunctionalTestHarness 
   public void twoDealsOfTheSameInputAgree() {
     Dataset<Row> input = skewed(20, 5, 0, 7).cache();
     try {
-      assertEquals(tasksOf(ComputeRound.roundRobin(input, 3)), tasksOf(ComputeRound.roundRobin(input, 3)));
+      assertEquals(tasksOf(ComputeRound.hashPartitionByKey(input, 3)), tasksOf(ComputeRound.hashPartitionByKey(input, 3)));
     } finally {
       input.unpersist();
     }
@@ -198,20 +198,20 @@ public class TestComputeShuffleBalance extends SparkClientFunctionalTestHarness 
     Collections.reverse(reversed);
     int parallelism = 4;
 
-    Map<Row, Integer> reference = tasksOf(ComputeRound.roundRobin(spark().createDataFrame(jsc().parallelize(rows, 1), SCHEMA),
+    Map<Row, Integer> reference = tasksOf(ComputeRound.hashPartitionByKey(spark().createDataFrame(jsc().parallelize(rows, 1), SCHEMA),
         parallelism));
     assertEveryTask(reference, parallelism, rows.size());
-    assertEquals(reference, tasksOf(ComputeRound.roundRobin(spark().createDataFrame(jsc().parallelize(reversed, 5), SCHEMA),
+    assertEquals(reference, tasksOf(ComputeRound.hashPartitionByKey(spark().createDataFrame(jsc().parallelize(reversed, 5), SCHEMA),
         parallelism)), "the same rows reversed, in five input partitions");
-    assertEquals(reference, tasksOf(ComputeRound.roundRobin(skewedOf(rows, 40, 1, 0, 20), parallelism)),
+    assertEquals(reference, tasksOf(ComputeRound.hashPartitionByKey(skewedOf(rows, 40, 1, 0, 20), parallelism)),
         "the same rows in skewed input partitions");
 
     Dataset<Row> reshuffled = reshuffledOnEveryCompute(rows, 3).persist(StorageLevel.MEMORY_ONLY());
     try {
-      assertEquals(reference, tasksOf(ComputeRound.roundRobin(reshuffled, parallelism)), "a cached input that reorders on compute");
+      assertEquals(reference, tasksOf(ComputeRound.hashPartitionByKey(reshuffled, parallelism)), "a cached input that reorders on compute");
       // dropped so the next deal reads the input again, in a new order
       reshuffled.unpersist(true);
-      assertEquals(reference, tasksOf(ComputeRound.roundRobin(reshuffled, parallelism)),
+      assertEquals(reference, tasksOf(ComputeRound.hashPartitionByKey(reshuffled, parallelism)),
           "that input dealt again once its cache is dropped, so it is read again in a new order");
     } finally {
       reshuffled.unpersist(true);
@@ -263,7 +263,7 @@ public class TestComputeShuffleBalance extends SparkClientFunctionalTestHarness 
       Dataset<Row> input = skewed(30, 30, 30);
       jsc().sc().listenerBus().waitUntilEmpty();
       jsc().sc().addSparkListener(stages);
-      assertEquals(90, ComputeRound.roundRobin(input, 4).count());
+      assertEquals(90, ComputeRound.hashPartitionByKey(input, 4).count());
       jsc().sc().listenerBus().waitUntilEmpty();
     } finally {
       jsc().sc().removeSparkListener(stages);
@@ -297,7 +297,7 @@ public class TestComputeShuffleBalance extends SparkClientFunctionalTestHarness 
         .forEach(row -> expected.put(RowFactory.create(row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)),
             row.getInt(5)));
     Map<Row, Integer> actual = new HashMap<>();
-    tasksOf(ComputeRound.roundRobin(input, parallelism)).forEach((row, task) -> actual.put(
+    tasksOf(ComputeRound.hashPartitionByKey(input, parallelism)).forEach((row, task) -> actual.put(
         RowFactory.create(row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)), task));
     assertEquals(expected, actual);
   }
@@ -347,7 +347,7 @@ public class TestComputeShuffleBalance extends SparkClientFunctionalTestHarness 
     try {
       jsc().sc().listenerBus().waitUntilEmpty();
       jsc().sc().addSparkListener(writes);
-      counts = counts(ComputeRound.roundRobin(input, 7));
+      counts = counts(ComputeRound.hashPartitionByKey(input, 7));
       jsc().sc().listenerBus().waitUntilEmpty();
     } finally {
       jsc().sc().removeSparkListener(writes);
@@ -377,6 +377,6 @@ public class TestComputeShuffleBalance extends SparkClientFunctionalTestHarness 
     assertEquals(7, EmbeddingTableConfig.from(props).computeParallelism(defaultParallelism));
     props.setProperty(EmbeddingTableConfig.COMPUTE_PARALLELISM.key(), "0");
     assertThrows(IllegalArgumentException.class, () -> EmbeddingTableConfig.from(props).computeParallelism(defaultParallelism));
-    assertThrows(IllegalArgumentException.class, () -> ComputeRound.roundRobin(skewed(1), 0));
+    assertThrows(IllegalArgumentException.class, () -> ComputeRound.hashPartitionByKey(skewed(1), 0));
   }
 }

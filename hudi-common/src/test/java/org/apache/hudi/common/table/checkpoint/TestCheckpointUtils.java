@@ -30,6 +30,8 @@ import org.apache.hudi.exception.HoodieException;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.stream.Stream;
 
@@ -198,6 +200,21 @@ public class TestCheckpointUtils {
     Checkpoint checkpoint = CheckpointUtils.createCheckpoint(CHECKPOINT_TO_RESUME);
     assertInstanceOf(StreamerCheckpointV1.class, checkpoint);
     assertEquals(CHECKPOINT_TO_RESUME, checkpoint.getCheckpointKey());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "org.apache.hudi.utilities.sources.S3EventsHoodieIncrSource",
+      "org.apache.hudi.utilities.sources.GcsEventsHoodieIncrSource",
+      "org.apache.hudi.utilities.sources.UnstructuredDataSource"
+  })
+  void eventSourcesDeclareRequestedTimeCheckpoints(String source) {
+    assertTrue(CheckpointUtils.DATASOURCES_NOT_SUPPORTED_WITH_CKPT_V2.contains(source), source);
+    assertTrue(CheckpointUtils.HOODIE_INCREMENTAL_SOURCES.contains(source), source);
+    String key = CHECKPOINT_TO_RESUME + "#folder/object.pdf";
+    Checkpoint checkpoint = CheckpointUtils.createCheckpoint(new StreamerCheckpointV2(key));
+    assertInstanceOf(StreamerCheckpointV1.class, checkpoint);
+    assertEquals(key, checkpoint.getCheckpointKey());
   }
 
   @Test

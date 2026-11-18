@@ -573,8 +573,8 @@ public class HoodieWriteConfig extends HoodieConfig {
       .sinceVersion("0.9.0")
       .withDocumentation(MarkerType.class);
 
-  public static final ConfigProperty<Boolean> OUT_OF_LINE_MARKERS_ENABLE = ConfigProperty
-      .key("hoodie.write.out.of.line.markers.enable")
+  public static final ConfigProperty<Boolean> BLOB_MARKERS_ENABLE = ConfigProperty
+      .key("hoodie.write.blob.markers.enable")
       .defaultValue(true)
       .markAdvanced()
       .sinceVersion("1.3.0")
@@ -1776,8 +1776,8 @@ public class HoodieWriteConfig extends HoodieConfig {
     return getInt(MARKERS_DELETE_PARALLELISM_VALUE);
   }
 
-  public boolean isOutOfLineMarkersEnabled() {
-    return getBooleanOrDefault(OUT_OF_LINE_MARKERS_ENABLE);
+  public boolean isBlobMarkersEnabled() {
+    return getBooleanOrDefault(BLOB_MARKERS_ENABLE);
   }
 
   public boolean isEmbeddedTimelineServerEnabled() {

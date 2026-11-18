@@ -51,7 +51,7 @@ import java.util.Objects;
  *   <li>larger: {@code (OUT_OF_LINE, null, (<.hoodie/.blob/[<partition>/]<fileId>_<writeToken>_<instantTime>.bin>, 0, length,
  *   managed = true))}:
  *   the payload is written to that final file ({@link PayloadWriter} into the {@link PayloadDestination}, with
- *   timeline-server markers unless {@code hoodie.write.out.of.line.markers.enable} is false) and the value carries the
+ *   timeline-server markers unless {@code hoodie.write.blob.markers.enable} is false) and the value carries the
  *   reference only, relative to the embedding table's base path. A payload of at most
  *   {@link OutOfLineWritePool#MAX_PENDING_BYTES} (an encoded frame) is read whole and its marker and file are written in the
  *   background, while the task prepares its next payloads; {@link #awaitWrites} waits for them before the task reports its

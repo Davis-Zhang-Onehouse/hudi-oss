@@ -26,7 +26,6 @@ import org.apache.hudi.utilities.sources.unstructured.UnstructuredMode;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSchemaGuard;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceConfig;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract;
-import org.apache.hudi.utilities.transform.RequiredTransformerChain;
 import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingTableTransformer;
 
 import org.junit.jupiter.api.Test;
@@ -58,20 +57,65 @@ public class TestUnstructuredSourceTransformers {
   @Test
   void blobSourceRunsTheCopyTransformerAndRefusesTheEmbeddingTransformer() {
     UnstructuredSourceContract source = source(UnstructuredMode.BLOB);
-    assertEquals(Arrays.asList(COPY, GUARD), RequiredTransformerChain.compose(source, null));
+    assertEquals(Arrays.asList(COPY, GUARD), source.transformerChain(null));
     HoodieTransformPlanException refused = assertThrows(HoodieTransformPlanException.class,
-        () -> RequiredTransformerChain.compose(source, Collections.singletonList(EMBEDDING)));
+        () -> source.transformerChain(Collections.singletonList(EMBEDDING)));
     assertTrue(refused.getMessage().contains("does not run with " + EMBEDDING), refused.getMessage());
   }
 
   @Test
   void embeddingSourceRunsTheEmbeddingTransformerAndRefusesTheCopyTransformer() {
     UnstructuredSourceContract source = source(UnstructuredMode.EMBEDDING);
-    assertEquals(Arrays.asList(EMBEDDING, GUARD), RequiredTransformerChain.compose(source, null));
+    assertEquals(Arrays.asList(EMBEDDING, GUARD), source.transformerChain(null));
     List<String> named = Collections.singletonList(EMBEDDING);
-    assertEquals(Arrays.asList(EMBEDDING, GUARD), RequiredTransformerChain.compose(source, named), "a job naming it once keeps its place");
+    assertEquals(Arrays.asList(EMBEDDING, GUARD), source.transformerChain(named), "a job naming it once keeps its place");
     HoodieTransformPlanException refused = assertThrows(HoodieTransformPlanException.class,
-        () -> RequiredTransformerChain.compose(source, Collections.singletonList(COPY)));
+        () -> source.transformerChain(Collections.singletonList(COPY)));
     assertTrue(refused.getMessage().contains("does not run with " + COPY), refused.getMessage());
   }
+
+  public static class CopySubclass extends BlobCopyTransformer {
+    static final int VALUE = fail();
+
+    private static int fail() {
+      throw new IllegalStateException("initialized");
+    }
+  }
+
+  public static class EmbeddingSubclass extends EmbeddingTableTransformer {
+  }
+
+  @Test
+  void requiredSubclassRunsOnceAndKeepsItsFirstPosition() {
+    UnstructuredSourceContract source = source(UnstructuredMode.BLOB);
+    String child = CopySubclass.class.getName();
+    List<String> configured = Arrays.asList("before.Custom", "first:" + child, "again:" + COPY, "after.Custom");
+    assertEquals(Arrays.asList("before.Custom", "first:" + child, "after.Custom", "UnstructuredSchemaGuard:" + GUARD),
+        source.transformerChain(configured));
+    assertEquals(4, configured.size(), "composition must not mutate the user's list");
+  }
+
+  @Test
+  void namedChainGetsStableIdsForTheRequiredTransformerAndFinalGuard() {
+    assertEquals(Arrays.asList("BlobCopyTransformer:" + COPY, "user:user.Custom", "UnstructuredSchemaGuard:" + GUARD),
+        source(UnstructuredMode.BLOB).transformerChain(Collections.singletonList("user:user.Custom")));
+  }
+
+  @Test
+  void addedIdsCannotCollideWithUserEntries() {
+    UnstructuredSourceContract source = source(UnstructuredMode.BLOB);
+    assertThrows(HoodieTransformPlanException.class,
+        () -> source.transformerChain(Collections.singletonList("BlobCopyTransformer:user.Custom")));
+    assertThrows(HoodieTransformPlanException.class,
+        () -> source.transformerChain(Collections.singletonList("UnstructuredSchemaGuard:user.Custom")));
+  }
+
+  @Test
+  void explicitGuardAndOtherModesSubclassAreRejected() {
+    UnstructuredSourceContract source = source(UnstructuredMode.BLOB);
+    assertThrows(HoodieTransformPlanException.class, () -> source.transformerChain(Collections.singletonList("guard:" + GUARD)));
+    assertThrows(HoodieTransformPlanException.class,
+        () -> source.transformerChain(Collections.singletonList("other:" + EmbeddingSubclass.class.getName())));
+  }
+
 }

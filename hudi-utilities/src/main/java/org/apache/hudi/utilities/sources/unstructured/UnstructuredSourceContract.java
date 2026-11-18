@@ -18,29 +18,28 @@
 
 package org.apache.hudi.utilities.sources.unstructured;
 
+import org.apache.hudi.common.config.ConfigProperty;
+import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.config.TypedProperties;
-import org.apache.hudi.common.schema.HoodieSchema;
-import org.apache.hudi.common.table.HoodieTableConfig;
-import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.table.marker.MarkerType;
+import org.apache.hudi.common.util.ConfigUtils;
+import org.apache.hudi.common.util.StringUtils;
+import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.keygen.ComplexKeyGenerator;
 import org.apache.hudi.keygen.NonpartitionedKeyGenerator;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.keygen.factory.HoodieSparkKeyGeneratorFactory;
 import org.apache.hudi.utilities.config.HoodieStreamerConfig;
-import org.apache.hudi.utilities.sources.RequiredSourceSettings;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobSourceSetup;
-import org.apache.hudi.utilities.transform.Transformer;
-import org.apache.hudi.utilities.unstructured.storage.OutOfLineWriter;
 
-import org.apache.spark.api.java.JavaSparkContext;
-import org.apache.spark.sql.SparkSession;
-import org.apache.spark.sql.types.StructType;
-
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Set;
+import java.util.Locale;
+import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
 
 /**
  * What the job of {@link UnstructuredDataSource} requires, all of it read from its mode ({@link UnstructuredMode}): the settings
@@ -69,28 +68,69 @@ public class UnstructuredSourceContract implements SourceContract {
     return mode;
   }
 
+  /** Merges this mode's settings once, before any job consumer reads them. */
   @Override
-  public String sourceName() {
-    return UnstructuredDataSource.class.getSimpleName();
+  public TypedProperties prepareJob(TypedProperties jobProps) {
+    TypedProperties merged = TypedProperties.copy(jobProps);
+    require(merged, HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER, "true", UnstructuredSourceContract::ignoringCase, "");
+    require(merged, KeyGeneratorOptions.RECORDKEY_FIELD_NAME, String.join(",", mode.keyColumns()),
+        UnstructuredSourceContract::fields, " (these fields, in this order)");
+    if (ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE)) {
+      require(merged, HoodieWriteConfig.MARKERS_TYPE, MarkerType.TIMELINE_SERVER_BASED.name(), UnstructuredSourceContract::ignoringCase, "");
+      require(merged, HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE, "true", UnstructuredSourceContract::ignoringCase, "");
+    }
+    require(merged, HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS, mode.injectorClass(), String::trim,
+        " (a job's own injector goes under " + mode.injectorDelegateKey() + ", and runs first)");
+    if (mode == UnstructuredMode.BLOB) {
+      setDefault(merged, HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME, "uncompressed");
+      setDefault(merged, HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED, "false");
+    }
+    checkKeyGenerator(UnstructuredSchemaContract.sourceName(mode), merged);
+    validateJob(merged);
+    return merged;
   }
 
-  /**
-   * The settings the job runs with: the round's instant handed to the job's transformer, which writes every row under it
-   * ({@code hoodie.streamer.start.commit.before.transformer=true}); the record key of the job's table
-   * ({@link UnstructuredMode#keyColumns}) with a key generator of {@link #KEY_GENERATORS}; the out-of-line markers while
-   * {@code hoodie.write.out.of.line.markers.enable} is true; the job's Parquet config injector and defaults
-   * ({@link UnstructuredMode#addSettings}); and the job's other checks ({@link #validateJob}) on the merged properties.
-   *
-   * @param jobProps the job's own properties, read only
-   */
+  private void require(TypedProperties props, ConfigProperty<?> key, String value, UnaryOperator<String> normalize, String hint) {
+    String configuredKey = configuredKey(props, key);
+    String configured = configuredKey == null ? null : props.get(configuredKey).toString();
+    if (configured != null && !normalize.apply(value).equals(normalize.apply(configured))) {
+      throw new IllegalArgumentException(UnstructuredSchemaContract.sourceName(mode) + " requires " + key.key() + "=" + value + hint
+          + ", configured: " + (configuredKey.equals(key.key()) ? "" : configuredKey + "=") + configured);
+    }
+    props.setProperty(key.key(), value);
+  }
+
+  private static void setDefault(TypedProperties props, ConfigProperty<?> key, String value) {
+    if (configuredKey(props, key) == null) {
+      props.setProperty(key.key(), value);
+    }
+  }
+
+  private static String configuredKey(TypedProperties props, ConfigProperty<?> key) {
+    List<String> keys = new ArrayList<>();
+    keys.add(key.key());
+    keys.addAll(key.getAlternatives());
+    for (String candidate : keys) {
+      Object value = props.get(candidate);
+      if (value != null && !StringUtils.isNullOrEmpty(value.toString().trim())) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  private static String ignoringCase(String value) {
+    return value.trim().toLowerCase(Locale.ROOT);
+  }
+
+  /** A record key is a field list with significant order, independent of surrounding whitespace. */
+  public static String fields(String value) {
+    return Arrays.stream(value.split(",")).map(String::trim).filter(field -> !field.isEmpty()).collect(Collectors.joining(","));
+  }
+
   @Override
-  public RequiredSourceSettings requiredSettings(TypedProperties jobProps) {
-    RequiredSourceSettings.Builder settings = RequiredSourceSettings.builder(UnstructuredSchemaContract.sourceName(mode))
-        .requireIgnoringCase(HoodieStreamerConfig.START_COMMIT_BEFORE_TRANSFORMER, "true")
-        .requireFields(KeyGeneratorOptions.RECORDKEY_FIELD_NAME, mode.keyColumns(), HoodieTableConfig.RECORDKEY_FIELDS)
-        .check(UnstructuredSourceContract::checkKeyGenerator)
-        .check((sourceName, merged) -> validateJob(merged));
-    return mode.addSettings(OutOfLineWriter.requireMarkers(settings, jobProps)).build();
+  public List<String> transformerChain(List<String> configured) {
+    return UnstructuredTransformerChain.compose(mode, configured);
   }
 
   /**
@@ -120,32 +160,4 @@ public class UnstructuredSourceContract implements SourceContract {
     }
   }
 
-  @Override
-  public Option<Class<? extends Transformer>> requiredTransformer() {
-    return Option.of(mode.requiredTransformer());
-  }
-
-  /** The other job's transformer. */
-  @Override
-  public Set<Class<? extends Transformer>> excludedTransformers() {
-    return mode.excludedTransformers();
-  }
-
-  /** The guard that checks every round's rows against the table's contract, last in the chain. */
-  @Override
-  public Option<Class<? extends Transformer>> closingTransformer() {
-    return Option.of(UnstructuredSchemaGuard.class);
-  }
-
-  /**
-   * Plans the job's chain on the source's rows and checks it against the table's contract and the user's target schema
-   * ({@link UnstructuredSchemaContract#checkChainPlan}): the job's own transformers run after the required one, may add columns
-   * and filter rows, and may not drop or change a column they are given.
-   */
-  @Override
-  public void checkWriterSchemas(JavaSparkContext jsc, SparkSession spark, List<String> chain, TypedProperties transformerProps,
-                                 Option<HoodieSchema> userTargetSchema, Option<StructType> tableSchema) {
-    UnstructuredSchemaContract.checkChainPlan(mode, mode.requiredTransformer(), UnstructuredSchemaGuard.class, chain, jsc, spark,
-        transformerProps, userTargetSchema, tableSchema);
-  }
 }

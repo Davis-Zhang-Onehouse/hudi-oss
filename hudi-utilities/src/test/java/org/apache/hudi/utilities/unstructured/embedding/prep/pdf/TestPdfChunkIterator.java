@@ -478,6 +478,18 @@ public class TestPdfChunkIterator {
     assertTrue(chunks.get(0).statusDetail().startsWith("ALL_PAGES_FAILED"));
   }
 
+  @Test
+  public void mixedPageFailuresKeepTheAggregateFailureCode() {
+    List<PdfChunk> chunks = drain(open(small(), Arrays.asList(
+        throwing(new PageFailure(PdfFailureCode.DECODE_ERROR, "content cannot decode")),
+        throwing(new PageFailure(PdfFailureCode.PAGE_ERROR, "page cannot be read")))));
+    assertEquals(1, chunks.size());
+    assertEquals(PdfChunk.Status.FAILED, chunks.get(0).status());
+    assertTrue(chunks.get(0).statusDetail().startsWith("ALL_PAGES_FAILED:"), chunks.get(0).statusDetail());
+    assertTrue(chunks.get(0).statusDetail().contains("failed=1"), chunks.get(0).statusDetail());
+    assertTrue(chunks.get(0).statusDetail().contains("decode_failed=1"), chunks.get(0).statusDetail());
+  }
+
   // ------------------------------------------------------------------ errors
 
   @Test

@@ -19,120 +19,62 @@
 package org.apache.hudi.utilities.sources;
 
 import org.apache.hudi.common.config.TypedProperties;
-import org.apache.hudi.config.HoodieWriteConfig;
-import org.apache.hudi.exception.HoodieException;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceConfig;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Collections;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** How the streamer finds a source's {@link SourceContract} from the source class's name, before the source is built. */
-public class TestSourceContracts {
+class TestSourceContracts {
 
-  /** A contract that records the properties it was built from. */
-  public static class RecordingContract implements SourceContract {
-    static final AtomicReference<TypedProperties> BUILT_WITH = new AtomicReference<>();
-
-    public RecordingContract(TypedProperties props) {
-      BUILT_WITH.set(props);
+  public abstract static class RegisteredSubclass extends UnstructuredDataSource {
+    private RegisteredSubclass() {
+      super(null, null, null, (org.apache.hudi.utilities.schema.SchemaProvider) null, null);
     }
 
-    @Override
-    public RequiredSourceSettings requiredSettings(TypedProperties jobProps) {
-      return RequiredSourceSettings.builder("Recorded").require(HoodieWriteConfig.UPSERT_PARALLELISM_VALUE, "7").build();
-    }
-  }
-
-  /** A contract whose constructor refuses every job. */
-  public static class RefusingContract implements SourceContract {
-    public RefusingContract(TypedProperties props) {
-      throw new IllegalArgumentException("RefusingSource refuses this job");
-    }
-
-    @Override
-    public RequiredSourceSettings requiredSettings(TypedProperties jobProps) {
-      return RequiredSourceSettings.NONE;
-    }
-  }
-
-  /** A contract without the constructor taking the job's properties. */
-  public static class NoPropsConstructorContract implements SourceContract {
-    @Override
-    public RequiredSourceSettings requiredSettings(TypedProperties jobProps) {
-      return RequiredSourceSettings.NONE;
-    }
-  }
-
-  /** A source class with no annotation; never instantiated. */
-  public abstract static class PlainSource {
-  }
-
-  /** A source class naming its contract; never instantiated. */
-  @SourceContractClass(RecordingContract.class)
-  public abstract static class AnnotatedSource {
-  }
-
-  /** A subclass of an annotated source class, which inherits its contract. */
-  public abstract static class SubclassOfAnnotatedSource extends AnnotatedSource {
-  }
-
-  @SourceContractClass(RefusingContract.class)
-  public abstract static class RefusingSource {
-  }
-
-  @SourceContractClass(NoPropsConstructorContract.class)
-  public abstract static class NoPropsConstructorSource {
-  }
-
-  /** A source class whose static initialiser fails: resolving its contract does not initialise it. */
-  @SourceContractClass(RecordingContract.class)
-  public abstract static class FailingInitialiserSource {
     static final int VALUE = fail();
 
     private static int fail() {
-      throw new IllegalStateException("initialised");
+      throw new IllegalStateException("initialized");
     }
   }
 
   @Test
-  void noClassNameOrNoAnnotationGivesNone() {
+  void ordinaryOrUnknownSourcesKeepTheirPropertiesAndChain() {
     TypedProperties props = new TypedProperties();
-    assertSame(SourceContracts.NONE, SourceContracts.of(null, props));
-    assertSame(SourceContracts.NONE, SourceContracts.of("", props));
-    assertSame(SourceContracts.NONE, SourceContracts.of(PlainSource.class.getName(), props));
-    assertSame(props, SourceContracts.NONE.requiredSettings(props).apply(props), "the no-op contract changes nothing");
+    List<String> chain = Collections.singletonList("user.Transformer");
+    for (String source : new String[] {null, "", "missing.Source", String.class.getName()}) {
+      SourceContract contract = SourceContracts.of(source, props);
+      assertSame(SourceContracts.NONE, contract);
+      assertSame(props, contract.prepareJob(props));
+      assertSame(chain, contract.transformerChain(chain));
+      assertNull(contract.transformerChain(null));
+    }
   }
 
   @Test
-  void annotationIsReadOnTheClassAndInheritedBySubclasses() {
+  void registeredSourceAndSubclassResolveWithoutInitialization() {
     TypedProperties props = new TypedProperties();
-    for (Class<?> source : new Class<?>[] {AnnotatedSource.class, SubclassOfAnnotatedSource.class, FailingInitialiserSource.class}) {
-      RecordingContract.BUILT_WITH.set(null);
+    props.setProperty(UnstructuredSourceConfig.MODE.key(), "blob");
+    props.setProperty(UnstructuredSourceConfig.CLOUD.key(), "s3");
+    for (Class<?> source : new Class<?>[] {UnstructuredDataSource.class, RegisteredSubclass.class}) {
       SourceContract contract = SourceContracts.of(" " + source.getName() + " ", props);
-      assertTrue(contract instanceof RecordingContract, source.getName());
-      assertSame(props, RecordingContract.BUILT_WITH.get(), "the contract is built from the job's properties");
-      assertEquals("7", contract.requiredSettings(props).apply(props).getString("hoodie.upsert.shuffle.parallelism"));
+      assertTrue(contract instanceof UnstructuredSourceContract);
+      assertEquals("blob", ((UnstructuredSourceContract) contract).mode().configValue());
     }
   }
 
-  /** A source class that cannot be loaded gives the no-op contract: building the source then reports it, as before. */
   @Test
-  void unloadableClassGivesNoneWithoutThrowing() {
-    assertSame(SourceContracts.NONE, SourceContracts.of("com.example.NoSuchSource", new TypedProperties()));
-  }
-
-  @Test
-  void contractConstructorFailurePropagatesAsThrown() {
-    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-        () -> SourceContracts.of(RefusingSource.class.getName(), new TypedProperties()));
-    assertEquals("RefusingSource refuses this job", refused.getMessage());
-    HoodieException missing = assertThrows(HoodieException.class,
-        () -> SourceContracts.of(NoPropsConstructorSource.class.getName(), new TypedProperties()));
-    assertTrue(missing.getMessage().contains("needs a public constructor taking TypedProperties"), missing.getMessage());
+  void registrationPropagatesInvalidJobAsThrown() {
+    assertThrows(IllegalArgumentException.class,
+        () -> SourceContracts.of(UnstructuredDataSource.class.getName(), new TypedProperties()));
   }
 }

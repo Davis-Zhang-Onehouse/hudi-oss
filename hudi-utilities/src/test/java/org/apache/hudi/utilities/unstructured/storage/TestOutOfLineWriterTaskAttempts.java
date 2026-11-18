@@ -68,7 +68,7 @@ class TestOutOfLineWriterTaskAttempts {
     HoodieTableMetaClient.newTableBuilder()
         .setTableName("blob_table").setTableType(HoodieTableType.COPY_ON_WRITE).initTable(conf, base);
     Properties props = new Properties();
-    props.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    props.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
     OutOfLineWriter.Factory writers = OutOfLineWriter.forTable(conf, base, props);
 
     // local[1,2]: one thread, and a failed task is attempted twice

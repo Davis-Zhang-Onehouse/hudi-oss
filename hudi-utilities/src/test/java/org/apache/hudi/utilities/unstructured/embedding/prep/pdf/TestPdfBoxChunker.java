@@ -297,16 +297,17 @@ public class TestPdfBoxChunker {
   }
 
   @Test
-  public void undecodablePageContentIsSkippedAsPdfboxSkipsIt() throws IOException {
-    // PDFBox leaves out a content stream that fails to decode, so the page is empty rather than failed
+  public void undecodablePageContentRetainsOtherPagesAndRecordsLoss() throws IOException {
+    // PDFBox leaves out the undecodable page, and the last surviving chunk records the loss
     byte[] pdf = PdfFixtures.brokenPage2("PGTOKEN1 page one text. It is here.", "PGTOKEN2 page two text.",
         "PGTOKEN3 page three text. It is here.");
     List<PdfChunk> chunks = chunk(pdf, defaults());
     String text = all(chunks);
     assertTrue(text.contains("PGTOKEN1") && text.contains("PGTOKEN3") && !text.contains("PGTOKEN2"), text);
     assertTrue(chunks.stream().allMatch(c -> c.status() == PdfChunk.Status.OK));
-    assertNull(last(chunks).statusDetail());
-    assertEquals(0, warnings.stream().filter(w -> w.startsWith("PDF-PAGE")).count(), String.join("\n", warnings));
+    assertTrue(last(chunks).statusDetail().contains("decode_failed=1"), last(chunks).statusDetail());
+    assertEquals(1, warnings.stream().filter(w -> w.startsWith("PDF-PAGE") && w.contains("page=2 code=DECODE_ERROR")).count(),
+        String.join("\n", warnings));
   }
 
   @Test
@@ -782,11 +783,11 @@ public class TestPdfBoxChunker {
     try (PDDocument doc = Loader.loadPDF(PdfFixtures.undecodableSharedStream(true))) {
       StreamDecodeGuard guard = new StreamDecodeGuard(EmbeddingTableConfig.DEFAULT_PDF_MAX_DECODED_STREAM_BYTES,
           staging.toFile());
-      guard.checkPage(doc.getPage(0));
+      assertPageFails(guard, doc, 0, PdfFailureCode.DECODE_ERROR);
       assertEquals(1, guard.decodedStreams());
-      guard.checkPage(doc.getPage(1));
-      guard.checkPage(doc.getPage(2));
-      assertEquals(1, guard.decodedStreams(), "pages 2-3 skip the content stream from the cache, as page 1 did");
+      assertPageFails(guard, doc, 1, PdfFailureCode.DECODE_ERROR);
+      assertPageFails(guard, doc, 2, PdfFailureCode.DECODE_ERROR);
+      assertEquals(1, guard.decodedStreams(), "pages 2-3 classify the content stream from the cache, without decoding again");
     }
   }
 

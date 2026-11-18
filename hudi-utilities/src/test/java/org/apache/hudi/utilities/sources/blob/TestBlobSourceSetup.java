@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The construction-time validation of each job's properties by the unstructured data source, which never changes them. The settings
- * the source declares for each job are merged and refused by the streamer: {@code TestRequiredSourceSettings} for the merge,
+ * the source declares for each job are merged and refused by the streamer: {@code TestUnstructuredSourceContract} for the merge,
  * {@code TestUnstructuredJobSettings} for both jobs through the streamer.
  */
 public class TestBlobSourceSetup {

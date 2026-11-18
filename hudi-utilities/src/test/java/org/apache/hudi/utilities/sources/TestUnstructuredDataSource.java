@@ -24,6 +24,7 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.checkpoint.Checkpoint;
 import org.apache.hudi.common.table.checkpoint.StreamerCheckpointV1;
+import org.apache.hudi.common.table.checkpoint.StreamerCheckpointV2;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
@@ -209,6 +210,13 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
 
   private static List<String> keys(Round round) {
     return round.rows.keySet().stream().sorted().collect(Collectors.toList());
+  }
+
+  @Test
+  public void completionTimeCheckpointIsRefusedBeforeReadingEvents() {
+    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+        () -> source(props()).fetchNext(Option.of(new StreamerCheckpointV2("20240101000000#folder/object.pdf")), Long.MAX_VALUE));
+    assertTrue(failure.getMessage().contains("only StreamerCheckpointV1"), failure.getMessage());
   }
 
   @Test
@@ -596,7 +604,7 @@ public class TestUnstructuredDataSource extends UtilitiesTestBase {
           modeAndCloud.setProperty(key, jobProps.getString(key));
         }
       }
-      Set<String> declared = new TreeSet<>(new UnstructuredSourceContract(jobProps).requiredSettings(modeAndCloud).apply(modeAndCloud)
+      Set<String> declared = new TreeSet<>(new UnstructuredSourceContract(jobProps).prepareJob(modeAndCloud)
           .stringPropertyNames());
       declared.removeAll(modeAndCloud.stringPropertyNames());
       declared.addAll(Arrays.asList(HoodieWriteConfig.MARKERS_TYPE.key(), HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE.key()));

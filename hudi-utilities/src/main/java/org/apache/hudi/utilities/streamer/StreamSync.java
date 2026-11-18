@@ -115,13 +115,11 @@ import org.apache.hudi.utilities.schema.SchemaProvider;
 import org.apache.hudi.utilities.schema.SchemaSet;
 import org.apache.hudi.utilities.schema.SimpleSchemaProvider;
 import org.apache.hudi.utilities.sources.InputBatch;
-import org.apache.hudi.utilities.sources.RequiredSourceSettings;
 import org.apache.hudi.utilities.sources.Source;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.SourceContracts;
 import org.apache.hudi.utilities.streamer.validator.SparkStreamerValidatorUtils;
 import org.apache.hudi.utilities.transform.InstantAwareTransformer;
-import org.apache.hudi.utilities.transform.RequiredTransformerChain;
 import org.apache.hudi.utilities.transform.Transformer;
 
 import com.codahale.metrics.Timer;
@@ -341,17 +339,27 @@ public class StreamSync implements Serializable, Closeable {
                     TypedProperties props, HoodieSparkEngineContext hoodieSparkContext,
                     FileSystem fs, Configuration conf,
                     Function<SparkRDDWriteClient, Boolean> onInitializingHoodieWriteClient, StreamContext streamContext) throws IOException {
+    this(cfg, sparkSession, HoodieStreamer.StreamSyncService.prepareJob(cfg, props), hoodieSparkContext, fs, conf,
+        onInitializingHoodieWriteClient, streamContext);
+  }
+
+  private StreamSync(HoodieStreamer.Config cfg, SparkSession sparkSession, Pair<SourceContract, TypedProperties> prepared,
+                     HoodieSparkEngineContext hoodieSparkContext, FileSystem fs, Configuration conf,
+                     Function<SparkRDDWriteClient, Boolean> onInitializingHoodieWriteClient, StreamContext streamContext) throws IOException {
+    this(cfg, sparkSession, prepared.getRight(), hoodieSparkContext, fs, conf, onInitializingHoodieWriteClient, streamContext,
+        prepared.getLeft());
+  }
+
+  // The service has already prepared these properties before constructing its schema provider and validating its table.
+  StreamSync(HoodieStreamer.Config cfg, SparkSession sparkSession, TypedProperties props, HoodieSparkEngineContext hoodieSparkContext,
+             FileSystem fs, Configuration conf, Function<SparkRDDWriteClient, Boolean> onInitializingHoodieWriteClient,
+             StreamContext streamContext, SourceContract contract) throws IOException {
     this.cfg = cfg;
     this.hoodieSparkContext = hoodieSparkContext;
     this.sparkSession = sparkSession;
     this.storage = HoodieStorageUtils.getStorage(
         new StoragePath(cfg.targetBasePath), HadoopFSUtils.getStorageConf(fs.getConf()));
     this.onInitializingHoodieWriteClient = onInitializingHoodieWriteClient;
-    // the source's contract, built from the job's properties alone, merges the settings the source requires into a copy of them
-    // before anything below reads them; the caller's properties are not changed
-    SourceContract contract = SourceContracts.of(cfg.sourceClassName, props);
-    RequiredSourceSettings requiredSettings = contract.requiredSettings(props);
-    props = requiredSettings.apply(props);
     this.props = props;
     this.userProvidedSchemaProvider = streamContext.getSchemaProvider();
     this.processedSchema = new SchemaSet();
@@ -374,13 +382,13 @@ public class StreamSync implements Serializable, Closeable {
     HoodieTableMetaClient metaClient = initializeMetaClient();
     // the contract's checks run before the source is built, so a job they refuse never builds its source; the chain's own syntax
     // is checked when the transformer is created, after it
-    requiredSettings.checkTable(cfg.targetBasePath, metaClient.getTableConfig());
-    List<String> chain = RequiredTransformerChain.compose(contract, cfg.transformerClassNames);
+    SourceContracts.validate(contract, cfg.targetBasePath, metaClient.getTableConfig());
+    List<String> chain = contract.transformerChain(cfg.transformerClassNames);
     if (contract != SourceContracts.NONE) {
       // a source without a contract reads nothing more at start than upstream does
       TypedProperties transformerProps = TypedProperties.copy(props);
       transformerProps.setProperty(HoodieWriteConfig.BASE_PATH.key(), cfg.targetBasePath);
-      contract.checkWriterSchemas(hoodieSparkContext.jsc(), sparkSession, chain == null ? Collections.emptyList() : chain,
+      SourceContracts.validate(contract, hoodieSparkContext.jsc(), sparkSession, chain == null ? Collections.emptyList() : chain,
           transformerProps, userTargetSchema(), tableSchemaWithoutMetaFields(metaClient));
     }
     Source source = UtilHelpers.createSource(cfg.sourceClassName, props, hoodieSparkContext.jsc(), sparkSession, metrics, streamContext);

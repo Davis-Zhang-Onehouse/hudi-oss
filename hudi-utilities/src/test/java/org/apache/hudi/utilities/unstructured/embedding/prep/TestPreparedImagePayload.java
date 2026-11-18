@@ -358,7 +358,7 @@ public class TestPreparedImagePayload {
     preprocessor(props, "one", OneDerivedPayloadPreprocessor.class);
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
     // the write fails at creating its file, whatever timeline server an earlier test left configured
-    props.setProperty(HoodieWriteConfig.OUT_OF_LINE_MARKERS_ENABLE.key(), "false");
+    props.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
     // the blob folder is a file, so the payload file cannot be created
     Path blobFolder = temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER);
     Files.createDirectories(blobFolder.getParent());

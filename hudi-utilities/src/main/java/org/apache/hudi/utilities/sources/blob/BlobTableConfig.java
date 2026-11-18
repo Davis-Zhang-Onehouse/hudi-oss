@@ -53,8 +53,11 @@ public class BlobTableConfig extends HoodieConfig {
 
   /**
    * Small blob threshold: a file of at most this many bytes is stored INLINE in the data file, a larger one is copied
-   * out of line. Default 1 MiB keeps an inline row well under typical parquet page and row-group sizes. On a Parquet without
-   * per-column statistics (before 1.14) the default is 10 KiB and the value used is at most 80 KiB ({@link ParquetInlineCap}).
+   * out of line. The declared 1 MiB default is effective on Parquet 1.14+ (the Spark 4 builds). On Spark 3.5's older Parquet,
+   * which cannot disable statistics per column, the effective default is 10 KiB and configured values are capped at 80 KiB
+   * ({@link ParquetInlineCap}). When this key is unset, upgrading an existing table's writer from Spark 3.5 to Spark 4 raises
+   * its effective threshold from 10 KiB to 1 MiB: subsequent writes store files larger than 10 KiB and at most 1 MiB inline,
+   * where they were stored out of line before the upgrade. Previously stored values keep their existing storage shape.
    * Bounded above by {@link BlobInlineCeiling}. Read it with {@link #inlineMaxBytes(TypedProperties)}.
    */
   public static final ConfigProperty<Long> INLINE_MAX_BYTES = ConfigProperty
@@ -63,16 +66,21 @@ public class BlobTableConfig extends HoodieConfig {
       .markAdvanced()
       .sinceVersion("1.3.0")
       .withDocumentation("Files with size <= this many bytes are stored inline in the blob column; larger files are "
-          + "copied to the table's .hoodie/.blob folder and referenced out of line. With a Parquet older than 1.14 (e.g. the "
-          + "Spark 3.5 builds), which cannot turn off min/max statistics for one column, the default is 10240 and a value above "
-          + "81920 is logged at WARN and 81920 is used. A value above the per-task inline ceiling ("
+          + "copied to the table's .hoodie/.blob folder and referenced out of line. The declared default is 1 MiB (1048576 bytes), "
+          + "effective on Parquet 1.14+ (the Spark 4 builds). On Spark 3.5's Parquet older than 1.14, which cannot turn off min/max "
+          + "statistics for one column, the effective default is 10 KiB (10240 bytes); a configured value above 80 KiB (81920 bytes) "
+          + "is logged at WARN and capped at 81920. With this key unset, upgrading an existing table's writer from Spark 3.5 to "
+          + "Spark 4 raises its effective threshold from 10 KiB to 1 MiB. Subsequent writes store files larger than 10 KiB and at "
+          + "most 1 MiB inline instead of out of line; previously stored values keep their existing storage shape. "
+          + "A value above the per-task inline ceiling ("
           + PREFIX + "inline.max.heap.fraction x the per-task heap share) is refused at the job's first round, before the round "
           + "reads the events table's rows or starts its instant, unless "
           + PREFIX + "inline.ceiling.enforce is false.");
 
   /**
    * The inline threshold a blob round uses: {@link #INLINE_MAX_BYTES} as the job sets it, or its default, on a Parquet with the
-   * per-column statistics switch; without it 10 KiB by default and at most 80 KiB ({@link ParquetInlineCap}).
+   * per-column statistics switch; without it 10 KiB by default and at most 80 KiB ({@link ParquetInlineCap}). For an unset key,
+   * a Spark 3.5-to-4 writer upgrade raises the effective threshold to 1 MiB even when writing an existing table.
    */
   public static long inlineMaxBytes(TypedProperties props) {
     return inlineMaxBytes(props, HoodieBaseParquetWriter.supportsColumnStatisticsSwitch());
