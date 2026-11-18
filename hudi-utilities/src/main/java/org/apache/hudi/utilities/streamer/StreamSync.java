@@ -940,7 +940,9 @@ public class StreamSync implements Serializable, Closeable {
 
   /**
    * The transformer's {@link Transformer#onPreCommit} as the write client's pre-commit function: it runs inside the commit
-   * transaction, so a transformer can refuse the round before its instant completes.
+   * transaction, so a transformer can refuse the round before its instant completes. It is passed in every round with a
+   * transformer, stock or instant-aware, unlike {@link Transformer#onCommit}; the default is a no-op, so a stock transformer
+   * sees no change.
    */
   private Option<BiConsumer<HoodieTableMetaClient, HoodieCommitMetadata>> transformerPreCommit(String instantTime) {
     return transformer.<BiConsumer<HoodieTableMetaClient, HoodieCommitMetadata>>map(roundTransformer -> (metaClient, metadata) ->
@@ -1032,13 +1034,10 @@ public class StreamSync implements Serializable, Closeable {
     transformerProps.setProperty(HoodieWriteConfig.BASE_PATH.key(), cfg.targetBasePath);
     String commitActionType = CommitUtils.getCommitActionType(cfg.operation, HoodieTableType.valueOf(cfg.tableType));
     AtomicBoolean inflight = new AtomicBoolean();
-    // The instant-aware client's same-instant handoff lets the write replace this marker with its workload profile. A commit or
-    // delta commit is marked as pending its profile, so a blocking clustering waits for it (PreferWriterConflictResolutionStrategy).
-    // A bulk insert writes no profile (its inflight transition only creates the file, so a marker would stay for the whole write)
-    // and writes only new file groups, and a replace commit's inflight is replace metadata: both stay empty, as upstream.
-    Option<HoodieCommitMetadata> pendingProfile = HoodieTimeline.REPLACE_COMMIT_ACTION.equals(commitActionType)
-        || cfg.operation == WriteOperationType.BULK_INSERT
-        ? Option.empty() : Option.of(ConcurrentOperation.pendingWorkloadProfileMetadata(cfg.operation));
+    // The instant-aware client's same-instant handoff lets the write replace this marker with its workload profile, so a blocking
+    // clustering waits for a marked commit or delta commit (PreferWriterConflictResolutionStrategy).
+    Option<HoodieCommitMetadata> pendingProfile = marksInflightPendingProfile(commitActionType, cfg.operation)
+        ? Option.of(ConcurrentOperation.pendingWorkloadProfileMetadata(cfg.operation)) : Option.empty();
     Runnable toInflight = () -> {
       if (inflight.compareAndSet(false, true)) {
         metaClient.getActiveTimeline().transitionRequestedToInflight(
@@ -1058,6 +1057,20 @@ public class StreamSync implements Serializable, Closeable {
       }
       throw e;
     }
+  }
+
+  /**
+   * Whether the streamer marks the round's inflight as pending its workload profile. A marker is only safe where the write later
+   * overwrites the inflight with its profile ({@code saveWorkloadProfileMetadataToInflight}, through the same-instant handoff),
+   * since that is what removes it before the write ends: insert and upsert ({@code BaseSparkCommitActionExecutor}) and delete
+   * ({@code HoodieDeleteHelper}, or that executor) do, so their commit or delta commit is marked. A bulk insert saves no profile
+   * (its inflight transition only creates the file, so a marker would stay for the whole write) and writes only new file groups,
+   * so it is not marked. A replace commit (insert overwrite, delete partition) does save a profile, but it is left unmarked as
+   * upstream: its inflight is replace metadata that conflict resolution reads by file group. A write that stops saving a profile
+   * must leave this predicate first.
+   */
+  static boolean marksInflightPendingProfile(String commitActionType, WriteOperationType operation) {
+    return !HoodieTimeline.REPLACE_COMMIT_ACTION.equals(commitActionType) && operation != WriteOperationType.BULK_INSERT;
   }
 
   /** Stops the heartbeat of an instant started before the transformer that the round's write never took. */

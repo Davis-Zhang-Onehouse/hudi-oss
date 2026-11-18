@@ -59,7 +59,9 @@ public interface Transformer {
 
   /**
    * Invoked on the driver inside the data-table commit transaction, after the write and before the instant completes; a failure
-   * aborts the commit, so nothing of the round becomes durable. The default performs no action. Implementations must not acquire
+   * aborts the commit, so nothing of the round becomes durable. It is invoked in every round with a transformer, including a
+   * round that is not called back by {@link #onCommit}, so work staged here must not depend on {@link #onCommit} to be published
+   * or cleaned up. The default performs no action. Implementations must not acquire
    * the table lock again: the commit already holds it when the writer's configuration requires one (a single writer without a
    * lock provider commits unlocked). To refuse the round, throw
    * {@link org.apache.hudi.utilities.exception.HoodiePreCommitRefusalException}: the streamer then rolls the refused instant back
