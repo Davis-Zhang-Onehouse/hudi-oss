@@ -112,7 +112,7 @@ public class TestSizeTypeAwareBalancingStrategy extends SparkClientFunctionalTes
 
   private static TypedProperties props(int numPartitions) {
     TypedProperties props = mediaProps();
-    props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), String.valueOf(numPartitions));
+    props.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), String.valueOf(numPartitions));
     return props;
   }
 

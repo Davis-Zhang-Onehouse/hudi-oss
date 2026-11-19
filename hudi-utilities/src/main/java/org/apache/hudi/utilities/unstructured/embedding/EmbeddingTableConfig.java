@@ -697,8 +697,13 @@ public class EmbeddingTableConfig implements Serializable {
           + "hoodie.unstructured.embedding.prep.balance.<group>.max.bytes.per.task "
           + "(org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy); <group> is pdf, "
           + "image, video or a custom preprocessor's fully qualified class name. Must be positive (bytes). Replace "
-          + "<group> with a balancing group. pdf=268435456; image=2147483648; video=1073741824; custom "
-          + "group=hoodie.unstructured.embedding.prep.balance.default.max.bytes.per.task (268435456). Default: "
+          + "<group> with a balancing group. pdf=" + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_PDF_MAX_BYTES_PER_TASK
+          + "; image=" + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_IMAGE_MAX_BYTES_PER_TASK
+          + "; video=" + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_VIDEO_MAX_BYTES_PER_TASK
+          + "; custom group=hoodie.unstructured.embedding.prep.balance.default.max.bytes.per.task ("
+          + SizeTypeAwareBalancingStrategy.DEFAULT_BALANCE_DEFAULT_MAX_BYTES_PER_TASK + "). "
+          + "The video budget bounds source bytes per task; frame memory is per task slot and decode time follows duration "
+          + "and resolution. Lower the video budget to spread source bytes over more tasks; tune executor slots/heap for frames. Default: "
           + "<group-dependent>.");
 
   /**
@@ -1128,6 +1133,18 @@ public class EmbeddingTableConfig implements Serializable {
   }
 
   /**
+   * {@link #BALANCE_MIN_PARTITIONS} when set, else {@code defaultValue}; a size-aware per-group floor, independent of hash tasks.
+   *
+   * @throws IllegalArgumentException if the configured value is not positive
+   */
+  public int balanceMinPartitions(int defaultValue) {
+    if (!props.containsKey(BALANCE_MIN_PARTITIONS.key())) {
+      return defaultValue;
+    }
+    return positive(BALANCE_MIN_PARTITIONS.key(), intValue(BALANCE_MIN_PARTITIONS, 0));
+  }
+
+  /**
    * The in-commit retry of a transient source open ({@link #PREP_SOURCE_RETRY_MAX_ATTEMPTS}, {@link #PREP_SOURCE_RETRY_BACKOFF_MS}).
    *
    * @throws IllegalArgumentException if the attempts are not positive or the backoff is negative
@@ -1396,12 +1413,5 @@ public class EmbeddingTableConfig implements Serializable {
           + "written");
     }
     return active.get(0);
-  }
-
-  public int balanceMinPartitions(int defaultValue) {
-    if (!props.containsKey(BALANCE_MIN_PARTITIONS.key())) {
-      return defaultValue;
-    }
-    return positive(BALANCE_MIN_PARTITIONS.key(), intValue(BALANCE_MIN_PARTITIONS, 0));
   }
 }

@@ -39,12 +39,30 @@ public class TestBalanceParallelism {
   }
 
   @Test
-  public void parallelismFromNumPartitions() {
+  public void parallelismFromMinPartitions() {
     TypedProperties props = new TypedProperties();
-    props.setProperty("hoodie.unstructured.embedding.prep.num.partitions", "7");
+    props.setProperty("hoodie.unstructured.embedding.prep.balance.min.partitions", "7");
     BalanceParallelism.Resolved p = resolve(props, new SparkConf(false).set("spark.executor.instances", "50"), CLUSTER, 100, 2);
     assertEquals(7, p.parallelism());
-    assertEquals("hoodie.unstructured.embedding.prep.num.partitions", p.source());
+    assertEquals("hoodie.unstructured.embedding.prep.balance.min.partitions", p.source());
+  }
+
+  @Test
+  public void sizeAwareFloorUsesItsOwnKey() {
+    TypedProperties props = new TypedProperties();
+    props.setProperty("hoodie.unstructured.embedding.prep.balance.min.partitions", "7");
+    props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "19");
+    assertEquals(7, resolve(props, new SparkConf(false), "local[2]", 0, 2).parallelism());
+    assertEquals(19, EmbeddingTableConfig.from(props).balanceNumPartitions(2));
+  }
+
+  @Test
+  public void hashPartitionCountDoesNotSetSizeAwareFloor() {
+    TypedProperties props = new TypedProperties();
+    props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "19");
+    assertEquals(2, resolve(props, new SparkConf(false), "local[2]", 0, 2).parallelism());
+    props.setProperty("hoodie.unstructured.embedding.prep.balance.min.partitions", "0");
+    assertThrows(IllegalArgumentException.class, () -> resolve(props, new SparkConf(false), "local[2]", 0, 2));
   }
 
   @Test
@@ -103,9 +121,9 @@ public class TestBalanceParallelism {
   @Test
   public void explicitParallelismWinsAndMustBePositive() {
     TypedProperties props = new TypedProperties();
-    props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "7");
+    props.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), "7");
     assertEquals(7, BalanceParallelism.resolve(props, new SparkConf(false), "local[2]", 30, 9).parallelism());
-    props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "0");
+    props.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), "0");
     assertThrows(IllegalArgumentException.class, () -> BalanceParallelism.resolve(props, new SparkConf(false), "local[2]", 0, 1));
   }
 

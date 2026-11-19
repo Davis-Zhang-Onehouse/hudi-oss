@@ -79,7 +79,7 @@ public class TestPrepRoundTwoVersions extends SparkClientFunctionalTestHarness {
     props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
         PipeSplitPreprocessor.class.getName());
     props.setProperty(EmbeddingTableConfig.TOKENIZER_TYPE.key(), "word-count");
-    props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "2");
+    props.setProperty(EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), "2");
     props.setProperty(HoodieErrorTableConfig.ERROR_TABLE_ENABLED.key(), "true");
     props.setProperty(CloudSourceConfig.PATH_BASED_PARTITION_FIELDS.key(), "team");
     // the round's table exists before prep runs (the streamer starts the instant first); prep writes large payloads under it

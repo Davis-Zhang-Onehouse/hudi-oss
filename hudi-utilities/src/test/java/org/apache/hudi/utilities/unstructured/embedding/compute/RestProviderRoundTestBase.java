@@ -43,7 +43,7 @@ public abstract class RestProviderRoundTestBase extends EmbeddingRoundTestBase {
         EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "pdf" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
         DummyPdfPreprocessor.class.getName(),
         EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "20",
-        EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "1",
+        EmbeddingTableConfig.BALANCE_MIN_PARTITIONS.key(), "1",
         EmbeddingTableConfig.COMPUTE_PARALLELISM.key(), "1");
     props.remove(PREFIX + EmbeddingTableConfig.MODEL_CLIENT_CLASS_SUFFIX);
     return props;
