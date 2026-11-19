@@ -303,6 +303,8 @@ class TestUnstructuredSourceContract {
   void goldenSettingsEmbedding() {
     Map<String, String> embedding = new TreeMap<>();
     embedding.put(RECORD_KEY, EMBEDDING_KEY);
+    embedding.put(MARKERS, "TIMELINE_SERVER_BASED");
+    embedding.put(ROLLBACK, "true");
     embedding.put(INJECTOR, EmbeddingParquetConfigInjector.class.getName());
     UnstructuredSourceContract contract = contract("embedding");
     assertEquals(embedding, settingsOfAnEmptyJob(contract), "the embedding job adds no codec or bloom filter defaults");
