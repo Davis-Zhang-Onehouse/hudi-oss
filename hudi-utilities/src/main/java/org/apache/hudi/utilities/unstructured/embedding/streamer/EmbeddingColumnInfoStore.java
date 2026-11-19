@@ -34,6 +34,7 @@ import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.utilities.exception.HoodiePreCommitRefusalException;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableVersion;
 import org.apache.hudi.utilities.streamer.CompletedWrite;
 
 import com.fasterxml.jackson.core.JsonParser;
@@ -82,10 +83,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class EmbeddingColumnInfoStore {
   /** Governs the parser of the auxiliary history file, independently of blob layout and table schema versions. */
-  public static final ConfigProperty<String> LAYOUT_VERSION = ConfigProperty
-      .key("hoodie.table.embedding.column.info.layout.version").noDefaultValue();
+  public static final ConfigProperty<String> LAYOUT_VERSION = UnstructuredTableVersion.EMBEDDING_COLUMN_INFO_LAYOUT_VERSION;
   /** The {@link #LAYOUT_VERSION} this build writes and reads; written with the table's other pins when the table is created. */
-  public static final String CURRENT_LAYOUT_VERSION = "1";
+  public static final String CURRENT_LAYOUT_VERSION = UnstructuredTableVersion.CURRENT_EMBEDDING_COLUMN_INFO_LAYOUT_VERSION;
   public static final String RELATIVE_PATH = ".hoodie/.aux/embedding-column-info.json";
   private static final String SCRATCH_DIRECTORY = ".hoodie/.temp/embedding-column-info";
   /** The commit-time identity fence: {layout_version: 1, committed: snapshot or null, pending: {instant, snapshot}}. */
