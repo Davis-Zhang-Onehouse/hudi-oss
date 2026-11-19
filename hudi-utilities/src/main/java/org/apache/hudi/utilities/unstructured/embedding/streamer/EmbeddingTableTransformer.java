@@ -235,6 +235,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       registry.close();
     }
     config.prepSourceRetry();
+    config.prepPrefetchMaxBytes();
     return model;
   }
 

@@ -1275,6 +1275,16 @@ public class EmbeddingTableConfig implements Serializable {
     return Arrays.stream(value.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
   }
 
+  /** {@link #PREP_PREFETCH_MAX_BYTES}, in [0, {@link #MAX_PREP_PREFETCH_MAX_BYTES}]. */
+  public long prepPrefetchMaxBytes() {
+    long bytes = longValue(PREP_PREFETCH_MAX_BYTES, DEFAULT_PREP_PREFETCH_MAX_BYTES);
+    if (bytes < 0 || bytes > MAX_PREP_PREFETCH_MAX_BYTES) {
+      throw new IllegalArgumentException("Config " + PREP_PREFETCH_MAX_BYTES.key() + " must be in [0, " + MAX_PREP_PREFETCH_MAX_BYTES
+          + "] but is " + bytes);
+    }
+    return bytes;
+  }
+
   /** {@link #PREP_VIDEO_HEAP_FIXED_BYTES}, at least 0. */
   public long videoHeapFixedBytes() {
     long fixed = longValue(PREP_VIDEO_HEAP_FIXED_BYTES, DEFAULT_PREP_VIDEO_HEAP_FIXED_BYTES);
@@ -1341,15 +1351,6 @@ public class EmbeddingTableConfig implements Serializable {
           + "written");
     }
     return active.get(0);
-  }
-
-  public long prepPrefetchMaxBytes() {
-    long bytes = longValue(PREP_PREFETCH_MAX_BYTES, DEFAULT_PREP_PREFETCH_MAX_BYTES);
-    if (bytes < 0 || bytes > MAX_PREP_PREFETCH_MAX_BYTES) {
-      throw new IllegalArgumentException("Config " + PREP_PREFETCH_MAX_BYTES.key() + " must be in [0, " + MAX_PREP_PREFETCH_MAX_BYTES
-          + "] but is " + bytes);
-    }
-    return bytes;
   }
 
   public int balanceMinPartitions(int defaultValue) {

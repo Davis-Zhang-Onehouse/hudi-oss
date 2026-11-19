@@ -1,0 +1,454 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.hudi.utilities.unstructured.embedding.prep;
+
+import org.apache.hudi.common.config.TypedProperties;
+import org.apache.hudi.common.model.HoodieTableType;
+import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.utilities.sources.blob.SourceOpenHooks;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.image.ImageFixtures;
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
+import org.apache.hudi.utilities.unstructured.embedding.source.CountingObjectFileSystem;
+import org.apache.hudi.utilities.unstructured.embedding.text.WordCountTokenizer;
+import org.apache.hudi.utilities.unstructured.retry.TransientRetry;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema;
+import org.apache.spark.sql.types.BlobType;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.util.LongAccumulator;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * The prep iterator's read ahead ({@link EmbeddingTableConfig#PREP_PREFETCH_MAX_BYTES}): the next file's object is read on a
+ * background thread while the current file is prepared; the rows and side outputs are those of a run without it, in the same
+ * order; a read ahead that fails hands the file back to the task, which opens it as before; closing the iterator stops a read in
+ * flight.
+ */
+public class TestPreprocessingIteratorPrefetch {
+
+  private static final StructType BLOB = (StructType) BlobType.dataType();
+  private static final StructType REFERENCE = (StructType) BLOB.apply(HoodieSchema.Blob.EXTERNAL_REFERENCE).dataType();
+  private static final StructType SOURCE_ROW = DataTypes.createStructType(new StructField[] {
+      DataTypes.createStructField(BlobColumns.SOURCE_PATH_SHA, DataTypes.StringType, false),
+      DataTypes.createStructField(BlobColumns.SOURCE_FILE_EXTENSION, DataTypes.StringType, false),
+      DataTypes.createStructField(BlobColumns.SOURCE_FILE_SIZE, DataTypes.LongType, false),
+      DataTypes.createStructField(BlobColumns.SOURCE_MODIFICATION_TIME, DataTypes.LongType, false),
+      DataTypes.createStructField(BlobColumns.BLOB, BLOB, true),
+      DataTypes.createStructField(BlobColumns.SOURCE_FILE_PATH, DataTypes.StringType, false),
+      DataTypes.createStructField(BlobColumns.SOURCE_FILE_NAME, DataTypes.StringType, false)});
+  private static final String PREFETCH_THREAD = "embedding-prep-prefetch-";
+
+  @TempDir
+  Path temp;
+
+  private String embeddingTable;
+
+  @BeforeEach
+  public void createTable() throws IOException {
+    embeddingTable = temp.resolve("embedding").toUri().toString();
+    HoodieTableMetaClient.newTableBuilder().setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
+        .setRecordKeyFields(String.join(",", EmbeddingTableSchema.KEY_COLUMNS))
+        .initTable(HadoopFSUtils.getStorageConf(new Configuration()), embeddingTable);
+  }
+
+  @AfterEach
+  public void clear() {
+    SourceOpenHooks.clear();
+    CountingObjectFileSystem.clear();
+  }
+
+  /**
+   * A mixed corpus gives the same rows and side outputs, in the same order, with the read ahead and without it: images (one whose
+   * header the reader parses twice), text read as a stream, a file larger than the bound, a missing object, an object longer and
+   * one shorter than listed, a row without a blob, an extension no preprocessor takes, an inline file and a ranged reference.
+   */
+  @Test
+  public void rowsAndSideOutputsAreThoseOfARunWithoutReadAhead() throws IOException {
+    List<Row> corpus = corpus();
+    Run without = run(props(0L), corpus);
+    Run with = run(props(100_000L), corpus);
+
+    assertEquals(without.rows, with.rows);
+    assertEquals(without.sideOutputs, with.sideOutputs);
+    assertEquals(12, with.rows.size(), with.rows.toString());
+    assertEquals(5, with.sideOutputs.size(), with.sideOutputs.toString());
+    assertTrue(with.prefetchOpens > 0, "files were read ahead");
+    assertEquals(0, without.prefetchOpens, "nothing is read ahead at 0");
+  }
+
+  /**
+   * A file read ahead is opened on the read-ahead thread and then prepared with no further storage access; the first file and a
+   * file larger than the bound are opened by the task itself.
+   */
+  @Test
+  public void theNextFileIsReadOnTheReadAheadThread() throws IOException {
+    byte[] png = ImageFixtures.image("png", 30, 20);
+    byte[] big = ImageFixtures.image("bmp", 300, 200);
+    Row[] rows = {
+        objectRow("sha-1", "png", object("one.png", png), png.length),
+        objectRow("sha-2", "png", object("two.png", png), png.length),
+        objectRow("sha-big", "bmp", object("big.bmp", big), big.length),
+        objectRow("sha-3", "png", object("three.png", png), png.length)};
+    Map<String, List<String>> openThreads = recordOpenThreads("one.png", "two.png", "big.bmp", "three.png");
+
+    List<Row> out = drain(iterator(props(100_000L), Arrays.asList(rows)));
+
+    assertEquals(4, out.size());
+    assertTrue(openThreads.get("one.png").stream().noneMatch(t -> t.startsWith(PREFETCH_THREAD)), openThreads.toString());
+    assertEquals(1, openThreads.get("two.png").size(), "read ahead once, then served from memory: " + openThreads);
+    assertTrue(openThreads.get("two.png").get(0).startsWith(PREFETCH_THREAD), openThreads.toString());
+    assertTrue(openThreads.get("big.bmp").stream().noneMatch(t -> t.startsWith(PREFETCH_THREAD)), "larger than the bound");
+    assertTrue(openThreads.get("three.png").get(0).startsWith(PREFETCH_THREAD), openThreads.toString());
+    assertEquals(0, CountingObjectFileSystem.counts(path("two.png")).statuses.get(), "no status request for a listed object");
+  }
+
+  /** A read ahead that fails hands the file back to the task, which opens it itself, exactly as without a read ahead. */
+  @Test
+  public void failedReadAheadHandsTheFileBackToTheTask() throws IOException {
+    byte[] png = ImageFixtures.image("png", 30, 20);
+    Row[] rows = {
+        objectRow("sha-1", "png", object("first.png", png), png.length),
+        objectRow("sha-2", "png", object("flaky.png", png), png.length)};
+    AtomicInteger attempts = new AtomicInteger();
+    SourceOpenHooks.beforeOpen(local("flaky.png").toAbsolutePath().toString(), () -> {
+      if (attempts.incrementAndGet() == 1) {
+        throw new IOException("injected 503 Slow Down");
+      }
+    });
+
+    List<Row> out = drain(iterator(props(100_000L), Arrays.asList(rows)));
+
+    assertEquals(2, out.size());
+    assertEquals(2, attempts.get(), "the failed read ahead, then the task's own open");
+  }
+
+  /** A storage failure the task meets itself still fails the round, after the rows of the files before it. */
+  @Test
+  public void persistentStorageFailureStillFailsTheRound() throws IOException {
+    byte[] png = ImageFixtures.image("png", 30, 20);
+    Row[] rows = {
+        objectRow("sha-1", "png", object("good.png", png), png.length),
+        objectRow("sha-2", "png", object("throttled.png", png), png.length)};
+    SourceOpenHooks.beforeOpen(local("throttled.png").toAbsolutePath().toString(), () -> {
+      throw new IOException("injected 503 Slow Down");
+    });
+    PreprocessingIterator iterator = iterator(props(100_000L), Arrays.asList(rows));
+    assertTrue(iterator.hasNext());
+    assertNotNull(iterator.next());
+    RuntimeException failed = assertThrows(RuntimeException.class, iterator::hasNext);
+    assertNotNull(PrepFailures.roundFailure(failed), failed.toString());
+    iterator.close();
+  }
+
+  /** Closing the iterator interrupts a read ahead in flight. */
+  @Test
+  public void closingStopsAReadInFlight() throws Exception {
+    byte[] png = ImageFixtures.image("png", 30, 20);
+    Row[] rows = {
+        objectRow("sha-1", "png", object("now.png", png), png.length),
+        objectRow("sha-2", "png", object("slow.png", png), png.length)};
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    SourceOpenHooks.beforeOpen(local("slow.png").toAbsolutePath().toString(), () -> {
+      started.countDown();
+      try {
+        Thread.sleep(30_000L);
+      } catch (InterruptedException e) {
+        interrupted.countDown();
+        throw new IOException("interrupted", e);
+      }
+    });
+    PreprocessingIterator iterator = iterator(props(100_000L), Arrays.asList(rows));
+    assertNotNull(iterator.next());
+    assertTrue(started.await(10, TimeUnit.SECONDS), "the next file is being read ahead");
+    iterator.close();
+    assertTrue(interrupted.await(10, TimeUnit.SECONDS), "closing interrupted the read in flight");
+    assertFalse(iterator.hasNext());
+  }
+
+  /**
+   * A close on another thread (Spark's task-completion listener) while the task waits for a read ahead ends that wait: the read is
+   * interrupted and the task is not left blocked on it.
+   */
+  @Test
+  public void closingOnAnotherThreadEndsAWaitForAReadAhead() throws Exception {
+    byte[] png = ImageFixtures.image("png", 30, 20);
+    Row[] rows = {
+        objectRow("sha-1", "png", object("first.png", png), png.length),
+        objectRow("sha-2", "png", object("stuck.png", png), png.length)};
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    SourceOpenHooks.beforeOpen(local("stuck.png").toAbsolutePath().toString(), () -> {
+      if (!Thread.currentThread().getName().startsWith(PREFETCH_THREAD)) {
+        return;
+      }
+      started.countDown();
+      try {
+        Thread.sleep(30_000L);
+      } catch (InterruptedException e) {
+        interrupted.countDown();
+        throw new IOException("interrupted", e);
+      }
+    });
+    PreprocessingIterator iterator = iterator(props(100_000L), Arrays.asList(rows));
+    assertNotNull(iterator.next());
+    assertTrue(started.await(10, TimeUnit.SECONDS), "the next file is being read ahead");
+    Thread closer = new Thread(() -> {
+      try {
+        Thread.sleep(200L);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      iterator.close();
+    });
+    closer.start();
+    long start = System.nanoTime();
+    iterator.hasNext();
+    long waitedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+    closer.join(10_000L);
+    assertTrue(interrupted.await(10, TimeUnit.SECONDS), "the read in flight was interrupted");
+    assertTrue(waitedMs < 10_000L, "the task stopped waiting once the iterator closed: " + waitedMs + " ms");
+  }
+
+  /** The bound is a byte count in [0, one array]. */
+  @Test
+  public void theBoundIsValidated() {
+    assertEquals(EmbeddingTableConfig.DEFAULT_PREP_PREFETCH_MAX_BYTES, EmbeddingTableConfig.from(props()).prepPrefetchMaxBytes());
+    assertThrows(IllegalArgumentException.class, () -> EmbeddingTableConfig.from(props(-1L)).prepPrefetchMaxBytes());
+    assertThrows(IllegalArgumentException.class,
+        () -> EmbeddingTableConfig.from(props(EmbeddingTableConfig.MAX_PREP_PREFETCH_MAX_BYTES + 1)).prepPrefetchMaxBytes());
+  }
+
+  private List<Row> corpus() throws IOException {
+    byte[] png = ImageFixtures.image("png", 97, 41);
+    byte[] jpeg = ImageFixtures.image("jpeg", 120, 80);
+    byte[] tiff = ImageFixtures.singleStripTiff(200, 100);
+    byte[] big = ImageFixtures.image("bmp", 300, 200);
+    byte[] text = "alpha beta|gamma delta|epsilon".getBytes(StandardCharsets.UTF_8);
+    byte[] broken = ("one|" + TextPipePreprocessor.BROKEN).getBytes(StandardCharsets.UTF_8);
+    byte[] twice = metadataHeavyJpeg();
+    List<Row> rows = new ArrayList<>();
+    rows.add(objectRow("sha-png", "png", object("a.png", png), png.length));
+    rows.add(objectRow("sha-text", "txt", object("b.txt", text), text.length));
+    rows.add(objectRow("sha-twice", "jpg", object("c.jpg", twice), twice.length));
+    rows.add(objectRow("sha-missing", "png", path("gone.png"), 1_000L));
+    rows.add(objectRow("sha-big", "bmp", object("d.bmp", big), big.length));
+    rows.add(goneRow("sha-gone", "png"));
+    rows.add(objectRow("sha-unknown", "xyz", object("e.xyz", png), png.length));
+    rows.add(objectRow("sha-broken", "txt", object("f.txt", broken), broken.length));
+    rows.add(objectRow("sha-longer", "txt", object("g.txt", text), text.length - 5L));
+    rows.add(objectRow("sha-shorter", "jpg", object("h.jpg", Arrays.copyOf(jpeg, 60)), jpeg.length));
+    rows.add(inlineRow("sha-inline", "jpg", jpeg));
+    rows.add(rangedRow("sha-ranged", "png", object("i.bin", concat(new byte[17], png)), 17L, png.length));
+    rows.add(objectRow("sha-tiff", "tif", object("j.tif", tiff), tiff.length));
+    return rows;
+  }
+
+  /** A JPEG under 1 MiB whose header the JDK reader reads twice, more than 1 MiB served in all. */
+  private static byte[] metadataHeavyJpeg() {
+    byte[] jpeg = ImageFixtures.image("jpeg", 64, 48);
+    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+    out.write(jpeg, 0, 2);
+    java.util.Random random = new java.util.Random(1);
+    for (int i = 0; i < 9; i++) {
+      out.write(0xFF);
+      out.write(0xE2);
+      out.write(0xFF);
+      out.write(0xFF);
+      byte[] data = new byte[65533];
+      random.nextBytes(data);
+      for (int b = 0; b < data.length; b++) {
+        if (data[b] == (byte) 0xFF) {
+          data[b] = 0;
+        }
+      }
+      out.write(data, 0, data.length);
+    }
+    out.write(jpeg, 2, jpeg.length - 2);
+    return out.toByteArray();
+  }
+
+  /** The rows, side outputs and read-ahead opens of one drained run over {@code rows}. */
+  private static final class Run {
+    private final List<String> rows = new ArrayList<>();
+    private final List<String> sideOutputs = new ArrayList<>();
+    private int prefetchOpens;
+  }
+
+  private Run run(TypedProperties props, List<Row> rows) {
+    AtomicInteger prefetchOpens = new AtomicInteger();
+    for (Row row : rows) {
+      Object blob = row.getAs(BlobColumns.BLOB);
+      if (blob instanceof Row && HoodieSchema.Blob.OUT_OF_LINE.equals(((Row) blob).getAs(HoodieSchema.Blob.TYPE))) {
+        String path = ((Row) blob).getStruct(2).getString(0);
+        SourceOpenHooks.beforeOpen(localOf(path).toAbsolutePath().toString(), () -> {
+          if (Thread.currentThread().getName().startsWith(PREFETCH_THREAD)) {
+            prefetchOpens.incrementAndGet();
+          }
+        });
+      }
+    }
+    PreprocessingIterator iterator = iterator(props, rows);
+    Run run = new Run();
+    try {
+      while (iterator.hasNext()) {
+        run.rows.add(iterator.next().toString());
+      }
+    } finally {
+      iterator.close();
+    }
+    for (PrepSideOutput entry : iterator.getSideOutputs()) {
+      run.sideOutputs.add(entry.getSourcePathSha() + " " + entry.getStage() + " " + entry.getModality() + " " + entry.getError());
+    }
+    run.prefetchOpens = prefetchOpens.get();
+    SourceOpenHooks.clear();
+    return run;
+  }
+
+  private static List<Row> drain(PreprocessingIterator iterator) {
+    List<Row> rows = new ArrayList<>();
+    try {
+      while (iterator.hasNext()) {
+        rows.add(iterator.next());
+      }
+    } finally {
+      iterator.close();
+    }
+    return rows;
+  }
+
+  private Map<String, List<String>> recordOpenThreads(String... keys) {
+    Map<String, List<String>> threads = new ConcurrentHashMap<>();
+    for (String key : keys) {
+      List<String> names = java.util.Collections.synchronizedList(new ArrayList<>());
+      threads.put(key, names);
+      SourceOpenHooks.beforeOpen(local(key).toAbsolutePath().toString(), () -> names.add(Thread.currentThread().getName()));
+    }
+    return threads;
+  }
+
+  private PreprocessingIterator iterator(TypedProperties props, List<Row> rows) {
+    PrepCounters counters = new PrepCounters(new LongAccumulator(), new LongAccumulator(), new LongAccumulator(),
+        new LongAccumulator(), new LongAccumulator());
+    Configuration conf = new Configuration();
+    CountingObjectFileSystem.install(conf, temp.resolve("buckets"));
+    BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(conf), TransientRetry.NONE)
+        .withReadahead(BlobBytesSource.PREP_SOURCE_READAHEAD_BYTES);
+    return new PreprocessingIterator(rows.iterator(), EmbeddingTableConfig.from(props), "001", source,
+        new PreprocessorRegistry(props), new WordCountTokenizer(), counters, null);
+  }
+
+  private TypedProperties props() {
+    TypedProperties props = new TypedProperties();
+    props.setProperty(HoodieWriteConfig.BASE_PATH.key(), embeddingTable);
+    props.setProperty(EmbeddingTableConfig.MODE.key(), EmbeddingTableConfig.MODE_PREP_ONLY);
+    props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
+        TextPipePreprocessor.class.getName());
+    return props;
+  }
+
+  private TypedProperties props(long prefetchMaxBytes) {
+    TypedProperties props = props();
+    props.setProperty(EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key(), Long.toString(prefetchMaxBytes));
+    return props;
+  }
+
+  private Path local(String key) {
+    return temp.resolve("buckets").resolve("bucket").resolve(key);
+  }
+
+  private Path localOf(String path) {
+    return local(path.substring(path.lastIndexOf('/') + 1));
+  }
+
+  private static String path(String key) {
+    return CountingObjectFileSystem.path("bucket", key);
+  }
+
+  private String object(String key, byte[] bytes) throws IOException {
+    Path file = local(key);
+    Files.createDirectories(file.getParent());
+    Files.write(file, bytes);
+    return path(key);
+  }
+
+  private static byte[] concat(byte[] first, byte[] second) {
+    byte[] both = Arrays.copyOf(first, first.length + second.length);
+    System.arraycopy(second, 0, both, first.length, second.length);
+    return both;
+  }
+
+  private static Row objectRow(String sha, String extension, String path, long size) {
+    return sourceRow(sha, extension, size, outOfLine(path, null, null));
+  }
+
+  private static Row rangedRow(String sha, String extension, String path, long offset, long length) {
+    return sourceRow(sha, extension, offset + length, outOfLine(path, offset, length));
+  }
+
+  private static Row inlineRow(String sha, String extension, byte[] bytes) {
+    return sourceRow(sha, extension, bytes.length, new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.INLINE, bytes, null}, BLOB));
+  }
+
+  private static Row goneRow(String sha, String extension) {
+    return sourceRow(sha, extension, 10L, null);
+  }
+
+  private static Row outOfLine(String path, Long offset, Long length) {
+    return new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.OUT_OF_LINE, null,
+        new GenericRowWithSchema(new Object[] {path, offset, length, false}, REFERENCE)}, BLOB);
+  }
+
+  private static Row sourceRow(String sha, String extension, long size, Row blob) {
+    return new GenericRowWithSchema(new Object[] {sha, extension, size, 1L, blob, "s3://bucket/" + sha + "." + extension,
+        sha + "." + extension}, SOURCE_ROW);
+  }
+}

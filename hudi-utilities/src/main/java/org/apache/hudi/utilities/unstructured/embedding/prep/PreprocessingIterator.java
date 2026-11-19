@@ -167,6 +167,12 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   private volatile boolean closed;
   /** The error that escaped advance(): the file it ended is half read, so the iterator does not go on. */
   private Throwable failedWith;
+  /** Reads the next file ahead while the current one is prepared ({@link EmbeddingTableConfig#PREP_PREFETCH_MAX_BYTES}). */
+  private final SourcePrefetcher prefetcher;
+  /** The next source row, taken from {@link #blobRows} early so it can be read ahead; null when none is held. */
+  private Row lookahead;
+  /** The largest image read ahead: an image is prepared from its header, read within this bound. */
+  private final long imageHeaderMaxBytes;
 
   /**
    * An iterator with no payload destination: a derived payload above the input store's inline threshold fails its chunk.
@@ -192,6 +198,16 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   public PreprocessingIterator(Iterator<Row> blobRows, EmbeddingTableConfig config, String instant, BlobBytesSource bytesSource,
                                PreprocessorRegistry registry, Tokenizer tokenizer, PrepCounters counters,
                                Consumer<PrepSideOutput> sideOutputs, PayloadDestination destination) {
+    this(blobRows, config, instant, bytesSource, registry, tokenizer, counters, sideOutputs, destination, config.prepPrefetchMaxBytes());
+  }
+
+  /**
+   * An iterator that reads ahead at most {@code prefetchMaxBytes} per file (data prep passes what the video frame-heap check
+   * admits; 0 reads nothing ahead).
+   */
+  public PreprocessingIterator(Iterator<Row> blobRows, EmbeddingTableConfig config, String instant, BlobBytesSource bytesSource,
+                               PreprocessorRegistry registry, Tokenizer tokenizer, PrepCounters counters,
+                               Consumer<PrepSideOutput> sideOutputs, PayloadDestination destination, long prefetchMaxBytes) {
     this.collectedSideOutputs = sideOutputs == null ? new ArrayList<>() : null;
     Consumer<PrepSideOutput> sink = sideOutputs == null ? collectedSideOutputs::add : sideOutputs;
     this.sideOutputs = sideOutput -> {
@@ -209,6 +225,8 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
     this.chunkIds = new SequentialChunkIdScheme();
     this.payloadInlineMaxBytes = EmbeddingInputConfig.inlineMaxBytes(config.getProps());
     this.preparedInputs = destination == null ? null : new PreparedInputs(config.getProps(), instant, destination);
+    this.prefetcher = new SourcePrefetcher(bytesSource, prefetchMaxBytes);
+    this.imageHeaderMaxBytes = ImageInputPreprocessor.headerMaxBytes(config.getProps());
     TaskContext taskContext = TaskContext.get();
     if (taskContext != null) {
       taskContext.addTaskCompletionListener((TaskCompletionListener) context -> close());
@@ -269,14 +287,16 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
         pullFromCurrentFile();
         return;
       }
-      if (!blobRows.hasNext()) {
+      if (lookahead == null && !blobRows.hasNext()) {
         if (preparedInputs != null) {
           preparedInputs.awaitWrites();
         }
         close();
         return;
       }
-      openFile(blobRows.next());
+      Row next = lookahead != null ? lookahead : blobRows.next();
+      lookahead = null;
+      openFile(next);
     } catch (Throwable t) {
       failedWith = t;
       closeSuppressedInto(t);
@@ -555,6 +575,30 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
         blobRow.getAs(BlobColumns.SOURCE_FILE_EXTENSION), blobRow.<Long>getAs(BlobColumns.SOURCE_FILE_SIZE));
   }
 
+  /**
+   * Takes the next source row early and starts reading its object ahead, when a preprocessor will read it: a row that names no
+   * preprocessor or no blob is never read ahead.
+   */
+  private void readNextAhead() {
+    if (!prefetcher.enabled()) {
+      return;
+    }
+    if (lookahead == null && blobRows.hasNext()) {
+      lookahead = blobRows.next();
+    }
+    if (lookahead == null || isGone(lookahead)) {
+      return;
+    }
+    Long size = lookahead.getAs(BlobColumns.SOURCE_FILE_SIZE);
+    String extension = lookahead.getAs(BlobColumns.SOURCE_FILE_EXTENSION);
+    Option<FilePreprocessor> preprocessor = registry.forExtension(extension);
+    if (size != null && preprocessor.isPresent()) {
+      // an image is prepared from its header alone: one larger than the header bound is not worth reading whole
+      long limit = preprocessor.get().sourceKind() == SourceKind.IMAGE ? imageHeaderMaxBytes : Long.MAX_VALUE;
+      prefetcher.start(lookahead, size, limit);
+    }
+  }
+
   /** Whether the source row carries no blob at all. */
   private static boolean isGone(Row blobRow) {
     return blobRow.isNullAt(blobRow.fieldIndex(BlobColumns.BLOB));
@@ -607,7 +651,11 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
       closed = true;
     }
     try {
-      closeCurrentFileQuietly();
+      try {
+        prefetcher.close();
+      } finally {
+        closeCurrentFileQuietly();
+      }
     } finally {
       try {
         closeRegistryIfUnowned();
@@ -619,7 +667,10 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
     }
   }
 
-  /** The bytes of one source row, as a stream or for random access. */
+  /**
+   * The bytes of one source row, as a stream or for random access. The object's length is the one the source listed for it, so
+   * an open sends no status request for it; an object read ahead whole is served from memory, with no storage access.
+   */
   private static final class BlobRowBytes implements SeekableBlobBytesSupplier {
     private final BlobBytesSource source;
     private final Row blob;
@@ -800,6 +851,9 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   }
 
   private void openFileOwned(Row blobRow) {
+    // the bytes read ahead for this row, if any; then the next row's read starts, to overlap this file's preparation
+    byte[] readAhead = prefetcher.take(blobRow);
+    readNextAhead();
     currentSourceRow = blobRow;
     fileChunks = 0;
     fileChunkFailures = 0;
@@ -833,7 +887,10 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
     try {
       Row blob = blobRow.getAs(BlobColumns.BLOB);
       currentBlob = blob;
-      BlobRowBytes openedBytes = new BlobRowBytes(bytesSource, blob, currentFile, null);
+      if (readAheadChanged != null) {
+        throw readAheadChanged;
+      }
+      BlobRowBytes openedBytes = new BlobRowBytes(bytesSource, blob, currentFile, readAhead);
       ClosableIterator<Chunk> opened;
       try (Release<RuntimeException> sourceCheck = openedBytes::checkFailure) {
         opened = processor.open(openedBytes, currentFile, tokenizer, config.getProps());
