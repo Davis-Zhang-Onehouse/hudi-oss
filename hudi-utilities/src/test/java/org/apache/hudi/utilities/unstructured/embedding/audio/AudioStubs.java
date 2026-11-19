@@ -36,4 +36,10 @@ public final class AudioStubs {
     props.setProperty(AudioConfigKeys.CHUNKER_CLASS.key(), StubTranscriptChunker.class.getName());
     return props;
   }
+
+  /** Names the stub chunker only (a test with its own source and transcriber whose oracle is the stub's packing). */
+  public static TypedProperties stubChunker(TypedProperties props) {
+    props.setProperty(AudioConfigKeys.CHUNKER_CLASS.key(), StubTranscriptChunker.class.getName());
+    return props;
+  }
 }
