@@ -38,7 +38,6 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Provider-level request rejection policy and pacing reach the micro-batch iterator without dropping prepared row values. */
@@ -98,15 +97,19 @@ public class TestProviderRejectionPolicy {
   }
 
   @Test
-  public void equalPermanentRejectionsAcrossFilesFailTheRound() {
-    EmbeddingClientConfigException failure = assertThrows(EmbeddingClientConfigException.class,
-        () -> drain("uniform", counters(), row("a", 0, "bad"), row("b", 0, "bad")));
-    assertTrue(failure.getMessage().contains("EMBED-COMPUTE-REJECTED-AS-A-WHOLE"));
-    assertTrue(failure.getMessage().contains("source_path_sha=a"), failure.getMessage());
-    assertTrue(failure.getMessage().contains("source_modification_time=101"), failure.getMessage());
-    assertTrue(failure.getMessage().contains("source_file_size=17"), failure.getMessage());
-    assertTrue(failure.getMessage().contains("modality=text"), failure.getMessage());
-    assertTrue(failure.getMessage().contains("chunk_id=0"), failure.getMessage());
+  public void equalPermanentRejectionsAcrossFilesEndTheTaskWithARefusalMarker() {
+    ComputeCounters counters = counters();
+    List<Row> out = drain("uniform", counters, row("a", 0, "bad"), row("b", 0, "bad"));
+    assertEquals(1, out.size(), "one marker row; the task ends normally, so Spark does not re-attempt it");
+    String marker = out.get(0).getString(out.get(0).length() - 1);
+    assertTrue(marker.startsWith(ComputeRound.REFUSED_PREFIX + "EMBED-COMPUTE-REJECTED-AS-A-WHOLE"), marker);
+    assertTrue(marker.contains("source_path_sha=a"), marker);
+    assertTrue(marker.contains("source_modification_time=101"), marker);
+    assertTrue(marker.contains("source_file_size=17"), marker);
+    assertTrue(marker.contains("modality=text"), marker);
+    assertTrue(marker.contains("chunk_id=0"), marker);
+    assertEquals(1, counters.getCallsRefused().value());
+    assertEquals(0, counters.getRowsPermanent().value(), "the marker is not a row outcome");
   }
 
   @Test
@@ -151,7 +154,9 @@ public class TestProviderRejectionPolicy {
   @Test
   public void rateWaitIncludesAConfigurationException() {
     ComputeCounters counters = counters();
-    assertThrows(EmbeddingClientConfigException.class, () -> drain("throw", counters, row("a", 0, "bad")));
+    List<Row> out = drain("throw", counters, row("a", 0, "bad"));
+    assertEquals(1, out.size());
+    assertEquals(1, counters.getCallsRefused().value());
     assertEquals(7, counters.getRateLimitWaitMillis().value());
   }
 
@@ -171,6 +176,7 @@ public class TestProviderRejectionPolicy {
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + "m" + EmbeddingTableConfig.MODEL_CLIENT_CLASS_SUFFIX, RejectionClient.class.getName());
     props.setProperty(EmbeddingTableConfig.COMPUTE_RETRY_BACKOFF_MS.key(), "0");
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + "m" + EmbeddingTableConfig.MODEL_PROVIDER_SUFFIX, "dummy");
+    props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + "m" + EmbeddingTableConfig.MODEL_MODALITIES_SUFFIX, "text");
     props.setProperty(POLICY, policy);
     EmbeddingModelSpec model = EmbeddingTableConfig.from(props).model("m");
     List<Row> out = new ArrayList<>();

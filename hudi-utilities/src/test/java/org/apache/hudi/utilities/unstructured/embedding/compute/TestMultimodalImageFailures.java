@@ -134,7 +134,7 @@ public class TestMultimodalImageFailures {
   /** A malformed stored-input reference fails the run on every provider, naming the row; no request is sent. */
   @Test
   public void referenceFaultFailsTheRunOnEveryProvider() throws Exception {
-    for (MultimodalEmbeddingClient client : Arrays.asList(vertex(), dummy())) {
+    for (EmbeddingClient client : Arrays.asList(vertex(), dummy())) {
       EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class,
           () -> embedFailing(client, () -> new BlobReferenceException("OUT_OF_LINE blob has null reference")), client.getClass().getSimpleName());
       assertTrue(e.getMessage().contains(input().describeIdentity()) && e.getMessage().contains("OUT_OF_LINE blob has null reference"), e.getMessage());
@@ -163,7 +163,7 @@ public class TestMultimodalImageFailures {
   }
 
   /** Embeds one image input whose preparation throws a fresh {@code failure}. */
-  private static EmbeddingResult embedFailing(MultimodalEmbeddingClient client, Supplier<Exception> failure) throws Exception {
+  private static EmbeddingResult embedFailing(EmbeddingClient client, Supplier<Exception> failure) throws Exception {
     EmbeddingInput input = EmbeddingInput.storedImage("f", 0, EmbeddingTableSchema.MODALITY_IMAGE, null, () -> {
       Exception e = failure.get();
       if (e instanceof IOException) {
@@ -174,7 +174,7 @@ public class TestMultimodalImageFailures {
     return client.embed(Collections.singletonList(input)).get(0);
   }
 
-  private MultimodalEmbeddingClient vertex() throws IOException {
+  private EmbeddingClient vertex() throws IOException {
     Path tokenFile = tempDir.resolve("vertex.token");
     Files.write(tokenFile, "stub-token-0002\n".getBytes(StandardCharsets.UTF_8));
     TypedProperties props = new TypedProperties();
@@ -186,7 +186,7 @@ public class TestMultimodalImageFailures {
     return client;
   }
 
-  private static MultimodalEmbeddingClient dummy() {
+  private static EmbeddingClient dummy() {
     DummyMultimodalEmbeddingClient client = new DummyMultimodalEmbeddingClient();
     client.init(new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, 8, null, DummyMultimodalEmbeddingClient.PROVIDER, ALIAS),
         new TypedProperties());

@@ -51,6 +51,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -121,6 +122,7 @@ public class TestEmbeddingComputeFailureSurfaces {
     props.setProperty(EmbeddingTableConfig.MODELS.key(), "m1");
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + "m1" + EmbeddingTableConfig.MODEL_DIMENSIONS_SUFFIX, "4");
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + "m1" + EmbeddingTableConfig.MODEL_PROVIDER_SUFFIX, "dummy");
+    props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + "m1" + EmbeddingTableConfig.MODEL_MODALITIES_SUFFIX, "text");
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + "m1" + EmbeddingTableConfig.MODEL_CLIENT_CLASS_SUFFIX, FailingClient.class.getName());
     return EmbeddingTableConfig.from(props).model("m1");
   }
@@ -143,10 +145,14 @@ public class TestEmbeddingComputeFailureSurfaces {
   }
 
   private static List<Row> drain(RuntimeException failure) {
+    return drain(failure, 8, counters());
+  }
+
+  private static List<Row> drain(RuntimeException failure, int batchSize, ComputeCounters counters) {
     FailingClient.CALLS.set(0);
     FailingClient.failure = failure;
     FailingClient.failInit = false;
-    MicroBatchEmbeddingIterator iterator = new MicroBatchEmbeddingIterator(rows(), model(), props(), SCHEMA, 8, counters());
+    MicroBatchEmbeddingIterator iterator = new MicroBatchEmbeddingIterator(rows(), model(), props(), SCHEMA, batchSize, counters);
     List<Row> out = new ArrayList<>();
     iterator.forEachRemaining(out::add);
     return out;
@@ -202,9 +208,59 @@ public class TestEmbeddingComputeFailureSurfaces {
   }
 
   @Test
-  public void rejectedConfigurationIsNotRetried() {
-    EmbeddingClientConfigException rejected = new EmbeddingClientConfigException("rejected");
-    assertSame(rejected, assertThrows(EmbeddingClientConfigException.class, () -> drain(rejected)));
+  public void permanentRefusalEndsTheTaskAfterOneRequestWithoutAThrow() {
+    // batches of one: the second row would be a second request, but it is never read
+    ComputeCounters counters = counters();
+    List<Row> out = drain(new EmbeddingClientConfigException("HTTP 429 insufficient_quota: You exceeded your current quota"), 1,
+        counters);
+
+    assertEquals(1, FailingClient.CALLS.get(), "one request, then none");
+    assertEquals(1, out.size(), "one marker row, the first row of the refused batch");
+    Row marker = out.get(0);
+    assertEquals("s", marker.getString(0));
+    assertEquals(0L, marker.getLong(4));
+    assertNull(marker.get(7), "no vector");
+    assertEquals(ComputeRound.REFUSED_PREFIX + "HTTP 429 insufficient_quota: You exceeded your current quota", marker.getString(8));
+    assertEquals(1, counters.getCallsRefused().value());
+    assertEquals(0, counters.getRowsPermanent().value());
+    assertEquals(0, counters.getRowsEmbedded().value());
+  }
+
+  @Test
+  public void transientRateLimitAnswerIsStillRetried() {
+    // a 429 rate_limit_exceeded the client could not absorb comes back RETRYABLE: retried alone, then embedded
+    AtomicInteger calls = new AtomicInteger();
+    FailingClient.delegate = new DummyEmbeddingClient() {
+      @Override
+      public List<EmbeddingResult> embed(List<EmbeddingInput> inputs) {
+        if (calls.getAndIncrement() == 0) {
+          return Collections.nCopies(inputs.size(), EmbeddingResult.retryable("HTTP 429 rate_limit_exceeded"));
+        }
+        return super.embed(inputs);
+      }
+    };
+    try {
+      FailingClient.delegate.init(model(), new TypedProperties());
+      ComputeCounters counters = counters();
+      List<Row> out = drain(null, 8, counters);
+
+      assertEquals(3, FailingClient.CALLS.get(), "the batch, then each of its two inputs alone");
+      assertEquals(2, out.size());
+      out.forEach(row -> assertNotNull(row.get(7), row.toString()));
+      out.forEach(row -> assertNull(row.get(8), row.toString()));
+      assertEquals(0, counters.getCallsRefused().value());
+      assertEquals(2, counters.getRowsRetried().value());
+    } finally {
+      FailingClient.delegate = null;
+    }
+  }
+
+  @Test
+  public void transientFailureStillFailsTheTaskForASparkRetry() {
+    // an outage ends the step with a transient failure, as before: Spark re-attempts the task
+    EmbeddingProviderUnavailableException outage = new EmbeddingProviderUnavailableException("outage open");
+    EmbeddingComputeTransientException failure = assertThrows(EmbeddingComputeTransientException.class, () -> drain(outage));
+    assertTrue(failure.getMessage().contains("EMBED-COMPUTE-PROVIDER-UNAVAILABLE"), failure.getMessage());
     assertEquals(1, FailingClient.CALLS.get());
   }
 

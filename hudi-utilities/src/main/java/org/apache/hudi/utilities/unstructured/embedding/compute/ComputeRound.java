@@ -71,6 +71,11 @@ public final class ComputeRound {
    * already uses it (ignoring case).
    */
   public static final String ERROR_WORKING_COLUMN = "_embedding_compute_error";
+  /**
+   * The start of the working error of a task's marker row after the provider refused for good
+   * ({@link EmbeddingClientConfigException}); {@link #embed} fails the round with it before the rows are used.
+   */
+  public static final String REFUSED_PREFIX = "EMBED-COMPUTE-PROVIDER-REFUSED ";
 
   /** Fields of the error record of a PERMANENT input, with the five key columns, in key order. */
   static final String ERROR_RECORD_ERROR = "error";
@@ -137,6 +142,10 @@ public final class ComputeRound {
     try {
       // the action that runs every model call before the write
       persisted.count();
+      if (counters.getCallsRefused().value() > 0) {
+        // a task the provider refused for good ended normally with a marker row, so Spark re-attempted nothing
+        throw new EmbeddingClientConfigException(refusal(persisted, model));
+      }
     } catch (Exception e) {
       // a failed Spark job surfaces as a checked SparkException: the output is released for it too
       persisted.unpersist(false);
@@ -144,6 +153,16 @@ public final class ComputeRound {
           : new HoodieException("Embedding with model " + model.getName() + " failed", e);
     }
     return persisted;
+  }
+
+  /** The round's failure message: the first marker row's refusal, naming the model. */
+  private static String refusal(Dataset<Row> persisted, EmbeddingModelSpec model) {
+    Column errorColumn = errorColumn(persisted);
+    List<Row> marker = persisted.filter(errorColumn.startsWith(REFUSED_PREFIX))
+        .select(errorColumn).limit(1).collectAsList();
+    String refusal = marker.isEmpty() ? "(the refusal message was not found)" : marker.get(0).getString(0).substring(REFUSED_PREFIX.length());
+    return REFUSED_PREFIX.trim() + " model=" + model.getName() + ": the provider refused for good, so the round stops after the "
+        + "first refusal of each task, with no task re-attempt and no further request; nothing was written: " + refusal;
   }
 
   /** {@code rows} with one more, NULL value: the final slot of the private compute outcome field. */
