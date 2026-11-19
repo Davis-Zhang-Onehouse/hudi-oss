@@ -112,8 +112,8 @@ public final class OpenAiClientConfig implements Serializable {
       .markAdvanced()
       .sinceVersion("1.3.0")
       .withDocumentation("Most inputs per request; default (and maximum) the provider's: 2048, or TEI's max_client_batch_size. "
-          + "Replace <alias> with the declared model alias. openai/azure 2048; hf-tei -1 then GET /info. "
-          + "Default: <provider-dependent>.");
+          + "Replace <alias> with the declared model alias. openai/azure 2048; hf-tei -1 then GET /info; shared key "
+          + "also Jina 64, Vertex 1, Bedrock Titan 1/Cohere 96. Default: <provider-dependent>.");
   /** Most summed tokens per request; default (and maximum) the provider's: 300000, or TEI's max_batch_tokens. */
   public static final String REQUEST_MAX_TOKENS_SUFFIX = ".request.max.tokens";
 

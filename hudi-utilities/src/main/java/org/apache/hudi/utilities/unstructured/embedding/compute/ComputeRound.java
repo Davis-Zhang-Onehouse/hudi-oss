@@ -42,6 +42,7 @@ import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.StorageLevel;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
@@ -66,7 +67,8 @@ public final class ComputeRound {
   public static final String CORRUPT_RECORD = BaseErrorTableWriter.ERROR_TABLE_CURRUPT_RECORD_COL_NAME;
   /**
    * The working column {@link MicroBatchEmbeddingIterator} stores a PERMANENT outcome in: appended to the round's compute
-   * schema and dropped before the write, never written to the table. A reserved name outside the model-column namespace.
+   * schema and dropped before the write, never written to the table. This preferred name is suffixed when a customer column
+   * already uses it (ignoring case).
    */
   public static final String ERROR_WORKING_COLUMN = "_embedding_compute_error";
 
@@ -80,6 +82,27 @@ public final class ComputeRound {
   /** The nullable string field of {@link #ERROR_WORKING_COLUMN}. */
   public static StructField errorWorkingField() {
     return DataTypes.createStructField(ERROR_WORKING_COLUMN, DataTypes.StringType, true);
+  }
+
+  /** A working field whose name cannot collide with a table column under Spark's case-insensitive resolution. */
+  private static StructField errorWorkingField(StructType tableSchema) {
+    String name = ERROR_WORKING_COLUMN;
+    int suffix = 0;
+    List<String> columns = Arrays.asList(tableSchema.fieldNames());
+    while (containsIgnoreCase(columns, name)) {
+      name = ERROR_WORKING_COLUMN + "_" + ++suffix;
+    }
+    return DataTypes.createStructField(name, DataTypes.StringType, true);
+  }
+
+  private static boolean containsIgnoreCase(List<String> columns, String name) {
+    return columns.stream().anyMatch(column -> column.equalsIgnoreCase(name));
+  }
+
+  /** The outcome field appended by {@link #embed}, always the final field of its private compute schema. */
+  public static Column errorColumn(Dataset<Row> embedded) {
+    StructField[] fields = embedded.schema().fields();
+    return functions.col(fields[fields.length - 1].name());
   }
 
   /**
@@ -100,13 +123,13 @@ public final class ComputeRound {
   /**
    * Embeds {@code rows} (in {@code tableSchema}) with {@code model}, reading image rows' {@code prepared_image} through
    * {@code storedInputs} (built with the embedding table's base path, so a managed reference relative to it, as the input store
-   * writes one, resolves under the table): the rows in {@code tableSchema} plus {@link #ERROR_WORKING_COLUMN}, persisted at
+   * writes one, resolves under the table): the rows in {@code tableSchema} plus a private error field, persisted at
    * {@code level} and counted, so every model call has run when it returns.
    */
   public static Dataset<Row> embed(SparkSession spark, JavaRDD<Row> rows, StructType tableSchema, EmbeddingModelSpec model,
                                    TypedProperties props, BlobBytesSource storedInputs, ComputeCounters counters,
                                    StorageLevel level) {
-    StructType schema = tableSchema.add(errorWorkingField());
+    StructType schema = tableSchema.add(errorWorkingField(tableSchema));
     int batchSize = EmbeddingTableConfig.from(props).computeBatchSize();
     JavaRDD<Row> embedded = rows.mapPartitions(iterator -> new MicroBatchEmbeddingIterator(withErrorSlot(iterator), model, props,
         schema, batchSize, counters, storedInputs));
@@ -123,7 +146,7 @@ public final class ComputeRound {
     return persisted;
   }
 
-  /** {@code rows} with one more, NULL value: the slot of {@link #ERROR_WORKING_COLUMN}. */
+  /** {@code rows} with one more, NULL value: the final slot of the private compute outcome field. */
   private static Iterator<Row> withErrorSlot(Iterator<Row> rows) {
     return new Iterator<Row>() {
       @Override
@@ -160,7 +183,7 @@ public final class ComputeRound {
    * not nullable (the streamer routes the row to the error table and drops it from the data).
    */
   public static Dataset<Row> errorRows(Dataset<Row> embedded, StructType outputSchema, EmbeddingModelSpec model) {
-    Column error = functions.col(ERROR_WORKING_COLUMN);
+    Column error = errorColumn(embedded);
     // struct fields in key order: to_json writes them in that order with no whitespace, the canonical spelling
     Column record = functions.to_json(functions.struct(error.as(ERROR_RECORD_ERROR),
         functions.col(EmbeddingTableSchema.SOURCE_PATH_SHA),

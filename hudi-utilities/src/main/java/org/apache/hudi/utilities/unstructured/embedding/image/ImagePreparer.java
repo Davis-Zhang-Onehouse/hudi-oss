@@ -86,7 +86,7 @@ public class ImagePreparer {
         if (intermediate > spec.intermediateBudgetBytes()) {
           throw new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + header + " needs about " + intermediate
               + " bytes of decoder intermediates before subsampling (a full-resolution TIFF strip/tile with its compressed "
-              + "bytes, a BMP RLE bitmap read whole, or progressive JPEG coefficients), above the configured budget ("
+              + "bytes, source-width PNG/BMP/GIF rows, a BMP RLE bitmap read whole, or progressive JPEG coefficients), above the configured budget ("
               + EmbeddingTableConfig.COMPUTE_IMAGE_INTERMEDIATE_BUDGET_BYTES.key() + ") of "
               + spec.intermediateBudgetBytes());
         }

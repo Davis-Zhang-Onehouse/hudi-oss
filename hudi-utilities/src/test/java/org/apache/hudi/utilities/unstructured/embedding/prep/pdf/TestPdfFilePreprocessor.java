@@ -115,6 +115,15 @@ public class TestPdfFilePreprocessor {
   }
 
   @Test
+  public void emptyNormalizedTruncationBecomesAnIsolatedFailure() {
+    PdfFilePreprocessor preprocessor = new PdfFilePreprocessor(new PdfBoxChunker((supplier, meta, config) ->
+        new TestPdfChunkIterator.FakeSource(supplier, 1, page -> () -> new PageText(" \n\u00AD", true))));
+    PreprocessingException failure = assertThrows(PreprocessingException.class,
+        () -> run(preprocessor, new byte[1], new TypedProperties()));
+    assertTrue(failure.getMessage().contains("PAGES_LOST failed=0 truncated=1"), failure.getMessage());
+  }
+
+  @Test
   public void invalidConfigFailsAtOpen() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "8");
@@ -137,7 +146,7 @@ public class TestPdfFilePreprocessor {
 
   @Test
   public void nameCarriesImplementationVersion() {
-    assertEquals("pdf-chunker/2;pdfbox=3.0.8", new PdfFilePreprocessor().name());
+    assertEquals("pdf-chunker/3;pdfbox=3.0.8", new PdfFilePreprocessor().name());
     assertEquals(new PdfFilePreprocessor().name(), new PreprocessorRegistry(new TypedProperties()).forExtension("pdf").get().name(),
         "the identity the registry's pdf preprocessor carries");
   }

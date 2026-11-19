@@ -82,6 +82,17 @@ public final class SourceFailures {
     return false;
   }
 
+  /** Whether {@code failure} or any of its causes is an access denial ({@link #isAccessDenial}). */
+  public static boolean isCausedByAccessDenial(Throwable failure) {
+    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+      if (isAccessDenial(cause)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * Whether {@code failure}'s cause chain says the file itself is at fault: its source is gone or short, or its row malformed. An
    * access denial anywhere in the chain ({@link #isAccessDenial}: java.nio.file.AccessDeniedException, which is

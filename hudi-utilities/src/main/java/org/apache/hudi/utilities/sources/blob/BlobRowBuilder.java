@@ -30,6 +30,7 @@ import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.StoragePathInfo;
 import org.apache.hudi.utilities.sources.helpers.CloudObjectMetadata;
+import org.apache.hudi.utilities.unstructured.embedding.source.SourceFailures;
 import org.apache.hudi.utilities.unstructured.storage.StorageReferenceRules;
 
 import org.apache.spark.SparkEnv;
@@ -143,7 +144,8 @@ public class BlobRowBuilder implements Serializable {
   }
 
   private boolean isConfirmedMissing(StoragePath path, IOException failure) {
-    if (!ExceptionUtil.isCausedBy(failure, FileNotFoundException.class)) {
+    if (SourceFailures.isCausedByAccessDenial(failure)
+        || !ExceptionUtil.isCausedBy(failure, FileNotFoundException.class)) {
       return false;
     }
     try {

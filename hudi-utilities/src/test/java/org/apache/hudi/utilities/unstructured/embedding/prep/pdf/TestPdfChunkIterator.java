@@ -652,6 +652,40 @@ public class TestPdfChunkIterator {
   }
 
   @Test
+  public void truncatedPrefixesThatNormalizeEmptyProduceDurableFailures() {
+    String[] prefixes = {"", " \t\n", "\u2060\uFEFF\u00AD"};
+    for (String prefix : prefixes) {
+      PdfChunkIterator iterator = open(small(), Collections.singletonList(() -> new PageText(prefix, true)));
+      List<PdfChunk> chunks = drain(iterator);
+      assertEquals(1, chunks.size());
+      assertEquals(PdfChunk.Status.FAILED, chunks.get(0).status());
+      assertTrue(chunks.get(0).statusDetail().contains("PAGES_LOST failed=0 truncated=1"));
+      assertEquals(1, iterator.stats().pagesTruncated());
+      assertEquals(1, iterator.stats().pagesEmpty());
+      assertEquals(0, iterator.stats().chunksEmitted());
+    }
+  }
+
+  @Test
+  public void normalizationCuttingWhitespaceBeforeVisibleTextProducesADurableFailure() {
+    PdfChunkerConfig config = config(WORDS, EmbeddingTableConfig.CHUNK_MAX_WORDS.key(), "16",
+        EmbeddingTableConfig.CHUNK_WINDOW_MAX_CHARS.key(), "256", EmbeddingTableConfig.PDF_MAX_PAGE_CHARS.key(), "256");
+    PdfChunkIterator iterator = open(config, Collections.singletonList(text(" ".repeat(257) + "Visible text.")));
+    List<PdfChunk> chunks = drain(iterator);
+    assertEquals(PdfChunk.Status.FAILED, chunks.get(0).status());
+    assertTrue(chunks.get(0).statusDetail().contains("PAGES_LOST failed=0 truncated=1"));
+    assertEquals(1, iterator.stats().pagesTruncated());
+  }
+
+  @Test
+  public void emptyNormalizedTruncationCarriesLossOnOtherReadableText() {
+    List<PdfChunk> chunks = drain(open(small(), Arrays.asList(() -> new PageText(" \n", true), text("Readable text."))));
+    assertEquals(PdfChunk.Status.OK, chunks.get(chunks.size() - 1).status());
+    assertEquals("Readable text.", chunks.get(0).text());
+    assertTrue(chunks.get(chunks.size() - 1).statusDetail().contains("PAGES_LOST failed=0 truncated=1"));
+  }
+
+  @Test
   public void hugePageTruncatedCountsAndWarns() {
     List<PdfChunk> chunks = drain(open(small(), Collections.singletonList(() -> new PageText(sentences("a", 3), true))));
     assertTrue(chunks.get(chunks.size() - 1).statusDetail().contains("truncated=1"));
