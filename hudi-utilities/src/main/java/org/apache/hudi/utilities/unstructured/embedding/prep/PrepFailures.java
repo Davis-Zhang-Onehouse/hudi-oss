@@ -22,6 +22,7 @@ import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingPayloadWriteException;
 import org.apache.hudi.utilities.unstructured.embedding.source.PrepPlatformException;
 import org.apache.hudi.utilities.unstructured.embedding.source.PreprocessorConfigurationException;
+import org.apache.hudi.utilities.unstructured.embedding.source.SourceFailures;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenizerException;
 
 import org.apache.spark.TaskContext;
@@ -65,7 +66,7 @@ public final class PrepFailures {
       if (failsTheRound(cause)) {
         return (RuntimeException) cause;
       }
-      if ((cause instanceof VirtualMachineError && !(cause instanceof StackOverflowError)) || cause instanceof LinkageError) {
+      if (SourceFailures.isJvmFailure(cause)) {
         return new PrepPlatformException("the JVM failed while the file was read, not the file: " + cause.getClass().getSimpleName()
             + ": " + cause.getMessage() + ", under " + failure.getClass().getSimpleName() + ": " + failure.getMessage(), failure);
       }

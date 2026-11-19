@@ -496,9 +496,20 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
       Row blob = blobRow.getAs(BlobColumns.BLOB);
       currentBlob = blob;
       BlobRowBytes openedBytes = new BlobRowBytes(bytesSource, blob, currentFile, readAhead);
-      ClosableIterator<Chunk> opened;
+      ClosableIterator<Chunk> opened = null;
       try (Release<RuntimeException> sourceCheck = openedBytes::checkFailure) {
         opened = processor.open(openedBytes, currentFile, tokenizer, config.getProps());
+      } catch (Exception | Error failure) {
+        if (opened != null) {
+          try {
+            opened.close();
+          } catch (RuntimeException | Error closeFailure) {
+            if (closeFailure != failure) {
+              failure.addSuppressed(closeFailure);
+            }
+          }
+        }
+        throw failure;
       }
       synchronized (lifecycle) {
         if (!closed) {

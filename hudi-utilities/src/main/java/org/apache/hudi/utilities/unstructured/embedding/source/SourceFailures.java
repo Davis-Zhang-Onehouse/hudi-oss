@@ -66,6 +66,11 @@ public final class SourceFailures {
     }
   }
 
+  /** The shared node rule for JVM failures; a stack overflow retains input-content classification. */
+  public static boolean isJvmFailure(Throwable failure) {
+    return (failure instanceof VirtualMachineError && !(failure instanceof StackOverflowError)) || failure instanceof LinkageError;
+  }
+
   /** The first JVM failure in {@code failure}'s cause or suppressed graph ({@link #rethrowJvmFailure}'s rule), else null. */
   public static Error jvmFailure(Throwable failure) {
     if (failure == null) {
@@ -79,7 +84,7 @@ public final class SourceFailures {
       if (!visited.add(current)) {
         continue;
       }
-      if ((current instanceof VirtualMachineError && !(current instanceof StackOverflowError)) || current instanceof LinkageError) {
+      if (isJvmFailure(current)) {
         return (Error) current;
       }
       if (current.getCause() != null) {

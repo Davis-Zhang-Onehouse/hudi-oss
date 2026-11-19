@@ -325,9 +325,8 @@ public final class UnstructuredSchemaContract {
                                  SparkSession spark, TypedProperties props) {
     String trimmed = entry.trim();
     ChainedTransformer.TransformerInfo info = ChainedTransformer.TransformerInfo.from(entry);
-    Transformer transformer = info.getTransformer();
-    TypedProperties transformerProps = info.getProperties(props, ids);
-    try {
+    try (Transformer transformer = info.getTransformer()) {
+      TypedProperties transformerProps = info.getProperties(props, ids);
       return transformer.transformedSchema(jsc, spark, incoming, transformerProps).asNullable();
     } catch (HoodieSchemaException e) {
       throw e;
