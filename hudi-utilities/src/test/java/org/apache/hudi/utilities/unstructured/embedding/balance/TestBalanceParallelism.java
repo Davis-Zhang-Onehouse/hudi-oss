@@ -41,10 +41,10 @@ public class TestBalanceParallelism {
   @Test
   public void parallelismFromNumPartitions() {
     TypedProperties props = new TypedProperties();
-    props.setProperty(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), "7");
+    props.setProperty("hoodie.unstructured.embedding.prep.num.partitions", "7");
     BalanceParallelism.Resolved p = resolve(props, new SparkConf(false).set("spark.executor.instances", "50"), CLUSTER, 100, 2);
     assertEquals(7, p.parallelism());
-    assertEquals(EmbeddingTableConfig.BALANCE_NUM_PARTITIONS.key(), p.source());
+    assertEquals("hoodie.unstructured.embedding.prep.num.partitions", p.source());
   }
 
   @Test
