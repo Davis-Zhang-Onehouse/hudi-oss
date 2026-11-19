@@ -61,9 +61,7 @@ import java.util.stream.Collectors;
 public class EmbeddingTableConfig implements Serializable {
 
   private static final long serialVersionUID = 1L;
-
   private static final String SINCE_1_3_0 = "1.3.0";
-
   private static final String REQUIRED = "<required>";
 
   /** Root of every unstructured-data key (embedding and chunking); never passed through to the Hudi writer. */
@@ -105,7 +103,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> MODEL_COLUMN_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.column")
       .noDefaultValue("emb_<alias>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Name of the model's VECTOR column. Replace <alias> with the declared model alias.");
 
   /** Per-model vector dimensions (VECTOR(n)), must be positive; required per model. */
@@ -114,8 +112,8 @@ public class EmbeddingTableConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.dimensions family. */
   public static final ConfigProperty<String> MODEL_DIMENSIONS_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.dimensions")
-      .noDefaultValue("<required>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(REQUIRED)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Dimensions n of the model's VECTOR(n) column, a positive integer; required for every declared model. "
           + "Replace <alias> with the declared model alias.");
 
@@ -127,7 +125,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key("hoodie.unstructured.embedding.model.<alias>.client.class")
       .noDefaultValue("<unset>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Embedding client implementation of the model; when unset, the built-in client of the model's provider. "
           + "Replace <alias> with the declared model alias.");
 
@@ -137,8 +135,8 @@ public class EmbeddingTableConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.provider family. */
   public static final ConfigProperty<String> MODEL_PROVIDER_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.provider")
-      .noDefaultValue("<required>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(REQUIRED)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Embedding provider of the model; required for every declared model. The built-in provider is dummy, "
           + "which writes deterministic random unit vectors and is meant for tests and pipeline checks only. Replace <alias> "
           + "with the declared model alias.");
@@ -150,7 +148,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> MODEL_NAME_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.name")
       .noDefaultValue("<alias>")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Provider-side name of the model. Replace <alias> with the declared model alias.");
 
   /**
@@ -164,8 +162,8 @@ public class EmbeddingTableConfig implements Serializable {
   /** Metadata for the hoodie.unstructured.embedding.model.{@code <alias>}.modalities family. */
   public static final ConfigProperty<String> MODEL_MODALITIES_PROPERTY = ConfigProperty
       .key("hoodie.unstructured.embedding.model.<alias>.modalities")
-      .noDefaultValue("<required>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(REQUIRED)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The modalities the model embeds: text, image, or text,image (comma-separated, any letter case and "
           + "order); required for the active model under prep_and_compute. Only rows of a declared modality are sent to the "
           + "model; a row of another modality gets a NULL vector and an EMBED-COMPUTE-<MODALITY>-NOT-SUPPORTED error record "
@@ -407,7 +405,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key("hoodie.unstructured.embedding.prep.preprocessor.<ext>.class")
       .noDefaultValue("<registry-dependent>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The FilePreprocessor class for files with extension <ext>; when unset, the built-in preprocessor of "
           + "that extension (pdf has one; png, jpg, jpeg, gif, bmp, tif and tiff map to ImageInputPreprocessor; mp4, mov, mkv, "
           + "webm and avi to the class of hoodie.unstructured.embedding.prep.video.preprocessor.class, VideoFramePreprocessor "
@@ -693,7 +691,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key("hoodie.unstructured.embedding.prep.balance.<group>.max.bytes.per.task")
       .noDefaultValue("<group-dependent>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The per-group byte budget of one prep task, "
           + "hoodie.unstructured.embedding.prep.balance.<group>.max.bytes.per.task "
           + "(org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy); <group> is pdf, "
@@ -779,7 +777,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<Integer> COMPUTE_BATCH_SIZE = ConfigProperty
       .key(PREFIX + "compute.batch.size")
       .defaultValue(64)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Rows per embedding client call (micro batch), a positive integer. Only for prep_and_compute.");
 
   /** Default micro-batch size. */
@@ -813,7 +811,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREFIX + "compute.retry.backoff.ms")
       .defaultValue(1000L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The wait in ms before the second try of a row (hoodie.unstructured.embedding.compute.max.attempts); each "
           + "later wait doubles, capped at 60000 ms. Must not be negative. Only for prep_and_compute.");
 
@@ -846,7 +844,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(COMPUTE_IMAGE_PREFIX + "raster.budget.bytes")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The most bytes the decoded raster of one image may take in compute: the decode subsampling grows until "
           + "the raster fits, and an image no subsampling fits is refused before decode. Must be positive; default 16777216 "
           + "(16 MiB). Refused under prep_only.");
@@ -880,7 +878,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(COMPUTE_IMAGE_PREFIX + "decoder.class")
       .defaultValue(InProcessImageDecoder.class.getName())
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The ImageDecoder implementation compute decodes and resizes images with, in this JVM or elsewhere; it "
           + "must have a public no-arg constructor and run this code's decoding logic (image-resize-v1), else the job is "
           + "refused at start. Default the in-process decoder. Refused under prep_only.");
@@ -895,7 +893,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> COMPUTE_IMAGE_ENCODING = ConfigProperty
       .key(COMPUTE_IMAGE_PREFIX + "encoding")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_ENCODING)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The encoding of the resized image compute sends to the model: jpeg (default) or png, in any letter case. "
           + "Refused under prep_only.");
 
@@ -903,7 +901,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<Integer> COMPUTE_IMAGE_JPEG_QUALITY = ConfigProperty
       .key(COMPUTE_IMAGE_PREFIX + "jpeg.quality")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_JPEG_QUALITY)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("JPEG quality in [1, 100] of the resized image compute sends to the model under the jpeg encoding; "
           + "default 90. Refused under prep_only.");
 
@@ -936,7 +934,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> COMPUTE_PARALLELISM = ConfigProperty
       .key(PREFIX + "compute.parallelism")
       .noDefaultValue("the Spark context's default parallelism")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The number of Spark tasks the embedding computation runs in, under prep_and_compute: the prepared rows "
           + "are spread over them by a hash of their key columns, so task row counts are balanced in expectation. A positive "
           + "integer.");
@@ -1007,7 +1005,7 @@ public class EmbeddingTableConfig implements Serializable {
    *
    * @throws IllegalArgumentException when it is unset or not one of the two values
    */
-  public String mode() {
+  public String embeddingMode() {
     String value = ConfigUtils.getStringWithAltKeys(props, MODE, "").trim().toLowerCase(Locale.ROOT);
     if (!MODE_PREP_ONLY.equals(value) && !MODE_PREP_AND_COMPUTE.equals(value)) {
       throw new IllegalArgumentException("Config " + MODE.key() + " must be " + MODE_PREP_ONLY + " or " + MODE_PREP_AND_COMPUTE
@@ -1018,7 +1016,7 @@ public class EmbeddingTableConfig implements Serializable {
 
   /** Whether the round computes embeddings ({@link #MODE_PREP_AND_COMPUTE}). */
   public boolean computes() {
-    return MODE_PREP_AND_COMPUTE.equals(mode());
+    return MODE_PREP_AND_COMPUTE.equals(embeddingMode());
   }
 
   /** The compute task count, {@link #COMPUTE_PARALLELISM}, else {@code defaultParallelism}. */
@@ -1186,7 +1184,7 @@ public class EmbeddingTableConfig implements Serializable {
    * @throws HoodieException if an alias is listed twice, or a model's {@link #MODEL_DIMENSIONS_SUFFIX dimensions} or
    *     {@link #MODEL_PROVIDER_SUFFIX provider} is not set
    */
-  public List<EmbeddingModelSpec> models() {
+  public List<EmbeddingModelSpec> modelSpecs() {
     List<EmbeddingModelSpec> specs = new ArrayList<>();
     List<String> names = splitList(ConfigUtils.getStringWithAltKeys(props, MODELS, ""));
     for (int i = 0; i < names.size(); i++) {
@@ -1216,7 +1214,7 @@ public class EmbeddingTableConfig implements Serializable {
           ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(keyPrefix + MODEL_NAME_SUFFIX).noDefaultValue(), name).trim(),
           modalities(keyPrefix + MODEL_MODALITIES_SUFFIX,
               ConfigUtils.getStringWithAltKeys(props, ConfigProperty.key(keyPrefix + MODEL_MODALITIES_SUFFIX).noDefaultValue(), null)));
-      if (!spec.getColumn().matches("[A-Za-z_][A-Za-z0-9_]*")) {
+      if (!spec.getColumn().matches("[A-Za-z_]\\w*")) {
         throw new IllegalArgumentException("Config " + keyPrefix + MODEL_COLUMN_SUFFIX + " resolves to '" + spec.getColumn()
             + "', which is not a valid Avro field name; set a column starting with a letter or underscore, followed by letters, digits or underscores");
       }
@@ -1275,7 +1273,7 @@ public class EmbeddingTableConfig implements Serializable {
   public List<EmbeddingModelSpec> activeModels() {
     String value = ConfigUtils.getStringWithAltKeys(props, ACTIVE_MODELS, "");
     List<String> active = splitList(value);
-    List<EmbeddingModelSpec> declared = models();
+    List<EmbeddingModelSpec> declared = modelSpecs();
     if (active.isEmpty()) {
       return declared;
     }
@@ -1289,7 +1287,7 @@ public class EmbeddingTableConfig implements Serializable {
   }
 
   public EmbeddingModelSpec model(String name) {
-    return models().stream().filter(m -> m.getName().equals(name)).findFirst()
+    return modelSpecs().stream().filter(m -> m.getName().equals(name)).findFirst()
         .orElseThrow(() -> new HoodieException("Model '" + name + "' is not declared in " + MODELS.key()));
   }
 
@@ -1387,13 +1385,6 @@ public class EmbeddingTableConfig implements Serializable {
   }
 
   private static int positive(String key, int value) {
-    if (value <= 0) {
-      throw new IllegalArgumentException("Config " + key + " must be positive but is " + value);
-    }
-    return value;
-  }
-
-  private static long positive(String key, long value) {
     if (value <= 0) {
       throw new IllegalArgumentException("Config " + key + " must be positive but is " + value);
     }

@@ -34,19 +34,19 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The served-scheme and missing-authority rules of a storage reference. */
-public class TestStorageReferenceRules {
+class TestStorageReferenceRules {
 
   /** A supported scheme with no connector cannot serve a row in this job. */
   @ParameterizedTest
   @ValueSource(strings = {"oss", "Oss", "cosn", "missingconnector"})
-  public void unavailableSchemesAreNotServed(String scheme) {
+  void unavailableSchemesAreNotServed(String scheme) {
     Configuration conf = new Configuration(false);
     assertFalse(StorageReferenceRules.isServedScheme(scheme, conf));
     assertFalse(StorageReferenceRules.isServedScheme(scheme, new HadoopStorageConfiguration(conf)));
   }
 
   @Test
-  public void configuredImplementationServesAScheme() {
+  void configuredImplementationServesAScheme() {
     Configuration conf = new Configuration(false);
     assertTrue(StorageReferenceRules.isServedScheme("file", conf));
     assertFalse(StorageReferenceRules.isServedScheme("rulesfs", conf));
@@ -56,7 +56,7 @@ public class TestStorageReferenceRules {
   }
 
   @Test
-  public void foreignOrAbsentSchemeIsNotServed() {
+  void foreignOrAbsentSchemeIsNotServed() {
     Configuration conf = new Configuration(false);
     assertFalse(StorageReferenceRules.isServedScheme("foo", conf));
     assertFalse(StorageReferenceRules.isServedScheme(null, conf));
@@ -65,7 +65,7 @@ public class TestStorageReferenceRules {
 
   /** s3n is not an upstream Hudi scheme: it is served only when the job configures its implementation. */
   @Test
-  public void s3nIsServedOnlyWhenConfigured() {
+  void s3nIsServedOnlyWhenConfigured() {
     Configuration conf = new Configuration(false);
     assertFalse(StorageReferenceRules.isServedScheme("s3n", conf));
     conf.set("fs.s3n.impl", LocalFileSystem.class.getName());
@@ -74,7 +74,7 @@ public class TestStorageReferenceRules {
 
   /** An unreadable job configuration is not proof that a scheme is foreign, nor that an authority is missing. */
   @Test
-  public void unreadableConfigurationIsServedAndNeverMissingAnAuthority() {
+  void unreadableConfigurationIsServedAndNeverMissingAnAuthority() {
     assertTrue(StorageReferenceRules.isServedScheme("foo", unreadable()));
     assertFalse(StorageReferenceRules.isMissingRequiredAuthority(URI.create("hdfs:///docs/a.pdf"), unreadable()));
     // every read path of Configuration (get, get with a default, getTrimmed) goes through getProps on Hadoop 2.10 to 3.4
@@ -91,7 +91,7 @@ public class TestStorageReferenceRules {
   }
 
   @Test
-  public void missingAuthorityIsSuppliedOnlyByTheSameSchemeDefault() {
+  void missingAuthorityIsSuppliedOnlyByTheSameSchemeDefault() {
     Configuration conf = new Configuration(false);
     conf.set("fs.defaultFS", "hdfs://namenode/");
     assertFalse(StorageReferenceRules.isMissingRequiredAuthority(URI.create("hdfs:///docs/a.pdf"), conf));
@@ -114,7 +114,7 @@ public class TestStorageReferenceRules {
 
   /** The invalid-authority and out-of-range-port rules both readers of a reference share. */
   @Test
-  public void invalidAuthorityAndOutOfRangePortAreTheReferencesOwn() {
+  void invalidAuthorityAndOutOfRangePortAreTheReferencesOwn() {
     URI noHost = URI.create("s3a://bad_bucket/x");
     assertTrue(StorageReferenceRules.isInvalidAuthorityFailure(noHost, new IllegalArgumentException("bucket")));
     assertTrue(StorageReferenceRules.isInvalidAuthorityFailure(noHost, new NullPointerException("host")));

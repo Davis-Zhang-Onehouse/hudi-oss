@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The start-up checks of the embedding table: whether it exists and its table version. */
-public class TestEmbeddingTableChecks {
+class TestEmbeddingTableChecks {
 
   @TempDir
   Path temp;
@@ -55,25 +55,28 @@ public class TestEmbeddingTableChecks {
   }
 
   @Test
-  public void writeTableVersionBelowNineIsRefused() {
+  void writeTableVersionBelowNineIsRefused() {
     String table = temp.resolve("none").toString();
-    assertThrows(EmbeddingTableVersionException.class, () -> EmbeddingTableChecks.checkTableVersion(table, conf, config("8")));
-    assertThrows(EmbeddingTableVersionException.class, () -> EmbeddingTableChecks.checkTableVersion(table, conf, config("x")));
+    EmbeddingTableConfig eight = config("8");
+    assertThrows(EmbeddingTableVersionException.class, () -> EmbeddingTableChecks.checkTableVersion(table, conf, eight));
+    EmbeddingTableConfig unparsable = config("x");
+    assertThrows(EmbeddingTableVersionException.class, () -> EmbeddingTableChecks.checkTableVersion(table, conf, unparsable));
     EmbeddingTableChecks.checkTableVersion(table, conf, config(null));
   }
 
   @Test
-  public void existingTableBelowNineIsRefused() throws Exception {
+  void existingTableBelowNineIsRefused() throws Exception {
     String table = temp.resolve("v8").toString();
     HoodieTestUtils.init(table, HoodieTableType.COPY_ON_WRITE, HoodieTableVersion.EIGHT);
+    EmbeddingTableConfig unpinned = config(null);
     EmbeddingTableVersionException error = assertThrows(EmbeddingTableVersionException.class,
-        () -> EmbeddingTableChecks.checkTableVersion(table, conf, config(null)));
+        () -> EmbeddingTableChecks.checkTableVersion(table, conf, unpinned));
     assertTrue(error.getMessage().contains(HoodieTableConfig.VERSION.key() + "=8"), error.getMessage());
   }
 
   @ParameterizedTest
   @ValueSource(strings = {"missing", "2"})
-  public void standaloneEmbeddingRefusesUnknownKeyEncoding(String version) throws Exception {
+  void standaloneEmbeddingRefusesUnknownKeyEncoding(String version) throws Exception {
     String key = "hoodie.table.unstructured.key.encoding.version";
     java.util.Properties pins = UnstructuredTableTestProperties.embedding(new TypedProperties());
     pins.setProperty(key, "1");
@@ -87,14 +90,15 @@ public class TestEmbeddingTableChecks {
       pins.setProperty(key, version);
       HoodieTableConfig.update(meta.getStorage(), meta.getMetaPath(), pins);
     }
+    EmbeddingTableConfig unpinned = config(null);
     IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-        () -> EmbeddingTableChecks.checkTableVersion(table, conf, config(null)));
+        () -> EmbeddingTableChecks.checkTableVersion(table, conf, unpinned));
     assertTrue(error.getMessage().contains(key), error.getMessage());
   }
 
   /** A table left with only the hoodie.properties backup, as a crash during a table config update leaves it, exists. */
   @Test
-  public void tableWithOnlyThePropertiesBackupExists() throws Exception {
+  void tableWithOnlyThePropertiesBackupExists() throws Exception {
     String table = temp.resolve("backup").toString();
     HoodieTestUtils.init(conf, table);
     Path metaFolder = temp.resolve("backup").resolve(HoodieTableMetaClient.METAFOLDER_NAME);

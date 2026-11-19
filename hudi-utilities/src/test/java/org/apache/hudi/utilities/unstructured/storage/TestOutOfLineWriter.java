@@ -94,7 +94,7 @@ class TestOutOfLineWriter {
   }
 
   @Test
-  void managedWriterRefusesAnAbsoluteUriBeforeCreatingAFile() throws Exception {
+  void managedWriterRefusesAnAbsoluteUriBeforeCreatingAFile() {
     String base = temp.resolve("table").toUri().toString();
     String absolute = temp.resolve("user-owned.bin").toUri().toString();
     HoodieStorage storage = new HoodieHadoopStorage(new StoragePath(base), HadoopFSUtils.getStorageConf(new Configuration()));
@@ -151,7 +151,7 @@ class TestOutOfLineWriter {
   }
 
   @Test
-  void invalidPartitionsAreRejectedBeforeCreate() throws Exception {
+  void invalidPartitionsAreRejectedBeforeCreate() {
     for (String partition : new String[] {"../p", "/p", "p//q", "p/./q", "p/"}) {
       assertThrows(IllegalArgumentException.class, () -> OutOfLineWriter.validatePartition(partition));
     }

@@ -25,10 +25,11 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** The default implementations AudioConfig names by string stay the classes they name. */
-public class TestAudioConfigDefaults {
+class TestAudioConfigDefaults {
 
   @Test
-  public void defaultTranscriberIsWhisper() {
-    assertEquals(WhisperSegmentTranscriber.class.getName(), AudioConfig.DEFAULT_TRANSCRIBER_CLASS);
+  void defaultTranscriberIsWhisper() {
+    String defaultTranscriber = AudioConfig.DEFAULT_TRANSCRIBER_CLASS;
+    assertEquals(WhisperSegmentTranscriber.class.getName(), defaultTranscriber);
   }
 }

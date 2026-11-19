@@ -28,10 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * The transcript segment value type: it keeps its speaker, text and times, its confidence may be null, and it refuses an empty or
  * null speaker, a null text, a negative or inverted time span and a confidence above 1.
  */
-public class TestTranscriptSegment {
+class TestTranscriptSegment {
 
   @Test
-  public void transcriptSegmentKeepsSpeakerTextAndTimesWithNullableConfidence() {
+  void transcriptSegmentKeepsSpeakerTextAndTimesWithNullableConfidence() {
     TranscriptSegment segment = new TranscriptSegment("spk_0", "hello world", 1200, 2500, null);
     assertEquals("spk_0", segment.getSpeakerLabel());
     assertEquals("hello world", segment.getText());

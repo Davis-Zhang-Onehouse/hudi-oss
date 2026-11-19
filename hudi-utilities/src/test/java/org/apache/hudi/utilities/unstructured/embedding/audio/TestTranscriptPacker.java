@@ -53,7 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * end of those utterances,
  * word and code-point splits, speaker turns as lines, normalisation, utterances pulled only while it needs text, and closing.
  */
-public class TestTranscriptPacker {
+class TestTranscriptPacker {
 
   private static final String LABEL = SpeakerLabels.line(SpeakerLabels.FILE_SPEAKER, "");
   private static final char NBSP = (char) 0xA0;
@@ -70,7 +70,7 @@ public class TestTranscriptPacker {
   }
 
   @Test
-  public void theDefaultChunkerIsTheTranscriptPacker() {
+  void theDefaultChunkerIsTheTranscriptPacker() {
     TranscriptChunker chunker = AudioConfig.from(new TypedProperties()).newChunker();
     assertEquals("transcript-pack-v2", chunker.logicVersion());
   }
@@ -78,7 +78,7 @@ public class TestTranscriptPacker {
   /** The recorded fixture: limits, labels, coverage of the stream with overlap, and the chunk times. */
   @ParameterizedTest
   @MethodSource("budgets")
-  public void recordedWhisperUtterancesPackUnderTheLimitWithOverlapLabelsAndTimes(Tokenizer tokenizer, int maxTokens,
+  void recordedWhisperUtterancesPackUnderTheLimitWithOverlapLabelsAndTimes(Tokenizer tokenizer, int maxTokens,
                                                                                  int overlapTokens) {
     List<TranscriptChunker.SegmentUtterance> utterances = RecordedUtterances.all();
     assertEquals(41, utterances.size(), "the recorded fixture");
@@ -122,7 +122,7 @@ public class TestTranscriptPacker {
    * its utterances, not at the last utterance's 4000.
    */
   @Test
-  public void chunkEndsAtTheLatestEndOfItsUtterances() {
+  void chunkEndsAtTheLatestEndOfItsUtterances() {
     List<TranscriptChunk> chunks = pack(Arrays.asList(utterance(0, "A long statement.", 0, 10000),
         utterance(0, "An aside.", 2000, 4000)), 0, new WordCountTokenizer(), 512, 0);
     assertEquals(1, chunks.size(), chunks.toString());
@@ -132,7 +132,7 @@ public class TestTranscriptPacker {
   }
 
   @Test
-  public void utteranceLongerThanTheLimitIsSplitAtWordsEachPieceLabelledAndTimedByItsUtterance() {
+  void utteranceLongerThanTheLimitIsSplitAtWordsEachPieceLabelledAndTimedByItsUtterance() {
     WordCountTokenizer words = new WordCountTokenizer();
     String longText = String.join(" ", Collections.nCopies(60, "word")) + ".";
     List<TranscriptChunk> chunks = pack(Arrays.asList(utterance(0, "Short start.", 0, 900),
@@ -154,7 +154,7 @@ public class TestTranscriptPacker {
   }
 
   @Test
-  public void wordLongerThanTheLimitIsSplitAtCodePoints() {
+  void wordLongerThanTheLimitIsSplitAtCodePoints() {
     OpenAiBpeTokenizer bpe = new OpenAiBpeTokenizer();
     StringBuilder word = new StringBuilder();
     for (int i = 0; i < 400; i++) {
@@ -176,7 +176,7 @@ public class TestTranscriptPacker {
   }
 
   @Test
-  public void eachSpeakerTurnIsOneLineAndTurnsSplitAsParagraphs() {
+  void eachSpeakerTurnIsOneLineAndTurnsSplitAsParagraphs() {
     WordCountTokenizer words = new WordCountTokenizer();
     List<TranscriptChunker.SegmentUtterance> utterances = Arrays.asList(
         utterance(0, "spk_0", "Hello and welcome to the show.", 0, 1000),
@@ -212,7 +212,7 @@ public class TestTranscriptPacker {
    */
   @ParameterizedTest
   @MethodSource("budgets")
-  public void chunksStartingInsideAnySpeakersTurnCarryThatSpeakersLabel(Tokenizer tokenizer, int maxTokens, int overlapTokens) {
+  void chunksStartingInsideAnySpeakersTurnCarryThatSpeakersLabel(Tokenizer tokenizer, int maxTokens, int overlapTokens) {
     String[] labels = {"spk_0", "spk_1", "spk_2"};
     List<TranscriptChunker.SegmentUtterance> utterances = new ArrayList<>();
     Random random = new Random(maxTokens * 31 + overlapTokens);
@@ -259,11 +259,12 @@ public class TestTranscriptPacker {
    * one-line turn, so the video fails (its FAILED row); generic ids pass.
    */
   @Test
-  public void labelThatIsNotAGenericIdFailsTheVideo() {
+  void labelThatIsNotAGenericIdFailsTheVideo() {
     WordCountTokenizer words = new WordCountTokenizer();
     for (String label : Arrays.asList("spk 0", "Dr. Who", "spk\n0", "spk\t0", "a]b", "[x", "spk" + NBSP + "0")) {
+      List<TranscriptChunker.SegmentUtterance> labelled = Collections.singletonList(utterance(3, label, "Some words.", 0, 10));
       TranscriptPackingException e = assertThrows(TranscriptPackingException.class,
-          () -> pack(Collections.singletonList(utterance(3, label, "Some words.", 0, 10)), 0, words, 256, -1), label);
+          () -> pack(labelled, 0, words, 256, -1), label);
       assertTrue(e.getMessage().contains("speaker label") && e.getMessage().contains("segment 3"), e.getMessage());
     }
     for (String label : Arrays.asList("speaker-1", "spk_0", "SPEAKER_01", "s2", "voice.a")) {
@@ -277,7 +278,7 @@ public class TestTranscriptPacker {
    * video 1 and is timed by video 2 alone.
    */
   @Test
-  public void nothingCarriesFromOneVideosInputIntoTheNext() {
+  void nothingCarriesFromOneVideosInputIntoTheNext() {
     WordCountTokenizer words = new WordCountTokenizer();
     TranscriptChunker chunker = chunker();
     List<TranscriptChunker.SegmentUtterance> first = new ArrayList<>();
@@ -309,7 +310,7 @@ public class TestTranscriptPacker {
   }
 
   @Test
-  public void utterancesAreNormalisedAndEmptyOnesWriteNothing() {
+  void utterancesAreNormalisedAndEmptyOnesWriteNothing() {
     WordCountTokenizer words = new WordCountTokenizer();
     List<TranscriptChunk> chunks = pack(Arrays.asList(
         utterance(0, "  " + NBSP + " ", 0, 100),
@@ -325,7 +326,7 @@ public class TestTranscriptPacker {
   }
 
   @Test
-  public void pullsUtterancesOnlyWhileItNeedsText() {
+  void pullsUtterancesOnlyWhileItNeedsText() {
     WordCountTokenizer words = new WordCountTokenizer();
     CountingUtterances input = new CountingUtterances(100_000);
     TypedProperties props = props(256, -1);
@@ -349,7 +350,7 @@ public class TestTranscriptPacker {
   }
 
   @Test
-  public void closingEndsTheChunksAndIsIdempotent() {
+  void closingEndsTheChunksAndIsIdempotent() {
     WordCountTokenizer words = new WordCountTokenizer();
     ClosableIterator<TranscriptChunk> chunks = chunker().chunks(new CountingUtterances(1000), 0, words, props(16, 0));
     assertTrue(chunks.hasNext());
@@ -359,15 +360,15 @@ public class TestTranscriptPacker {
   }
 
   @Test
-  public void tokenizerFailureIsAContentFailureOfTheVideo() {
+  void tokenizerFailureIsAContentFailureOfTheVideo() {
     Tokenizer failing = new WordCountTokenizer() {
       @Override
       public int countTokens(String text) {
         throw new IllegalArgumentException("tokenizer down");
       }
     };
-    TranscriptPackingException e = assertThrows(TranscriptPackingException.class,
-        () -> pack(Collections.singletonList(utterance(0, "words here.", 0, 10)), 0, failing, 256, -1));
+    List<TranscriptChunker.SegmentUtterance> one = Collections.singletonList(utterance(0, "words here.", 0, 10));
+    TranscriptPackingException e = assertThrows(TranscriptPackingException.class, () -> pack(one, 0, failing, 256, -1));
     assertTrue(e.getMessage().startsWith("transcript packing TOKENIZER_ERROR: tokenizer "), e.getMessage());
     assertTrue(e.getCause() instanceof IllegalArgumentException && "tokenizer down".equals(e.getCause().getMessage()),
         String.valueOf(e.getCause()));

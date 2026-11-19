@@ -36,10 +36,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * shipped preprocessors, a custom class as its own group, case-insensitive, null and unknown extensions unmapped. The Spark
  * form of the same mapping is exercised by strategy tests.
  */
-public class TestBalanceGroups {
+class TestBalanceGroups {
 
   @Test
-  public void defaultsMapPdfImageAndVideo() {
+  void defaultsMapPdfImageAndVideo() {
     BalanceGroups groups = BalanceGroups.from(new TypedProperties());
     assertEquals(BalanceGroups.PDF, groups.groupOf("pdf"));
     for (String extension : PreprocessorRegistry.IMAGE_EXTENSIONS) {
@@ -55,7 +55,7 @@ public class TestBalanceGroups {
   }
 
   @Test
-  public void caseAndNullAndUnknown() {
+  void caseAndNullAndUnknown() {
     BalanceGroups groups = BalanceGroups.from(new TypedProperties());
     assertEquals(BalanceGroups.PDF, groups.groupOf("PDF"));
     assertEquals(BalanceGroups.VIDEO, groups.groupOf("Mp4"));
@@ -65,7 +65,7 @@ public class TestBalanceGroups {
   }
 
   @Test
-  public void jcodecVideoClassIsStillVideo() {
+  void jcodecVideoClassIsStillVideo() {
     TypedProperties props = new TypedProperties();
     for (String extension : Arrays.asList("mp4", "mov")) {
       props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + extension + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
@@ -77,7 +77,7 @@ public class TestBalanceGroups {
   }
 
   @Test
-  public void customClassIsItsOwnGroup() {
+  void customClassIsItsOwnGroup() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_PREPROCESSOR_CLASS.key(), "com.example.CustomVideo");
     props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
@@ -94,7 +94,7 @@ public class TestBalanceGroups {
   }
 
   @Test
-  public void shippedPreprocessorUnderAnotherExtensionKeepsItsGroup() {
+  void shippedPreprocessorUnderAnotherExtensionKeepsItsGroup() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "heic" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
         "org.apache.hudi.utilities.unstructured.embedding.prep.ImageInputPreprocessor");
@@ -105,7 +105,7 @@ public class TestBalanceGroups {
   }
 
   @Test
-  public void registryDiscoveryReturnsASortedIndependentCopyWithoutLoadingClasses() {
+  void registryDiscoveryReturnsASortedIndependentCopyWithoutLoadingClasses() {
     TypedProperties props = new TypedProperties();
     register(props, "ZZ", "com.example.NotInstalledPreprocessor");
     PreprocessorRegistry registry = new PreprocessorRegistry(props);
@@ -119,7 +119,7 @@ public class TestBalanceGroups {
   }
 
   @Test
-  public void ffmpegVideoClassKeepsItsAliasWithoutBeingLoaded() {
+  void ffmpegVideoClassKeepsItsAliasWithoutBeingLoaded() {
     TypedProperties props = new TypedProperties();
     register(props, "video", "org.apache.hudi.utilities.unstructured.embedding.prep.VideoFramePreprocessor");
     assertEquals(BalanceGroups.VIDEO, BalanceGroups.from(props).groupOf("video"));

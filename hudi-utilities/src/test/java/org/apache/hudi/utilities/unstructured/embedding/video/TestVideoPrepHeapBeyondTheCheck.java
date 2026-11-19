@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Together 10 MiB per task slot that the check's measured 16 MiB per-slot overhead does not include (the check's class doc
  * says so).
  */
-public class TestVideoPrepHeapBeyondTheCheck {
+class TestVideoPrepHeapBeyondTheCheck {
 
   private static final long MIB = 1024L * 1024;
 
@@ -53,7 +53,7 @@ public class TestVideoPrepHeapBeyondTheCheck {
    * clip: 2 MiB.
    */
   @Test
-  public void blockReadsKeepAtMostTwoMiBPerClip() {
+  void blockReadsKeepAtMostTwoMiBPerClip() {
     assertEquals(2, BlockBufferedBlob.BLOCKS);
     assertEquals(MIB, BlockBufferedBlob.BLOCK_BYTES);
   }
@@ -64,8 +64,8 @@ public class TestVideoPrepHeapBeyondTheCheck {
    * thread), so the waiting payload is at most the bound.
    */
   @Test
-  public void backgroundWritesHoldTheirBoundPlusTheWaitingPayload() throws Exception {
-    assertEquals(4 * MIB, OutOfLineWritePool.MAX_PENDING_BYTES);
+  void backgroundWritesHoldTheirBoundPlusTheWaitingPayload() throws Exception {
+    assertEquals(OutOfLineWritePool.MAX_PENDING_BYTES, 4 * MIB);
     CountDownLatch release = new CountDownLatch(1);
     CountDownLatch firstAdmitted = new CountDownLatch(1);
     AtomicInteger admitted = new AtomicInteger();
@@ -102,7 +102,7 @@ public class TestVideoPrepHeapBeyondTheCheck {
 
   /** The heap per task slot the check does not count: the blocks of one clip, the pending writes and the waiting payload. */
   @Test
-  public void uncountedHeapPerSlotIsTenMiB() {
+  void uncountedHeapPerSlotIsTenMiB() {
     long uncountedPerSlot = (long) BlockBufferedBlob.BLOCKS * BlockBufferedBlob.BLOCK_BYTES + 2L * OutOfLineWritePool.MAX_PENDING_BYTES;
     assertEquals(10 * MIB, uncountedPerSlot);
   }

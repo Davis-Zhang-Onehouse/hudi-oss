@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The resampler tied to the absolute timeline. */
-public class TestAnchoredResampler {
+class TestAnchoredResampler {
 
   private static float tone(long i, int rate, double hz, double amplitude) {
     return (float) (amplitude * Math.sin(2 * Math.PI * hz * i / rate));
@@ -51,7 +51,7 @@ public class TestAnchoredResampler {
   }
 
   @Test
-  public void equalRatesCopyTheSamples() {
+  void equalRatesCopyTheSamples() {
     Map<Long, Short> out = run(16000, 16000, 0, 100, 440);
     assertEquals(100, out.size());
     for (long i = 0; i < 100; i++) {
@@ -61,7 +61,7 @@ public class TestAnchoredResampler {
 
   @ParameterizedTest
   @CsvSource({"44100,16000", "48000,16000", "22050,16000", "8000,16000", "11025,16000", "16000,8000"})
-  public void toneKeepsItsLevelAndFrequency(int inRate, int outRate) {
+  void toneKeepsItsLevelAndFrequency(int inRate, int outRate) {
     long seconds = 2;
     Map<Long, Short> out = run(inRate, outRate, 0, seconds * inRate, 1000);
     // every output of the stream's span exists, in order, from 0
@@ -87,7 +87,7 @@ public class TestAnchoredResampler {
 
   @ParameterizedTest
   @CsvSource({"44100,16000", "48000,16000", "22050,16000", "8000,16000"})
-  public void outputDoesNotDependOnWhereTheInputStarted(int inRate, int outRate) {
+  void outputDoesNotDependOnWhereTheInputStarted(int inRate, int outRate) {
     Map<Long, Short> full = run(inRate, outRate, 0, inRate, 523.25);
     for (long start : new long[] {1, 441, 1000, 4097, inRate / 3}) {
       Map<Long, Short> resumed = run(inRate, outRate, start, inRate, 523.25);
@@ -106,7 +106,7 @@ public class TestAnchoredResampler {
   }
 
   @Test
-  public void fullScaleInputIsClampedTo16Bits() {
+  void fullScaleInputIsClampedTo16Bits() {
     Map<Long, Short> out = new TreeMap<>();
     AnchoredResampler resampler = new AnchoredResampler(16000, 16000, out::put);
     resampler.push(1.5f);

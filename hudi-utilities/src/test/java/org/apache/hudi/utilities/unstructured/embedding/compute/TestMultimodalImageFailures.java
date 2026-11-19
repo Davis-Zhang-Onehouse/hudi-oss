@@ -62,7 +62,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * exception each gives the same result kind and the same error text, all through {@link ImageFailures#result}. No request is
  * sent.
  */
-public class TestMultimodalImageFailures {
+class TestMultimodalImageFailures {
 
   private static final String ALIAS = "mm";
   @TempDir
@@ -70,12 +70,12 @@ public class TestMultimodalImageFailures {
   private ScriptedHttpStub stub;
 
   @BeforeEach
-  public void setUp() throws IOException {
+  void setUp() throws IOException {
     stub = new ScriptedHttpStub();
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     stub.close();
   }
 
@@ -117,7 +117,7 @@ public class TestMultimodalImageFailures {
 
   @ParameterizedTest(name = "{0}")
   @MethodSource("failures")
-  public void sameFailureSameResultOnEveryProvider(String name, EmbeddingResult.Status expected, Supplier<Exception> failure)
+  void sameFailureSameResultOnEveryProvider(String name, EmbeddingResult.Status expected, Supplier<Exception> failure)
       throws Exception {
     EmbeddingResult vertex = embedFailing(vertex(), failure);
     EmbeddingResult dummy = embedFailing(dummy(), failure);
@@ -133,7 +133,7 @@ public class TestMultimodalImageFailures {
 
   /** A malformed stored-input reference fails the run on every provider, naming the row; no request is sent. */
   @Test
-  public void referenceFaultFailsTheRunOnEveryProvider() throws Exception {
+  void referenceFaultFailsTheRunOnEveryProvider() throws Exception {
     for (EmbeddingClient client : Arrays.asList(vertex(), dummy())) {
       EmbeddingComputePlatformException e = assertThrows(EmbeddingComputePlatformException.class,
           () -> embedFailing(client, () -> new BlobReferenceException("OUT_OF_LINE blob has null reference")), client.getClass().getSimpleName());

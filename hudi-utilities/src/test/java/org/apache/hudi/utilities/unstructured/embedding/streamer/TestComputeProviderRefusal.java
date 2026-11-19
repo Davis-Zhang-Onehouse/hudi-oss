@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.streamer;
 
+import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingRoundTestBase;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingStreamers;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingStreamers.Round;
@@ -34,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -44,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * task would get four attempts (as {@code spark.task.maxFailures=4}).
  */
 @Tag("functional")
-public class TestComputeProviderRefusal extends EmbeddingRoundTestBase {
+class TestComputeProviderRefusal extends EmbeddingRoundTestBase {
 
   private static final String QUOTA = "OpenAI HTTP 429 insufficient_quota: You exceeded your current quota";
   private static final int FILES = 3;
@@ -55,13 +57,13 @@ public class TestComputeProviderRefusal extends EmbeddingRoundTestBase {
   }
 
   @Test
-  public void permanentRefusalFailsTheRoundAfterOneRequestWithoutATaskReattempt() throws Exception {
+  void permanentRefusalFailsTheRoundAfterOneRequestWithoutATaskReattempt() throws Exception {
     announce(files());
     ScriptedEmbeddingClient.REFUSAL.set(QUOTA);
 
-    RuntimeException failure = assertThrows(RuntimeException.class, () -> round(props(table(),
-        EmbeddingTableConfig.MODE_PREP_AND_COMPUTE, EmbeddingTableConfig.COMPUTE_PARALLELISM.key(), "1",
-        EmbeddingTableConfig.COMPUTE_BATCH_SIZE.key(), "2")));
+    TypedProperties props = props(table(), EmbeddingTableConfig.MODE_PREP_AND_COMPUTE, EmbeddingTableConfig.COMPUTE_PARALLELISM.key(), "1",
+        EmbeddingTableConfig.COMPUTE_BATCH_SIZE.key(), "2");
+    RuntimeException failure = assertThrows(RuntimeException.class, () -> round(props));
 
     EmbeddingClientConfigException refusal = refusal(failure);
     assertTrue(refusal.getMessage().startsWith(ComputeRound.REFUSED_PREFIX.trim() + " model=" + EmbeddingStreamers.MODEL + ": "),
@@ -73,7 +75,7 @@ public class TestComputeProviderRefusal extends EmbeddingRoundTestBase {
   }
 
   @Test
-  public void transientAnswerIsStillRetriedAndTheRoundCommits() throws Exception {
+  void transientAnswerIsStillRetriedAndTheRoundCommits() throws Exception {
     announce(files());
     ScriptedEmbeddingClient.RETRYABLE.set(1);
 
@@ -83,7 +85,7 @@ public class TestComputeProviderRefusal extends EmbeddingRoundTestBase {
 
     assertTrue(round.getCommit().isPresent(), round.toString());
     assertEquals(3 * FILES, rows(table()).size());
-    rows(table()).values().forEach(row -> assertTrue(row.getAs(EmbeddingStreamers.MODEL_COLUMN) != null, row.toString()));
+    rows(table()).values().forEach(row -> assertNotNull(row.getAs(EmbeddingStreamers.MODEL_COLUMN), row.toString()));
     assertEquals(5 + 2, ScriptedEmbeddingClient.CALLS.get(), "5 batches, plus the 2 inputs of the retryable batch alone");
   }
 

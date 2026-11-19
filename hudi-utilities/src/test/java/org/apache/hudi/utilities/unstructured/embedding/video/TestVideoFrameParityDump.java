@@ -42,6 +42,8 @@ import java.util.Locale;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 /**
  * Frame-level output and read counts of the FFmpeg frame source over a corpus, written to files so two builds can be compared
  * byte for byte: per clip and dedup method, every kept frame (index, timestamp, size, dedup key, SHA-256 of its JPEG) and how
@@ -49,12 +51,12 @@ import java.util.stream.Stream;
  * and the median wall time of several passes. Runs only when {@code -Dvideo.parity.out=<dir>} is set; {@code
  * -Dvideo.parity.corpus=<dir>} adds every file of that folder to the generated clips.
  */
-public class TestVideoFrameParityDump {
+class TestVideoFrameParityDump {
 
   private static final int TIMED_PASSES = 5;
 
   @Test
-  public void dumpFramesAndReadCounts() throws IOException {
+  void dumpFramesAndReadCounts() throws IOException {
     String out = System.getProperty("video.parity.out");
     Assumptions.assumeTrue(out != null && !out.isEmpty(), "set -Dvideo.parity.out to dump");
     Path outDir = Files.createDirectories(Paths.get(out));
@@ -93,6 +95,7 @@ public class TestVideoFrameParityDump {
     }
     Files.write(outDir.resolve("frames.tsv"), frames, StandardCharsets.UTF_8);
     Files.write(outDir.resolve("reads.tsv"), reads, StandardCharsets.UTF_8);
+    assertTrue(Files.size(outDir.resolve("frames.tsv")) > 0, "frames dumped to " + outDir);
   }
 
   /** Clips generated here: the main test clip, a wide one, and frame widths whose padded BGR rows read as 4 or 6 channels. */

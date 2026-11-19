@@ -125,7 +125,8 @@ class TestEmbeddingColumnInfoRound extends EmbeddingRoundTestBase {
     HoodieTableMetaClient meta = meta();
     HoodieTableConfig.update(meta.getStorage(), meta.getMetaPath(), properties);
     announce(text("second", "gamma delta"));
-    RuntimeException failure = assertThrows(RuntimeException.class, () -> round(compute()));
+    TypedProperties unknownLayout = compute();
+    RuntimeException failure = assertThrows(RuntimeException.class, () -> round(unknownLayout));
     assertTrue(messages(failure).contains("layout.version"), messages(failure));
     assertEquals(1, rows(table()).size());
   }
@@ -143,8 +144,8 @@ class TestEmbeddingColumnInfoRound extends EmbeddingRoundTestBase {
     JsonNode events = info().get("events");
     assertEquals(3, events.size());
     assertEquals("add", events.get(0).get("event").textValue());
-    JsonNode retired = events.get(1).get("column_name").textValue().equals(EmbeddingStreamers.MODEL_COLUMN) ? events.get(1) : events.get(2);
-    JsonNode added = events.get(1).get("column_name").textValue().equals("emb_new") ? events.get(1) : events.get(2);
+    JsonNode retired = events.get(events.get(1).get("column_name").textValue().equals(EmbeddingStreamers.MODEL_COLUMN) ? 1 : 2);
+    JsonNode added = events.get(events.get(1).get("column_name").textValue().equals("emb_new") ? 1 : 2);
     assertEquals("retire", retired.get("event").textValue());
     assertEquals("add", added.get("event").textValue());
     assertEquals(instant, retired.get("instant").textValue());
@@ -158,7 +159,8 @@ class TestEmbeddingColumnInfoRound extends EmbeddingRoundTestBase {
     assertEquals(originalHistory, info(), "repeating the retirement does not append duplicate events");
     assertEquals(3, rows(table()).size());
     announce(text("fourth", "eta theta"));
-    assertThrows(RuntimeException.class, () -> round(compute()), "retired names cannot be reused");
+    TypedProperties reusingRetired = compute();
+    assertThrows(RuntimeException.class, () -> round(reusingRetired), "retired names cannot be reused");
     assertEquals(3, rows(table()).size());
   }
 

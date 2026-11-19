@@ -49,6 +49,8 @@ import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 import org.apache.hudi.utilities.unstructured.storage.ParquetInlineCap;
 
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -74,6 +76,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -88,7 +91,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * round for a failed commit.
  */
 @Tag("functional")
-public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
+class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
 
   private static final Path CLIP = Paths.get("src/test/resources/video/large-frames/large-frames-720p.mp4");
   /** The video itself is above the blob threshold too: prep streams it from the object. */
@@ -165,7 +168,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
 
   /** A text-only allow-list excludes input-storing preprocessors from the driver's heap-ceiling check. */
   @Test
-  public void inputStoreDriverCheckHonorsPrepAllowList() {
+  void inputStoreDriverCheckHonorsPrepAllowList() {
     TypedProperties props = videoProps(EmbeddingTableConfig.MODE_PREP_ONLY);
     props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "pdf");
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_HEAP_FRACTION.key(), "0.000000000001");
@@ -175,18 +178,20 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
 
   /** Including a video extension still enforces the input store's heap ceiling before any round. */
   @Test
-  public void inputStoreDriverCheckStillRefusesPreparedVideo() {
+  void inputStoreDriverCheckStillRefusesPreparedVideo() {
     TypedProperties props = videoProps(EmbeddingTableConfig.MODE_PREP_ONLY);
     props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "pdf,mp4");
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_HEAP_FRACTION.key(), "0.000000000001");
 
-    HoodieValidationException refused = assertThrows(HoodieValidationException.class,
-        () -> EmbeddingTableTransformer.checkRound(EmbeddingTableConfig.from(props), spark(), Option.empty()));
+    EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
+    SparkSession spark = spark();
+    Option<StructType> noTable = Option.empty();
+    HoodieValidationException refused = assertThrows(HoodieValidationException.class, () -> EmbeddingTableTransformer.checkRound(config, spark, noTable));
     assertTrue(refused.getMessage().contains(EmbeddingInputConfig.INLINE_MAX_HEAP_FRACTION.key()), refused.getMessage());
   }
 
   @Test
-  public void inputThresholdFollowsTheParquetCapOfThisBuild() {
+  void inputThresholdFollowsTheParquetCapOfThisBuild() {
     long threshold = EmbeddingInputConfig.inlineMaxBytes(new TypedProperties());
     if (HoodieBaseParquetWriter.supportsColumnStatisticsSwitch()) {
       assertEquals(EmbeddingInputConfig.DEFAULT_INLINE_MAX_BYTES, threshold);
@@ -202,7 +207,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
   @ParameterizedTest(name = "{0}, {1}")
   @CsvSource({"COPY_ON_WRITE, prep_only", "COPY_ON_WRITE, prep_and_compute",
       "MERGE_ON_READ, prep_only", "MERGE_ON_READ, prep_and_compute"})
-  public void framesAboveTheInlineCapAreStoredOutOfLineAndAnOverwriteKeepsTheOldVersion(HoodieTableType tableType, String mode)
+  void framesAboveTheInlineCapAreStoredOutOfLineAndAnOverwriteKeepsTheOldVersion(HoodieTableType tableType, String mode)
       throws Exception {
     FixtureFile video = object("videos/large.mp4", Files.readAllBytes(CLIP));
     assertTrue(video.bytes.length > BLOB_INLINE_MAX_BYTES, "the video is streamed from its object: " + video.bytes.length);
@@ -237,7 +242,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
       firstFiles.add(assertStoredOutOfLine(rows, key(video, first, EmbeddingTableSchema.MODALITY_IMAGE, k), frames.get(k), mode,
           preparer));
     }
-    Collections.sort(firstFiles);
+    firstFiles.sort(null);
     assertEquals(firstFiles, payloadFiles(), "one payload file per frame, nothing else");
 
     // an overwrite (a later modification time): the new version's frames are added with files of their own; the old version's
@@ -256,11 +261,11 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
           preparer);
       String current = assertStoredOutOfLine(after, key(video, second, EmbeddingTableSchema.MODALITY_IMAGE, k), frames.get(k),
           mode, preparer);
-      assertFalse(old.equals(current), "each version references its own file: " + old);
+      assertNotEquals(old, current, "each version references its own file: " + old);
       allFiles.add(old);
       allFiles.add(current);
     }
-    Collections.sort(allFiles);
+    allFiles.sort(null);
     assertEquals(allFiles, payloadFiles(), "both versions' payload files, nothing else");
     assertTrue(allFiles.containsAll(firstFiles), "the old version's files are kept");
   }
@@ -272,7 +277,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
    */
   @ParameterizedTest(name = "{0}")
   @CsvSource({"COPY_ON_WRITE", "MERGE_ON_READ"})
-  public void roundThatFailsAfterPrepWroteItsPayloadsIsRolledBackWithThem(HoodieTableType tableType) throws Exception {
+  void roundThatFailsAfterPrepWroteItsPayloadsIsRolledBackWithThem(HoodieTableType tableType) throws Exception {
     FixtureFile video = object("videos/large.mp4", Files.readAllBytes(CLIP));
     FixtureFile broken = object("videos/broken.mp4", "not a video".getBytes(java.nio.charset.StandardCharsets.UTF_8));
     announce(video, broken);
@@ -280,8 +285,8 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
     props.setProperty(HoodieErrorTableConfig.ERROR_TABLE_ENABLED.key(), "false");
     List<byte[]> frames = expectedFrames(video, props);
 
-    Exception failure = assertThrows(Exception.class, () -> EmbeddingStreamers.round(spark(), props,
-        cfg -> cfg.tableType = tableType.name()));
+    SparkSession spark = spark();
+    Exception failure = assertThrows(Exception.class, () -> EmbeddingStreamers.round(spark, props, cfg -> cfg.tableType = tableType.name()));
     assertTrue(EmbeddingStreamers.causes(failure).contains("broken.mp4"), EmbeddingStreamers.causes(failure));
     assertTrue(EmbeddingStreamers.commits(table(), storage()).isEmpty(), "nothing committed");
     assertEquals(Collections.emptyList(), payloadFiles(), "the rollback removes the failed round's payload files");
@@ -311,7 +316,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
    */
   @ParameterizedTest(name = "{0}")
   @CsvSource({"COPY_ON_WRITE", "MERGE_ON_READ"})
-  public void failedCommitsPayloadFilesAreRolledBackByTheNextRound(HoodieTableType tableType) throws Exception {
+  void failedCommitsPayloadFilesAreRolledBackByTheNextRound(HoodieTableType tableType) throws Exception {
     FixtureFile video = object("videos/large.mp4", Files.readAllBytes(CLIP));
     announce(video);
     TypedProperties props = videoProps(EmbeddingTableConfig.MODE_PREP_AND_COMPUTE);
@@ -320,8 +325,8 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
     FailingPreCommitValidator.RECORDS_WRITTEN.set(-1);
     TypedProperties failing = TypedProperties.copy(props);
     failing.setProperty(HoodiePreCommitValidatorConfig.VALIDATOR_CLASS_NAMES.key(), FailingPreCommitValidator.class.getName());
-    Exception failure = assertThrows(Exception.class,
-        () -> EmbeddingStreamers.round(spark(), failing, cfg -> cfg.tableType = tableType.name()));
+    SparkSession spark = spark();
+    Exception failure = assertThrows(Exception.class, () -> EmbeddingStreamers.round(spark, failing, cfg -> cfg.tableType = tableType.name()));
     assertTrue(EmbeddingStreamers.causeOf(failure, HoodieValidationException.class).isPresent(), EmbeddingStreamers.causes(failure));
     assertTrue(FailingPreCommitValidator.RECORDS_WRITTEN.get() >= frames.size(), "the failed round wrote its rows first");
     assertTrue(EmbeddingStreamers.commits(table(), storage()).isEmpty(), "nothing committed");
@@ -338,7 +343,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
       files.add(assertStoredOutOfLine(rows, key(video, EmbeddingTableSchema.MODALITY_IMAGE, k), frames.get(k),
           EmbeddingTableConfig.MODE_PREP_AND_COMPUTE, preparer));
     }
-    Collections.sort(files);
+    files.sort(null);
     assertEquals(files, payloadFiles(), "only the committed round's payload files: the failed round's were rolled back");
     for (String failed : failedFiles) {
       assertFalse(files.contains(failed), failed);
