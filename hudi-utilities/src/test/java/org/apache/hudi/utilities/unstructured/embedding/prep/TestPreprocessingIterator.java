@@ -30,10 +30,15 @@ import org.apache.hudi.utilities.sources.blob.BlobTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties;
+import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
+import org.apache.hudi.utilities.unstructured.embedding.input.PayloadDestination;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
+import org.apache.hudi.utilities.unstructured.embedding.source.CountingObjectFileSystem;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
+import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlob;
+import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobBytesSupplier;
 import org.apache.hudi.utilities.unstructured.embedding.text.Tokenizer;
 import org.apache.hudi.utilities.unstructured.embedding.text.WordCountTokenizer;
 
@@ -48,6 +53,8 @@ import org.apache.spark.util.LongAccumulator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -61,11 +68,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import static org.apache.hudi.common.schema.HoodieSchema.Blob.INLINE;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -73,6 +84,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -174,13 +186,134 @@ public class TestPreprocessingIterator {
     }
   }
 
+  /** Records the existing decoder cleanup policy that catches source-close exceptions. */
+  public static class CloseIgnoringPreprocessor extends PipeSplitPreprocessor {
+    static final AtomicInteger CLOSE_FAILURES = new AtomicInteger();
+
+    @Override
+    public ClosableIterator<Chunk> open(BlobBytesSupplier bytes, FileMeta file, Tokenizer tokenizer, TypedProperties props) throws IOException {
+      SeekableBlob input = ((SeekableBlobBytesSupplier) bytes).openSeekable();
+      byte[] value = new byte[1];
+      input.read(value, 0, 1);
+      Iterator<Chunk> chunks = Collections.singletonList(Chunk.builder(EmbeddingTableSchema.MODALITY_TEXT)
+          .text(new String(value, StandardCharsets.UTF_8)).build()).iterator();
+      return new ClosableIterator<Chunk>() {
+        @Override
+        public void close() {
+          try {
+            String changed = props.getString("test.change.at.close", null);
+            if (changed != null) {
+              Files.setLastModifiedTime(java.nio.file.Paths.get(changed), FileTime.fromMillis(MODIFICATION_TIME + 2000));
+            }
+          } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+          } finally {
+            CloseStatusFileSystem.failStatus = props.getBoolean("test.status.failure.at.close", false);
+            try {
+              input.close();
+            } catch (Exception failure) {
+              CLOSE_FAILURES.incrementAndGet();
+              if (props.getBoolean("test.propagate.close.failure", false)) {
+                throw failure instanceof RuntimeException ? (RuntimeException) failure : new java.io.UncheckedIOException((IOException) failure);
+              }
+            }
+          }
+        }
+
+        @Override
+        public boolean hasNext() {
+          return chunks.hasNext();
+        }
+
+        @Override
+        public Chunk next() {
+          return chunks.next();
+        }
+      };
+    }
+  }
+
   @Test
-  void derivedPayloadWithoutDestinationChecksContentType() {
+  void sourceChangeSwallowedByDecoderCloseStillFailsTheFile() throws IOException {
+    Path file = Files.write(temp.resolve("closed-source.txt"), new byte[] {'a'});
+    Files.setLastModifiedTime(file, FileTime.fromMillis(MODIFICATION_TIME));
+    Row row = outOfLineRow("source", file.toUri().toString());
+    TypedProperties props = props();
+    props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
+        CloseIgnoringPreprocessor.class.getName());
+    CloseIgnoringPreprocessor.CLOSE_FAILURES.set(0);
+    try (PreprocessingIterator unchanged = iterator(props, row)) {
+      assertEquals(1, drain(unchanged).size());
+      assertTrue(unchanged.getSideOutputs().isEmpty());
+      assertEquals(0, CloseIgnoringPreprocessor.CLOSE_FAILURES.get());
+    }
+    props.setProperty("test.change.at.close", file.toString());
+    try (PreprocessingIterator changed = iterator(props, row)) {
+      assertEquals(1, drain(changed).size(), "the established partial-file policy keeps already emitted chunks");
+      assertEquals(1, CloseIgnoringPreprocessor.CLOSE_FAILURES.get(), "the source guard detected the change at close");
+      assertEquals(1, changed.getSideOutputs().size(), "the decoder cannot discard a confirmed source change");
+      assertTrue(changed.getSideOutputs().get(0).getError().contains("changed"));
+    }
+    assertEquals(1L, filesOk.value(), "only the unchanged control is successful");
+    assertEquals(1L, filesFailed.value());
+  }
+
+  public static class CloseStatusFileSystem extends CountingObjectFileSystem {
+    static boolean failStatus;
+
+    @Override
+    public org.apache.hadoop.fs.FileStatus getFileStatus(org.apache.hadoop.fs.Path path) throws IOException {
+      if (failStatus) {
+        throw new IOException("post-read status unavailable");
+      }
+      return super.getFileStatus(path);
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void sourceStatusFailureSwallowedByDecoderCloseStillFailsTheRound(boolean propagate) throws IOException {
+    Configuration conf = new Configuration();
+    CountingObjectFileSystem.installCounting(conf, temp.resolve("buckets"));
+    conf.set("fs.countfs.impl", CloseStatusFileSystem.class.getName());
+    Path local = temp.resolve("buckets/bucket/source.txt");
+    Files.createDirectories(local.getParent());
+    Files.write(local, new byte[] {'a'});
+    Files.setLastModifiedTime(local, FileTime.fromMillis(MODIFICATION_TIME));
+    Row row = outOfLineRow("source", "countfs://bucket/source.txt");
+    TypedProperties props = props();
+    props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "txt" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
+        CloseIgnoringPreprocessor.class.getName());
+    props.setProperty("test.status.failure.at.close", "true");
+    props.setProperty("test.propagate.close.failure", String.valueOf(propagate));
+    CloseStatusFileSystem.failStatus = false;
+    CloseIgnoringPreprocessor.CLOSE_FAILURES.set(0);
+    try (PreprocessingIterator iterator = PreprocessingIterator.builder(Collections.singletonList(row).iterator(), EmbeddingTableConfig.from(props), "001")
+        .bytesSource(new BlobBytesSource(HadoopFSUtils.getStorageConf(conf)))
+        .registry(new PreprocessorRegistry(props)).tokenizer(new WordCountTokenizer())
+        .counters(new PrepCounters(filesOk, filesFailed, chunks, new LongAccumulator(), new LongAccumulator())).build()) {
+      SourceReadException failure = assertThrows(SourceReadException.class, () -> drain(iterator));
+      assertFalse(failure.getMessage().contains("Self-suppression"), failure.getMessage());
+      assertEquals(1, CloseIgnoringPreprocessor.CLOSE_FAILURES.get());
+      assertEquals(0L, filesOk.value());
+      assertEquals(0L, filesFailed.value(), "an unavailable status is not a confirmed content change");
+    } finally {
+      CloseStatusFileSystem.failStatus = false;
+    }
+  }
+
+  @Test
+  void derivedPayloadWithoutDestinationKeepsCustomContentType() {
     TypedProperties props = derivedPayloadProps();
     props.setProperty("test.payload.type", "application/octet-stream");
     try (PreprocessingIterator iterator = iterator(props, blobRow("sha", "txt", "input"))) {
-      assertTrue(drain(iterator).isEmpty());
-      assertTrue(iterator.getSideOutputs().get(0).getError().contains("A stored embedding input"));
+      List<Row> rows = drain(iterator);
+      assertEquals(1, rows.size());
+      Row payload = (Row) column(rows.get(0), EmbeddingTableSchema.build(EmbeddingTableConfig.from(props)),
+          EmbeddingTableSchema.PREPARED_IMAGE);
+      assertEquals(INLINE, payload.getString(0));
+      assertArrayEquals(new byte[] {1, 2, 3}, (byte[]) payload.get(1));
+      assertTrue(iterator.getSideOutputs().isEmpty());
     }
   }
 
@@ -547,6 +680,113 @@ public class TestPreprocessingIterator {
     assertEquals(1, PipeSplitPreprocessor.CLOSED.get());
     assertFalse(iterator.hasNext());
     assertThrows(NoSuchElementException.class, iterator::next);
+  }
+
+  /** The Error the open file's close throws in {@link #closeKeepsClosingAfterAnErrorAndSuppressesTheLaterFailure}. */
+  static final class FileCloseError extends Error {
+    FileCloseError() {
+      super("the open file's close failed");
+    }
+  }
+
+  /** Two derived image payloads per file, stored by the input store; closing a file's chunks throws a {@link FileCloseError}. */
+  public static class ErrorOnCloseImagePreprocessor implements FilePreprocessor {
+    static final AtomicInteger CLOSED = new AtomicInteger();
+
+    @Override
+    public String name() {
+      return "error-on-close-image-v1";
+    }
+
+    @Override
+    public SourceKind sourceKind() {
+      return SourceKind.IMAGE;
+    }
+
+    @Override
+    public boolean storesInputs() {
+      return true;
+    }
+
+    @Override
+    public ClosableIterator<Chunk> open(BlobBytesSupplier bytes, FileMeta file, Tokenizer tokenizer, TypedProperties props) {
+      byte[] payload = {1, 2, 3, 4};
+      Iterator<Chunk> chunks = Arrays.asList(
+          Chunk.builder(EmbeddingTableSchema.MODALITY_IMAGE).payload(() -> new ByteArrayInputStream(payload), payload.length, "image/jpeg")
+              .build(),
+          Chunk.builder(EmbeddingTableSchema.MODALITY_IMAGE).payload(() -> new ByteArrayInputStream(payload), payload.length, "image/jpeg")
+              .build()).iterator();
+      return new ClosableIterator<Chunk>() {
+        @Override
+        public void close() {
+          CLOSED.incrementAndGet();
+          throw new FileCloseError();
+        }
+
+        @Override
+        public boolean hasNext() {
+          return chunks.hasNext();
+        }
+
+        @Override
+        public Chunk next() {
+          return chunks.next();
+        }
+      };
+    }
+  }
+
+  /**
+   * Close closes every part whatever an earlier one threw: the open file's close throws an Error and the registry's close a
+   * RuntimeException; the Error is thrown, the RuntimeException suppressed on it, and the input store is still closed (its
+   * background write threads end, which only its close makes them do).
+   */
+  @Test
+  void closeKeepsClosingAfterAnErrorAndSuppressesTheLaterFailure() throws Exception {
+    TypedProperties props = props("m1");
+    props.setProperty(EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + "img" + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
+        ErrorOnCloseImagePreprocessor.class.getName());
+    // every payload is written out of line, in the background; no timeline server is needed for its markers
+    props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), "1");
+    props.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
+    ErrorOnCloseImagePreprocessor.CLOSED.set(0);
+    IllegalStateException registryFailure = new IllegalStateException("the registry's close failed");
+    PreprocessorRegistry registry = new PreprocessorRegistry(props) {
+      @Override
+      public void close() {
+        super.close();
+        throw registryFailure;
+      }
+    };
+    Set<Thread> before = writeThreads();
+    PreprocessingIterator iterator = PreprocessingIterator.builder(Collections.singletonList(blobRow("sha-a", "img", "x")).iterator(),
+            EmbeddingTableConfig.from(props), "001")
+        .bytesSource(new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())))
+        .registry(registry)
+        .tokenizer(new WordCountTokenizer())
+        .counters(new PrepCounters(filesOk, filesFailed, chunks, new LongAccumulator(), new LongAccumulator()))
+        .destination(new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), embeddingTable, props))
+        .build();
+    assertTrue(iterator.hasNext());
+    iterator.next();
+    Set<Thread> started = writeThreads();
+    started.removeAll(before);
+    assertFalse(started.isEmpty(), "the input store wrote the first payload in the background");
+
+    FileCloseError thrown = assertThrows(FileCloseError.class, iterator::close);
+    assertEquals(1, ErrorOnCloseImagePreprocessor.CLOSED.get(), "the open file was closed");
+    assertEquals(1, thrown.getSuppressed().length, Arrays.toString(thrown.getSuppressed()));
+    assertSame(registryFailure, thrown.getSuppressed()[0], "the registry's failure is suppressed on the Error");
+    for (Thread thread : started) {
+      thread.join(TimeUnit.SECONDS.toMillis(10));
+      assertFalse(thread.isAlive(), "the input store was closed after the Error: its write thread " + thread.getName() + " ended");
+    }
+  }
+
+  /** The live threads of every out-of-line write pool. */
+  private static Set<Thread> writeThreads() {
+    return Thread.getAllStackTraces().keySet().stream().filter(Thread::isAlive)
+        .filter(thread -> thread.getName().startsWith("hudi-out-of-line-write-")).collect(Collectors.toCollection(HashSet::new));
   }
 
   @Test

@@ -26,9 +26,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
 import javax.imageio.stream.ImageInputStream;
+import javax.imageio.stream.ImageOutputStream;
 
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -125,6 +131,41 @@ class TestImagePreparation {
     PreparedImage prepared = new ImagePreparer(tight).prepare(ImageFixtures.source(ImageFixtures.image("png", 1000, 800)));
     assertEquals(200, prepared.getWidth());
     assertEquals(160, prepared.getHeight());
+  }
+
+  /**
+   * A BMP whose bitmap is an embedded JPEG or PNG (compression 4 or 5), which a reader decodes at full size outside the
+   * intermediate budget's estimate, is refused by name before decode (the JDK readers fail it before decode too, with no image
+   * type, which was reported as a corrupt header); an uncompressed BMP of the same size is prepared.
+   */
+  @ParameterizedTest
+  @CsvSource({"BI_JPEG", "BI_PNG"})
+  void bmpWithAnEmbeddedJpegOrPngIsRefusedBeforeDecode(String compression) throws IOException {
+    ImagePreparer preparer = new ImagePreparer(new ImagePreprocessingSpec(512, ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES,
+        ImagePreprocessingSpec.DEFAULT_MAX_PIXELS, CountingImageDecoder.class.getName()));
+    ImageSource embedded = ImageFixtures.source(bmp(compression));
+    ImageRefusedException refused = assertThrows(ImageRefusedException.class, () -> preparer.prepare(embedded));
+    assertTrue(refused.getMessage().startsWith(ImageRefusedException.REFUSED_BEFORE_DECODE), refused.getMessage());
+    assertTrue(refused.getMessage().contains("embedded JPEG or PNG"), refused.getMessage());
+    assertEquals(0, CountingImageDecoder.CALLS.get(), "nothing is decoded");
+    PreparedImage control = preparer.prepare(ImageFixtures.source(bmp("BI_RGB")));
+    assertEquals(64, control.getWidth());
+  }
+
+  /** A 64 x 48 RGB BMP written by the JDK writer with {@code compression}. */
+  private static byte[] bmp(String compression) throws IOException {
+    ImageWriter writer = ImageIO.getImageWritersByFormatName("bmp").next();
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    try (ImageOutputStream stream = ImageIO.createImageOutputStream(out)) {
+      writer.setOutput(stream);
+      ImageWriteParam param = writer.getDefaultWriteParam();
+      param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+      param.setCompressionType(compression);
+      writer.write(null, new IIOImage(new BufferedImage(64, 48, BufferedImage.TYPE_INT_RGB), null, null), param);
+    } finally {
+      writer.dispose();
+    }
+    return out.toByteArray();
   }
 
   @Test

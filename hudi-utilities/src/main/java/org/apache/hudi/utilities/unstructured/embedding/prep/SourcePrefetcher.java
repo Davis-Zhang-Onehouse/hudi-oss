@@ -22,6 +22,7 @@ import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobSourceChangedException;
 import org.apache.hudi.utilities.unstructured.embedding.source.SourceFailures;
 
 import org.apache.spark.sql.Row;
@@ -46,9 +47,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>Only a whole object is read ahead: an OUT_OF_LINE source row without a range, whose listed size is at most
  * {@code maxBytes}. Its bytes are then held in memory until the task takes them for that row ({@link #take}), so a task holds at
  * most two such buffers (the file it prepares and the one read ahead). A read ahead is only a cache: a row it skipped, a read
- * that failed for any reason, or an object whose bytes do not end at its listed size is opened by the task itself exactly as
+ * that failed transiently, or an object whose bytes do not end at its listed size is opened by the task itself exactly as
  * without a read ahead, meeting the same failure under the same classification. The task's row order and its output are
- * unchanged.
+ * unchanged. A confirmed source-version change is reported for that file instead of discarded as a failed cache read.
  *
  * <p>Not thread-safe beyond the task thread calling {@link #start} and {@link #take}; {@link #close} may run on another
  * thread (a task-completion listener). Closing cancels the read in flight and stops the thread.
@@ -96,14 +97,15 @@ final class SourcePrefetcher implements AutoCloseable {
       return;
     }
     pendingRow = blobRow;
-    pending = executor().submit(() -> read(blob, objectLength));
+    long modificationTime = blobRow.getAs(BlobColumns.SOURCE_MODIFICATION_TIME);
+    pending = executor().submit(() -> read(blob, modificationTime, objectLength));
   }
 
   /**
    * The bytes read ahead for {@code blobRow}, waiting for the read to end; empty when it was not read ahead or the read failed,
    * and the task then opens it itself.
    */
-  Option<byte[]> take(Row blobRow) {
+  Option<byte[]> take(Row blobRow) throws BlobSourceChangedException {
     Future<byte[]> read;
     synchronized (this) {
       if (pending == null || pendingRow != blobRow) {
@@ -126,6 +128,7 @@ final class SourcePrefetcher implements AutoCloseable {
         // an exhausted heap or a broken link on the read-ahead thread is the task's: never hidden behind a fallback
         throw (Error) e.getCause();
       }
+      rethrowSourceChange(e);
       LOG.debug("Reading ahead failed; the task opens the file itself", e);
       return Option.empty();
     } catch (CancellationException e) {
@@ -142,11 +145,21 @@ final class SourcePrefetcher implements AutoCloseable {
     }
   }
 
+  /** A close-time status mismatch can be suppressed by the read failure; neither may hide a confirmed change. */
+  private static void rethrowSourceChange(Throwable failure) throws BlobSourceChangedException {
+    BlobSourceChangedException changed = PrepFailures.findFailure(failure,
+        cause -> cause instanceof BlobSourceChangedException ? (BlobSourceChangedException) cause : null);
+    if (changed != null) {
+      throw changed;
+    }
+  }
+
   /**
    * The object's bytes, exactly its listed size of them, or an IOException that hands the file back to the task: one that ends
    * early or runs past its listed size is not this read ahead's to judge.
    */
-  private byte[] read(Row blob, long objectLength) throws IOException {
+  private byte[] read(Row blob, long modificationTime, long objectLength) throws IOException {
+    source.checkVersion(blob, modificationTime, objectLength);
     byte[] bytes = new byte[(int) objectLength];
     try (InputStream in = source.open(blob, objectLength)) {
       int filled = 0;

@@ -46,7 +46,9 @@ import java.io.IOException;
 public final class ImageResizeLogicV1 {
 
   /** The decoding-logic version of this class, owned by the code; every {@link ImageDecoder} must run it. */
-  public static final String LOGIC_VERSION = "image-resize-v1";
+  public static final String LOGIC_VERSION = "image-resize-v2";
+  /** Versions the pixels and bytes of accepted images independently of decode refusals. */
+  public static final String PIXEL_TRANSFORM_VERSION = "image-pixels-v1";
   /** Content type of a {@link ImagePreprocessingSpec#ENCODING_PNG} model input. */
   public static final String PNG_MIME_TYPE = "image/png";
   /** Content type of a {@link ImagePreprocessingSpec#ENCODING_JPEG} model input. */

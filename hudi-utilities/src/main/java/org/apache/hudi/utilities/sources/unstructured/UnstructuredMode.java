@@ -37,6 +37,26 @@ import java.util.Set;
  * The job of an unstructured data source ({@link UnstructuredSourceConfig#MODE}): which table it writes, the transformer the
  * streamer runs in every round, the transformer it refuses, the Parquet config injector the table is written with, and the checks
  * of the job's own properties that belong to that job.
+ *
+ * <p>The blob table's physical write settings are job properties; the effective inline threshold, codec and bloom switch are
+ * also pinned in the table's properties at creation ({@link org.apache.hudi.utilities.sources.blob.BlobPhysicalPins}) and an
+ * ingestion job whose values differ is refused. Only the ingestion job is checked against those pins: a table service run as a
+ * separate job (compaction, clustering) is not, and rewrites the files with whatever settings it carries. Every job that
+ * rewrites its files, including a separate compaction or clustering job, must therefore carry the ingestion job's physical
+ * settings:
+ * <ul>
+ *   <li>{@code hoodie.parquet.compression.codec=uncompressed} and {@code hoodie.parquet.bloom.filter.enabled=false}, the blob
+ *       job's defaults. Bloom is off under the memory-pressure write defaults (ENG-50740). An explicit user value is kept;
+ *       carry any explicit ingestion overrides into the table-service job as well;</li>
+ *   <li>{@code hoodie.parquet.write.config.injector.class=org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector},
+ *       which also supplies the per-record page checks and writer-buffer settings;</li>
+ *   <li>{@code hoodie.parquet.internal.column.dictionary.enabled#blob.data=false}, and
+ *       {@code hoodie.parquet.internal.column.statistics.enabled#blob.data=false} on Parquet 1.14 or later, where the per-column
+ *       statistics switch is supported. The injector applies these per-column settings after any delegate injector. They are
+ *       Hudi-internal keys: an ordinary writer ignores Parquet's generic keys, as upstream.</li>
+ * </ul>
+ * Without these properties, a table-service job rewrites files with Hudi's default physical settings. A job with its own
+ * injector carries it under {@link BlobParquetConfigInjector#DELEGATE_CLASS} so the blob injector still runs.
  */
 public enum UnstructuredMode {
 

@@ -436,6 +436,7 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
   /**
    * The input of an image row for a model that declares {@code image}: its {@code prepared_image}, opened through {@link #storedInputs}, and the
    * model input prepared from it lazily, through a seekable stream of the stored input, when the client asks for it.
+   * Every open checks whole source references against the row's version, including both the header and decode opens.
    *
    * @throws EmbeddingComputePlatformException when the row has no {@code prepared_image} or this iterator has no stored-input reader:
    *     prep wrote every image row with one, so a missing one is a broken prep/compute invariant
@@ -451,10 +452,17 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
     Row stored = row.getStruct(preparedImageIndex);
     BlobBytesSource source = storedInputs;
     ImagePreparer preparer = imagePreparer;
+    long modificationTime = row.getLong(sourceModificationTimeIndex);
+    long fileSize = row.getLong(sourceFileSizeIndex);
     PreparedImageSupplier image = () -> preparer.prepare(
-        () -> SeekableBlobImageInputStream.openStoredInput(() -> source.openSeekable(stored)));
-    return EmbeddingInput.storedImage(sourcePathSha, row.getLong(sourceModificationTimeIndex), row.getLong(sourceFileSizeIndex), modality,
-        chunkId, () -> source.open(stored), image);
+        () -> SeekableBlobImageInputStream.openStoredInput(() -> {
+          source.checkVersion(stored, modificationTime, fileSize);
+          return source.openSeekable(stored);
+        }));
+    return EmbeddingInput.storedImage(sourcePathSha, modificationTime, fileSize, modality, chunkId, () -> {
+      source.checkVersion(stored, modificationTime, fileSize);
+      return source.open(stored);
+    }, image);
   }
 
   /**

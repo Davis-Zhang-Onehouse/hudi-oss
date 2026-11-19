@@ -30,6 +30,8 @@ import org.apache.spark.sql.types.BlobType;
 import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -40,6 +42,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -77,10 +80,19 @@ public class TestBlobBytesSourceOutOfLine {
     return file.toUri().toString();
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"oss", "OSS", "OsS"})
+  void unavailableConnectorIsAPlatformFailure(String scheme) {
+    IOException failure = assertThrows(IOException.class,
+        () -> source().open(outOfLine(scheme + "://bucket/a.pdf", null, null, false)));
+    assertFalse(SourceFailures.isContentFailure(failure));
+    assertFalse(BlobBytesSource.isTransient(failure));
+  }
+
   @Test
-  void unavailableConnectorIsAReferenceFailure() {
+  void unknownSchemeIsAReferenceFailure() {
     BlobReferenceException failure = assertThrows(BlobReferenceException.class,
-        () -> source().open(outOfLine("oss://bucket/a.pdf", null, null, false)));
+        () -> source().open(outOfLine("unknownscheme://bucket/a.pdf", null, null, false)));
     assertTrue(SourceFailures.isContentFailure(failure));
   }
 

@@ -117,8 +117,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *   <li>{@code video-fixed-term}: the {@code video-ffmpeg} job at the SMALLEST executor heap the start check accepts with the
  *   default fixed term ({@link EmbeddingTableConfig#DEFAULT_PREP_VIDEO_HEAP_FIXED_BYTES}, 64 MiB): the heap is searched in whole
  *   MiB with the check itself ({@link #smallestAdmittedHeapMib}). For the cells' settings (4 slots, 1920x1080, Spark's 300 MiB
- *   reserved memory, 1 MiB G1 regions) that is 4 x (6 x 2073600 + 16 MiB) + 4 x 6 x 1 MiB + 300 MiB + 64 MiB = 523722752
- *   bytes, so 500 MiB. Passing says the default fixed term covers the rest of the executor heap of this round; an exhausted
+ *   reserved memory, 1 MiB G1 regions) that is 4 x (6 x 2073600 + 16 MiB + 10 MiB) + 4 x 6 x 1 MiB + 300 MiB + 64 MiB =
+ *   565665792 bytes, so 540 MiB. Passing says the default fixed term covers the rest of the executor heap of this round; an exhausted
  *   heap says it does not.</li>
  *   <li>{@code video-length-light} and {@code video-length}: the {@code video-ffmpeg} round over a short video and then over a
  *   long one, in two children; the live heap must not grow with the video's length ({@link #heapDoesNotGrowWithVideoLength}).</li>

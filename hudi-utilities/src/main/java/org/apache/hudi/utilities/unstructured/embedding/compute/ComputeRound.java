@@ -144,10 +144,7 @@ public final class ComputeRound {
     try {
       // the action that runs every model call before the write
       persisted.count();
-      if (counters.getCallsRefused().value() > 0) {
-        // a task the provider refused for good ended normally with a marker row, so Spark re-attempted nothing
-        throw new EmbeddingClientConfigException(refusal(persisted, model));
-      }
+      checkRefused(persisted, model, counters);
     } catch (Exception e) {
       // a failed Spark job surfaces as a checked SparkException: the output is released for it too
       persisted.unpersist(false);
@@ -155,6 +152,20 @@ public final class ComputeRound {
           : new HoodieException("Embedding with model " + model.getName() + " failed", e);
     }
     return persisted;
+  }
+
+  /** Checks the write's refusal accumulator without submitting another Spark action or making further provider calls. */
+  public static void checkRefused(EmbeddingModelSpec model, ComputeCounters counters) {
+    if (counters.getCallsRefused().value() > 0) {
+      throw new EmbeddingClientConfigException(REFUSED_PREFIX.trim() + " model=" + model.getName()
+          + ": the provider refused during write recomputation; nothing was committed");
+    }
+  }
+
+  private static void checkRefused(Dataset<Row> embedded, EmbeddingModelSpec model, ComputeCounters counters) {
+    if (counters.getCallsRefused().value() > 0) {
+      throw new EmbeddingClientConfigException(refusal(embedded, model));
+    }
   }
 
   /** The round's failure message: the first marker row's refusal, naming the model. */

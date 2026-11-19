@@ -94,7 +94,11 @@ public final class EmbeddingTableSchema {
   /** The modality an error record names for a file no preprocessor is mapped to; never a row's modality. */
   public static final String MODALITY_UNKNOWN = "unknown";
 
-  /** The source version, modality and ordered chunk identify one embedding row. */
+  /**
+   * The source version, modality and ordered chunk identify one embedding row. Keeping the source version in the key is a
+   * decision, as for the blob table ({@link org.apache.hudi.utilities.sources.blob.BlobTableSchema#KEY_COLUMNS}); moving to an
+   * identity-only key needs a new {@code hoodie.table.unstructured.schema.version} and a rebuilt table.
+   */
   public static final List<String> KEY_COLUMNS = Collections.unmodifiableList(Arrays.asList(SOURCE_PATH_SHA,
       SOURCE_MODIFICATION_TIME, SOURCE_FILE_SIZE, MODALITY, CHUNK_ID));
   /** Fixed columns before model vectors and user partition columns, in {@link #build} order. */

@@ -96,6 +96,78 @@ class TestEmbeddingTableChecks {
     assertTrue(error.getMessage().contains(key), error.getMessage());
   }
 
+  private static final String TABLE_INLINE_MAX_BYTES = "hoodie.table.embedding.input.inline.max.bytes";
+  private static final String COLUMN_INFO_LAYOUT_VERSION = "hoodie.table.embedding.column.info.layout.version";
+
+  /** Creates an embedding table at {@code name} that stores {@code pins}. */
+  private String table(String name, java.util.Properties pins) throws Exception {
+    String table = temp.resolve(name).toUri().toString();
+    HoodieTableMetaClient.newTableBuilder().setTableVersion(9).setTableName("embedding")
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setAdditionalProperties(pins).initTable(conf, table);
+    return table;
+  }
+
+  private static TypedProperties pdfOnly() {
+    TypedProperties props = new TypedProperties();
+    props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), "pdf");
+    return props;
+  }
+
+  /**
+   * The input store's threshold decides no byte of a job whose preprocessors store no inputs: a PDF-only job runs on a table
+   * that stores another threshold, or none.
+   */
+  @Test
+  void jobThatStoresNoInputsIsNotCheckedAgainstTheInputStoreThreshold() throws Exception {
+    java.util.Properties pins = UnstructuredTableTestProperties.embedding(pdfOnly());
+    pins.setProperty(TABLE_INLINE_MAX_BYTES, "4096");
+    EmbeddingTableChecks.checkTableVersion(table("other-threshold", pins), conf, EmbeddingTableConfig.from(pdfOnly()));
+    pins.remove(TABLE_INLINE_MAX_BYTES);
+    EmbeddingTableChecks.checkTableVersion(table("no-threshold", pins), conf, EmbeddingTableConfig.from(pdfOnly()));
+  }
+
+  /**
+   * A job that stores inputs (the default job preps images and video) is refused on another threshold, told the setting that
+   * matches the table, and on none, told the table predates the pin.
+   */
+  @Test
+  void jobThatStoresInputsIsRefusedOnAnotherInputStoreThreshold() throws Exception {
+    java.util.Properties pins = UnstructuredTableTestProperties.embedding(new TypedProperties());
+    String stored = pins.getProperty(TABLE_INLINE_MAX_BYTES);
+    String table = table("threshold", pins);
+    EmbeddingTableChecks.checkTableVersion(table, conf, config(null));
+    TypedProperties other = new TypedProperties();
+    other.setProperty("hoodie.unstructured.embedding.input.inline.max.bytes", "4096");
+    EmbeddingTableConfig otherThreshold = EmbeddingTableConfig.from(other);
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+        () -> EmbeddingTableChecks.checkTableVersion(table, conf, otherThreshold));
+    assertTrue(refused.getMessage().startsWith("Embedding prep requires the table's " + TABLE_INLINE_MAX_BYTES + "=4096"),
+        refused.getMessage());
+    assertTrue(refused.getMessage().contains("(the table stores " + stored + "; set hoodie.unstructured.embedding.input.inline.max.bytes="
+        + stored + " to match it)"), refused.getMessage());
+
+    pins.remove(TABLE_INLINE_MAX_BYTES);
+    String unpinned = table("no-threshold", pins);
+    EmbeddingTableConfig defaults = config(null);
+    IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+        () -> EmbeddingTableChecks.checkTableVersion(unpinned, conf, defaults));
+    assertTrue(missing.getMessage().contains(TABLE_INLINE_MAX_BYTES + "=" + stored + " (the table stores none; the table was "
+        + "created by an earlier build that does not store it: write this job to a new table)"), missing.getMessage());
+  }
+
+  /** A table without the column-info layout pin (one created before the pin) is refused on the direct-transformer path. */
+  @Test
+  void tableWithoutTheColumnInfoLayoutPinIsRefused() throws Exception {
+    java.util.Properties pins = UnstructuredTableTestProperties.embedding(new TypedProperties());
+    pins.remove(COLUMN_INFO_LAYOUT_VERSION);
+    String table = table("no-layout", pins);
+    EmbeddingTableConfig defaults = config(null);
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+        () -> EmbeddingTableChecks.checkTableVersion(table, conf, defaults));
+    assertTrue(refused.getMessage().contains(COLUMN_INFO_LAYOUT_VERSION + "=1: the table at " + table + " stores none"),
+        refused.getMessage());
+  }
+
   /** A table left with only the hoodie.properties backup, as a crash during a table config update leaves it, exists. */
   @Test
   void tableWithOnlyThePropertiesBackupExists() throws Exception {

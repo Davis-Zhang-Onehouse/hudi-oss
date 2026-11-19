@@ -26,10 +26,13 @@ import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.io.hadoop.HoodieBaseParquetWriter;
 import org.apache.hudi.utilities.sources.blob.BlobInlineCeiling;
+import org.apache.hudi.utilities.sources.blob.BlobPhysicalPins;
 import org.apache.hudi.utilities.unstructured.storage.InlineCeiling;
 import org.apache.hudi.utilities.unstructured.storage.ParquetInlineCap;
 
 import org.apache.spark.SparkConf;
+
+import java.util.Properties;
 
 /**
  * Keys of the embedding table's input store (its inline threshold). They live under
@@ -50,9 +53,9 @@ public final class EmbeddingInputConfig {
   /**
    * A stored input of at most this many bytes is INLINE in the row; a larger one is a managed copy. The declared default is
    * 1 MiB, effective on Parquet 1.14+ (the Spark 4 builds); Spark 3.5's older Parquet uses 80 KiB by default and as its cap.
-   * With this key unset, a Spark 3.5-to-4 writer upgrade raises an existing table's effective threshold from 80 KiB to 1 MiB.
-   * Subsequent writes store inputs larger than 80 KiB and at most 1 MiB inline instead of out of line. Previously stored inputs
-   * keep their existing storage shape.
+   * The effective value is pinned in the embedding table's properties when it is created ({@link #TABLE_INLINE_MAX_BYTES}): a
+   * job that stores inputs (images, video frames) and whose effective value differs (for example a Spark 3.5-created table,
+   * 80 KiB, written by a Spark 4 job that leaves this key unset, 1 MiB) is refused before anything is written.
    */
   public static final ConfigProperty<Long> INLINE_MAX_BYTES = ConfigProperty
       .key(PREFIX + "inline.max.bytes")
@@ -62,13 +65,19 @@ public final class EmbeddingInputConfig {
       .withDocumentation("A stored input of at most this many bytes is INLINE in the row; a larger one is a managed copy. The "
           + "declared default is 1 MiB (1048576 bytes), effective on Parquet 1.14+ (the Spark 4 builds). On Spark 3.5's Parquet older "
           + "than 1.14, which cannot turn off min/max statistics for one column, the effective default is 80 KiB (81920 bytes), also "
-          + "the cap: a configured value above it is logged at WARN and capped at 81920. With this key unset, upgrading an existing "
-          + "table's writer from Spark 3.5 to Spark 4 raises its effective threshold from 80 KiB to 1 MiB. Subsequent writes store "
-          + "inputs larger than 80 KiB and at most 1 MiB inline instead of out of line; previously stored inputs keep their existing "
-          + "storage shape.");
+          + "the cap: a configured value above it is logged at WARN and capped at 81920. The effective value is pinned in the "
+          + "table's properties when the table is created, and a job that stores inputs (images, video frames) and whose effective "
+          + "value differs is refused before anything is written (for example a table created on Spark 3.5 and written by a "
+          + "Spark 4 job that leaves this key unset).");
+  /**
+   * The input-store inline threshold in bytes the embedding table was created with ({@link #inlineMaxBytes(TypedProperties)}),
+   * written by every job that creates the table and checked ({@link #checkTable}) for a job whose preprocessors store inputs.
+   */
+  public static final ConfigProperty<String> TABLE_INLINE_MAX_BYTES = ConfigProperty
+      .key("hoodie.table.embedding.input.inline.max.bytes").noDefaultValue();
   /**
    * Declared default of 1 MiB, used with Parquet's per-column statistics switch. Without that switch the effective default
-   * and cap are 80 KiB ({@link #inlineMaxBytes(TypedProperties)}); a Spark 3.5-to-4 writer upgrade raises the default to 1 MiB.
+   * and cap are 80 KiB ({@link #inlineMaxBytes(TypedProperties)}); the table pins the value it was created with.
    */
   public static final long DEFAULT_INLINE_MAX_BYTES = 1024L * 1024L;
   /** Fraction in (0, 1] of the per-task heap share up to which {@link #INLINE_MAX_BYTES} may be set. */
@@ -91,7 +100,7 @@ public final class EmbeddingInputConfig {
   /**
    * The inline threshold a writer uses: {@link #INLINE_MAX_BYTES} as the job sets it, or {@link #DEFAULT_INLINE_MAX_BYTES}, on a
    * Parquet with the per-column statistics switch; without it at most 80 KiB, and 80 KiB by default ({@link ParquetInlineCap}).
-   * For an unset key, a Spark 3.5-to-4 writer upgrade raises the effective threshold to 1 MiB even for an existing table.
+   * The table pins the value it was created with ({@link #TABLE_INLINE_MAX_BYTES}), so a writer whose value differs is refused.
    *
    * @throws IllegalArgumentException naming the key when it is not a number in [0, 2^31-9]
    */
@@ -121,6 +130,23 @@ public final class EmbeddingInputConfig {
     }
     return ParquetInlineCap.effective(INLINE_MAX_BYTES.key(), value, DEFAULT_INLINE_MAX_BYTES, ParquetInlineCap.MAX_BYTES,
         statisticsSwitch);
+  }
+
+  /**
+   * Refuses a table at {@code basePath} that does not store {@code inlineMaxBytes}, this job's effective threshold, as its
+   * {@link #TABLE_INLINE_MAX_BYTES}, naming the setting of {@link #INLINE_MAX_BYTES} that matches the table, as the blob table's
+   * refusal does ({@link BlobPhysicalPins#thresholdHint}); a table that stores none was created by an earlier build.
+   *
+   * @throws IllegalArgumentException naming {@code sourceName}, the table and both values
+   */
+  public static void checkTable(String sourceName, String basePath, Properties table, String inlineMaxBytes) {
+    String stored = table.getProperty(TABLE_INLINE_MAX_BYTES.key());
+    if (!inlineMaxBytes.equals(stored)) {
+      throw new IllegalArgumentException(sourceName + " requires the table's " + TABLE_INLINE_MAX_BYTES.key() + "=" + inlineMaxBytes
+          + " (the table stores " + (stored == null ? "none" : stored)
+          + BlobPhysicalPins.thresholdHint(stored, INLINE_MAX_BYTES.key(), EmbeddingInputConfig::inlineMaxBytes)
+          + "): the table at " + basePath + " was written with another input-store threshold; nothing was written");
+    }
   }
 
   /**

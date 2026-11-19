@@ -34,10 +34,13 @@ import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.keygen.factory.HoodieSparkKeyGeneratorFactory;
 import org.apache.hudi.utilities.sources.SourceContract;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
+import org.apache.hudi.utilities.sources.blob.BlobPhysicalPins;
 import org.apache.hudi.utilities.sources.blob.BlobSourceSetup;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
+import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PrepLogicVersions;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
+import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingColumnInfoStore;
 
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.SparkSession;
@@ -45,7 +48,9 @@ import org.apache.spark.sql.types.StructType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
@@ -74,12 +79,40 @@ public class UnstructuredSourceContract implements SourceContract {
    */
   public UnstructuredSourceContract(TypedProperties props) {
     this.mode = UnstructuredMode.from(props);
-    UnstructuredTableProperties.Builder pins = UnstructuredTableVersion.tablePropertiesBuilder(
-        UnstructuredSchemaContract.sourceName(mode), mode.configValue());
+    String sourceName = UnstructuredSchemaContract.sourceName(mode);
     if (mode == UnstructuredMode.EMBEDDING) {
-      PrepLogicVersions.from(props).requireTableProperties(pins);
+      this.tablePins = embeddingTablePins(sourceName, props);
+    } else {
+      Map<String, String> physical = BlobPhysicalPins.of(props);
+      this.tablePins = UnstructuredTableVersion.tablePropertiesBuilder(sourceName, mode.configValue())
+          .requireTableProperties(physical, (name, basePath, table) -> BlobPhysicalPins.check(name, basePath, table, physical))
+          .build();
     }
-    this.tablePins = pins.build();
+  }
+
+  /**
+   * The embedding table's pins for the job of {@code props}, the one list that the streamer's contract and a direct transformer
+   * run ({@link org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableChecks}) both write and check: the layout pins
+   * of every unstructured table, the column-info layout version, the input store's inline threshold and the prep contract
+   * ({@link PrepLogicVersions}). The threshold is written at creation by every job, and checked only for a job whose
+   * preprocessors store inputs ({@link #storesInputs}): it decides no byte of a job that stores none.
+   *
+   * @param sourceName the job, as the refusals name it
+   */
+  public static UnstructuredTableProperties embeddingTablePins(String sourceName, TypedProperties props) {
+    String inlineMaxBytes = Long.toString(EmbeddingInputConfig.inlineMaxBytes(props));
+    TypedProperties job = TypedProperties.copy(props);
+    UnstructuredTableProperties.Builder pins = UnstructuredTableVersion.tablePropertiesBuilder(sourceName, UnstructuredMode.EMBEDDING.configValue())
+        .requireTableProperty(EmbeddingColumnInfoStore.LAYOUT_VERSION, EmbeddingColumnInfoStore.CURRENT_LAYOUT_VERSION)
+        .requireTableProperties(Collections.singletonMap(EmbeddingInputConfig.TABLE_INLINE_MAX_BYTES.key(), inlineMaxBytes),
+            (name, basePath, table) -> {
+              if (!inlineMaxBytes.equals(table.getProperty(EmbeddingInputConfig.TABLE_INLINE_MAX_BYTES.key()))
+                  && storesInputs(UnstructuredMode.EMBEDDING, job)) {
+                EmbeddingInputConfig.checkTable(name, basePath, table, inlineMaxBytes);
+              }
+            });
+    PrepLogicVersions.from(props).requireTableProperties(pins);
+    return pins.build();
   }
 
   /** The job this contract is of. */
@@ -98,7 +131,7 @@ public class UnstructuredSourceContract implements SourceContract {
         UnstructuredSourceContract::fields, " (these fields, in this order)");
     require(merged, HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS, mode.injectorClass(), String::trim,
         " (a job's own injector goes under " + mode.injectorDelegateKey() + ", and runs first)");
-    if (ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE) && storesInputs(merged)) {
+    if (ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE) && storesInputs(mode, merged)) {
       require(merged, HoodieWriteConfig.MARKERS_TYPE, MarkerType.TIMELINE_SERVER_BASED.name(),
           value -> value.trim().toLowerCase(java.util.Locale.ROOT), "");
       require(merged, HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE, "true",
@@ -117,10 +150,10 @@ public class UnstructuredSourceContract implements SourceContract {
 
   /**
    * Whether the job writes files beside its data files (out-of-line inputs, which need timeline-server markers so a failed
-   * round's rollback removes them): only an embedding job whose allowed preprocessors store inputs (video frames). A blob job
+   * round's rollback removes them): only an embedding job whose allowed preprocessors store inputs (images, video frames). A blob job
    * never does: a file above its inline threshold is referenced where it is.
    */
-  private boolean storesInputs(TypedProperties props) {
+  private static boolean storesInputs(UnstructuredMode mode, TypedProperties props) {
     if (mode == UnstructuredMode.BLOB) {
       return false;
     }

@@ -19,6 +19,9 @@
 package org.apache.hudi.utilities.unstructured.embedding.streamer;
 
 import org.apache.hudi.common.config.TypedProperties;
+import org.apache.hudi.common.fs.FSUtils;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.config.HoodieErrorTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingRoundTestBase;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingStreamers;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingStreamers.Round;
@@ -29,10 +32,20 @@ import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientC
 import org.apache.hudi.utilities.unstructured.embedding.compute.ScriptedEmbeddingClient;
 
 import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -87,6 +100,47 @@ class TestComputeProviderRefusal extends EmbeddingRoundTestBase {
     assertEquals(3 * FILES, rows(table()).size());
     rows(table()).values().forEach(row -> assertNotNull(row.getAs(EmbeddingStreamers.MODEL_COLUMN), row.toString()));
     assertEquals(5 + 2, ScriptedEmbeddingClient.CALLS.get(), "5 batches, plus the 2 inputs of the retryable batch alone");
+  }
+
+  /** Releases counted caches and refuses only when the write recomputes the model calls. */
+  public static class RecomputingTransformer extends EmbeddingTableTransformer {
+    static final AtomicInteger INITIAL_CALLS = new AtomicInteger();
+    @Override
+    public Dataset<Row> apply(JavaSparkContext jsc, SparkSession spark, Dataset<Row> rows, TypedProperties props, String instant) {
+      Dataset<Row> output = super.apply(jsc, spark, rows, props, instant);
+      INITIAL_CALLS.set(ScriptedEmbeddingClient.CALLS.get());
+      releaseRound(EmbeddingTableConfig.from(props).targetTablePath());
+      ScriptedEmbeddingClient.REFUSAL.set(QUOTA);
+      return output;
+    }
+  }
+
+  @ParameterizedTest
+  @CsvSource({"COPY_ON_WRITE,true,1", "COPY_ON_WRITE,false,2", "MERGE_ON_READ,true,2", "MERGE_ON_READ,false,1"})
+  void refusalDuringWriteRecomputationPreventsCommit(String tableType, boolean errorTable, int partitions) throws Exception {
+    announce(files());
+    TypedProperties props = props(table(), EmbeddingTableConfig.MODE_PREP_AND_COMPUTE,
+        EmbeddingTableConfig.COMPUTE_PARALLELISM.key(), String.valueOf(partitions), EmbeddingTableConfig.COMPUTE_BATCH_SIZE.key(), "2");
+    props.setProperty(EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), TEXT_EXTENSION);
+    props.setProperty(HoodieErrorTableConfig.ERROR_TABLE_ENABLED.key(), String.valueOf(errorTable));
+    props.setProperty("hoodie.cleaner.policy.failed.writes", "LAZY");
+    RuntimeException failure = assertThrows(RuntimeException.class,
+        () -> EmbeddingStreamers.round(spark(), props, cfg -> {
+          cfg.tableType = tableType;
+          cfg.transformerClassNames = Collections.singletonList(RecomputingTransformer.class.getName());
+        }));
+    assertNotNull(refusal(failure));
+    assertTrue(EmbeddingStreamers.commits(table(), storage()).isEmpty(), "a refusal after the count cannot advance the checkpoint");
+    assertTrue(ScriptedEmbeddingClient.CALLS.get() > RecomputingTransformer.INITIAL_CALLS.get(),
+        "the write action actually recomputed model calls");
+    HoodieTableMetaClient meta = HoodieTableMetaClient.builder().setBasePath(table()).setConf(storage()).build();
+    assertTrue(meta.getActiveTimeline().getCommitsTimeline().filterInflightsAndRequested().empty(),
+        "the refused write must be rolled back even with lazy failed-write cleanup");
+    assertEquals(1, meta.getActiveTimeline().getRollbackTimeline().filterCompletedInstants().countInstants());
+    try (Stream<Path> files = Files.walk(localPath(table()))) {
+      assertEquals(0, files.filter(Files::isRegularFile).filter(path -> FSUtils.isBaseFile(path.getFileName().toString())
+          || FSUtils.isLogFile(path.getFileName().toString())).count(), "rollback removes the refused write's data files");
+    }
   }
 
   private static FixtureFile[] files() {

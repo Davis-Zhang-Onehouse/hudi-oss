@@ -68,6 +68,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -158,7 +159,86 @@ class TestPreprocessingIteratorPrefetch {
     assertTrue(openThreads.get("two.png").get(0).startsWith(PREFETCH_THREAD), openThreads.toString());
     assertTrue(openThreads.get("big.bmp").stream().noneMatch(t -> t.startsWith(PREFETCH_THREAD)), "larger than the bound");
     assertTrue(openThreads.get("three.png").get(0).startsWith(PREFETCH_THREAD), openThreads.toString());
-    assertEquals(1, CountingObjectFileSystem.counts(path("two.png")).statuses.get(), "prep verifies the listed source version before consuming read-ahead bytes");
+    assertEquals(3, CountingObjectFileSystem.counts(path("two.png")).statuses.get(),
+        "prefetch checks before and after reading; prep checks again before consuming buffered bytes");
+  }
+
+  @Test
+  void confirmedReadAheadVersionChangeMustNotBecomeAFreshUnversionedRead() throws IOException {
+    byte[] bytes = ImageFixtures.image("png", 30, 20);
+    Row row = objectRow("sha-change", "png", object("changed.png", bytes), bytes.length);
+    java.util.concurrent.atomic.AtomicBoolean changed = new java.util.concurrent.atomic.AtomicBoolean(true);
+    BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())) {
+      @Override
+      public BlobBytesSource withoutOpenRetry() {
+        return this;
+      }
+
+      @Override
+      public void checkVersion(Row blob, long modificationTime, long length) throws IOException {
+        if (changed.get()) {
+          throw new org.apache.hudi.utilities.unstructured.embedding.source.BlobSourceChangedException("changed during read ahead");
+        }
+      }
+
+      @Override
+      public InputStream open(Row blob, long length) {
+        return new java.io.ByteArrayInputStream(bytes);
+      }
+    };
+    try (SourcePrefetcher prefetcher = new SourcePrefetcher(source, 100_000L)) {
+      prefetcher.start(row, bytes.length, bytes.length);
+      assertThrows(org.apache.hudi.utilities.unstructured.embedding.source.BlobSourceChangedException.class,
+          () -> prefetcher.take(row));
+      changed.set(false);
+      prefetcher.start(row, bytes.length, bytes.length);
+      assertArrayEquals(bytes, prefetcher.take(row).get(), "an unchanged read ahead remains usable");
+    }
+  }
+
+  @Test
+  void suppressedReadAheadVersionChangeMustNotBecomeAFallback() throws IOException {
+    byte[] bytes = ImageFixtures.image("png", 30, 20);
+    Row row = objectRow("sha-change", "png", object("changed.png", bytes), bytes.length);
+    for (boolean changed : new boolean[] {false, true}) {
+      BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())) {
+        @Override
+        public BlobBytesSource withoutOpenRetry() {
+          return this;
+        }
+
+        @Override
+        public void checkVersion(Row blob, long modificationTime, long length) {
+          // The overwrite is detected by the post-read status check when the stream closes.
+        }
+
+        @Override
+        public InputStream open(Row blob, long length) {
+          return new InputStream() {
+            @Override
+            public int read() throws IOException {
+              throw new IOException("interrupted object read");
+            }
+
+            @Override
+            public void close() throws IOException {
+              if (changed) {
+                throw new org.apache.hudi.utilities.unstructured.embedding.source.BlobSourceChangedException("changed at close");
+              }
+            }
+          };
+        }
+      };
+      try (SourcePrefetcher prefetcher = new SourcePrefetcher(source, 100_000L)) {
+        prefetcher.start(row, bytes.length, bytes.length);
+        if (changed) {
+          assertThrows(org.apache.hudi.utilities.unstructured.embedding.source.BlobSourceChangedException.class,
+              () -> prefetcher.take(row));
+        } else {
+          assertFalse(prefetcher.take(row).isPresent(), "a transient read failure still permits fallback");
+        }
+      }
+    }
   }
 
   /** A read ahead that fails hands the file back to the task, which opens it itself, exactly as without a read ahead. */

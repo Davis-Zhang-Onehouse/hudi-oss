@@ -28,8 +28,7 @@ import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
-import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableVersion;
-import org.apache.hudi.utilities.unstructured.embedding.prep.PrepLogicVersions;
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract;
 
 import java.io.IOException;
 
@@ -97,8 +96,6 @@ public final class EmbeddingTableChecks {
           + "table version " + MIN_TABLE_VERSION.versionCode() + " or above; build a NEW embedding table. Nothing was "
           + "written");
     }
-    UnstructuredTableVersion.tablePropertiesBuilder("Embedding prep", "embedding")
-        .build().checkTable(basePath, table);
-    PrepLogicVersions.from(config.getProps()).checkTable(basePath, table);
+    UnstructuredSourceContract.embeddingTablePins("Embedding prep", config.getProps()).checkTable(basePath, table);
   }
 }

@@ -52,7 +52,11 @@ public final class BlobTableSchema {
    * the embedding stream's side output alike.
    */
   public static final String GONE_SINCE_ANNOUNCED = "gone since announced";
-  /** The record key of a blob row: the source path's sha and the version tag, in this order. */
+  /**
+   * The record key of a blob row: the source path's sha and the version tag, in this order. Keeping the source version in the
+   * key is a decision (an overwrite adds a row, the earlier version's row stays); moving to an identity-only key needs a new
+   * {@code hoodie.table.unstructured.schema.version} and a rebuilt table.
+   */
   public static final List<String> KEY_COLUMNS = Collections.unmodifiableList(Arrays.asList(SOURCE_PATH_SHA, SOURCE_MODIFICATION_TIME,
       SOURCE_FILE_SIZE));
 

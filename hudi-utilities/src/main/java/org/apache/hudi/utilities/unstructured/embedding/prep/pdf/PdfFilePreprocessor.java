@@ -59,6 +59,10 @@ public class PdfFilePreprocessor implements FilePreprocessor {
   public static final String AUX_PAGE_START = "page_start";
   public static final String AUX_PAGE_END = "page_end";
   public static final String AUX_OVERLAP_CHARS = "overlap_chars";
+  /**
+   * Aux field of the last chunk of a file that lost content: a diagnostic summary ({@code PAGES_LOST …}) for operators. Its text
+   * is opaque and unversioned, and may change between builds; nothing may parse it or depend on its format.
+   */
   public static final String AUX_PREP_LOSS = "prep_loss";
   private final PdfChunker chunker;
   private final String name;

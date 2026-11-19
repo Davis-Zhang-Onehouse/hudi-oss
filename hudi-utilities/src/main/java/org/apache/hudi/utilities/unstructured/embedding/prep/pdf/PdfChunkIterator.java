@@ -25,6 +25,9 @@ import org.apache.hudi.utilities.unstructured.embedding.text.PackedChunk;
 import org.apache.hudi.utilities.unstructured.embedding.text.TextNormalizer;
 import org.apache.hudi.utilities.unstructured.embedding.text.TokenBudget;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -48,6 +51,7 @@ import java.util.NoSuchElementException;
  * truncated behind a loss summary is committed for it. Everything else a PDFBox call throws on an input is the input's own failure.
  */
 public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
+  private static final Logger LOG = LoggerFactory.getLogger(PdfChunkIterator.class);
 
   private static final String PATH_EQUALS = " path=";
 
@@ -127,6 +131,7 @@ public final class PdfChunkIterator implements ClosableIterator<PdfChunk> {
       ready = null;
       held = null;
       closeSource();
+      LOG.debug("PDF source_path_sha={} chunked: {}", meta.sourcePathSha(), stats);
     }
   }
 

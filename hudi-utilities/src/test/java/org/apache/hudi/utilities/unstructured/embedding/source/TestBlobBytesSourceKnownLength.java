@@ -21,6 +21,7 @@ package org.apache.hudi.utilities.unstructured.embedding.source;
 import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.utilities.sources.blob.SourceOpenHooks;
+import org.apache.hudi.utilities.unstructured.embedding.source.fixtures.EtagStatusFileSystem;
 import org.apache.hudi.utilities.unstructured.retry.TransientRetry;
 
 import org.apache.hadoop.conf.Configuration;
@@ -33,6 +34,8 @@ import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -234,6 +237,140 @@ class TestBlobBytesSourceKnownLength {
     org.apache.hadoop.fs.Path hadoopPath = new org.apache.hadoop.fs.Path(path);
     FileSystem fs = hadoopPath.getFileSystem(conf);
     assertNull(SourceObjectOpener.openWithKnownLength(fs, hadoopPath, 10L, 4096));
+  }
+
+  @Test
+  void overwriteBetweenCheckedStatusAndReadIsReportedAsChanged() throws IOException {
+    String path = object("changed.bin", new byte[] {1, 2, 3});
+    Row blob = outOfLine(path, null, null);
+    BlobBytesSource source = source();
+    source.checkVersion(blob, 0L, 3L);
+    long before = Files.getLastModifiedTime(local("changed.bin")).toMillis();
+    Files.write(local("changed.bin"), new byte[] {4, 5, 6});
+    Files.setLastModifiedTime(local("changed.bin"), java.nio.file.attribute.FileTime.fromMillis(before + 2000));
+    assertThrows(BlobSourceChangedException.class, () -> {
+      try (InputStream in = source.open(blob, 3L)) {
+        readAll(in);
+      }
+    });
+  }
+
+  @Test
+  void unchangedObjectAfterCheckedStatusKeepsItsBytes() throws IOException {
+    String path = object("unchanged.bin", new byte[] {1, 2, 3});
+    Row blob = outOfLine(path, null, null);
+    BlobBytesSource source = source();
+    source.checkVersion(blob, 0L, 3L);
+    try (InputStream in = source.open(blob, 3L)) {
+      assertArrayEquals(new byte[] {1, 2, 3}, readAll(in));
+    }
+  }
+
+  public static class EtagStatus extends org.apache.hadoop.fs.FileStatus {
+    private final String etag;
+
+    public EtagStatus(org.apache.hadoop.fs.FileStatus status, String etag) {
+      super(status.getLen(), status.isDirectory(), status.getReplication(), status.getBlockSize(), status.getModificationTime(),
+          status.getPath());
+      this.etag = etag;
+    }
+
+    public String getETag() {
+      return etag;
+    }
+  }
+
+  public static class EtagFileSystem extends CountingObjectFileSystem {
+    static String etag = "initial";
+
+    @Override
+    public org.apache.hadoop.fs.FileStatus getFileStatus(org.apache.hadoop.fs.Path path) throws IOException {
+      return new EtagStatus(super.getFileStatus(path), etag);
+    }
+  }
+
+  @Test
+  void changedEtagIsDetectedEvenWhenMtimeAndSizeAreEqual() throws IOException {
+    String path = object("etag.bin", new byte[] {1, 2, 3});
+    Configuration conf = new Configuration();
+    CountingObjectFileSystem.installCounting(conf, temp.resolve("buckets"));
+    conf.set("fs.countfs.impl", EtagFileSystem.class.getName());
+    BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(conf));
+    Row blob = outOfLine(path, null, null);
+    EtagFileSystem.etag = "initial";
+    source.checkVersion(blob, 0L, 3L);
+    try (InputStream unchanged = source.open(blob, 3L)) {
+      assertArrayEquals(new byte[] {1, 2, 3}, readAll(unchanged));
+    }
+    source.checkVersion(blob, 0L, 3L);
+    EtagFileSystem.etag = "replacement";
+    assertThrows(BlobSourceChangedException.class, () -> {
+      try (SeekableBlob changed = source.openSeekable(blob, 3L)) {
+        readAll(changed);
+      }
+    });
+  }
+
+  @ParameterizedTest
+  @CsvSource({"false,false,false", "true,false,false", "false,true,false", "true,true,false",
+      "false,false,true", "true,false,true", "false,true,true", "true,true,true"})
+  void standardHadoopEtagIsCheckedAfterRead(boolean seekable, boolean hidden, boolean nullVersion) throws IOException {
+    String path = object("standard-etag.bin", new byte[] {1, 2, 3});
+    Configuration conf = new Configuration();
+    CountingObjectFileSystem.installCounting(conf, temp.resolve("buckets"));
+    conf.set("fs.countfs.impl", EtagStatusFileSystem.class.getName());
+    EtagStatusFileSystem.hidden = hidden;
+    EtagStatusFileSystem.versionId = nullVersion ? "null" : null;
+    EtagStatusFileSystem.unavailableEtag = false;
+    BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(conf));
+    Row blob = outOfLine(path, null, null);
+    EtagStatusFileSystem.etag = "initial";
+    source.checkVersion(blob, 0L, 3L);
+    try (InputStream unchanged = source.open(blob, 3L)) {
+      assertArrayEquals(new byte[] {1, 2, 3}, readAll(unchanged));
+    }
+    source.checkVersion(blob, 0L, 3L);
+    EtagStatusFileSystem.etag = "replacement";
+    assertThrows(BlobSourceChangedException.class, () -> {
+      if (seekable) {
+        try (SeekableBlob changed = source.openSeekable(blob, 3L)) {
+          readAll(changed);
+        }
+      } else {
+        try (InputStream changed = source.open(blob, 3L)) {
+          readAll(changed);
+        }
+      }
+    });
+  }
+
+  @Test
+  void unavailableOptionalEtagKeepsVersionChecks() throws IOException {
+    String path = object("optional-etag.bin", new byte[] {1, 2, 3});
+    Configuration conf = new Configuration();
+    CountingObjectFileSystem.installCounting(conf, temp.resolve("buckets"));
+    conf.set("fs.countfs.impl", EtagStatusFileSystem.class.getName());
+    EtagStatusFileSystem.hidden = false;
+    EtagStatusFileSystem.versionId = "version-a";
+    EtagStatusFileSystem.unavailableEtag = true;
+    BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(conf));
+    Row blob = outOfLine(path, null, null);
+    try {
+      source.checkVersion(blob, 0L, 3L);
+      try (InputStream unchanged = source.open(blob, 3L)) {
+        assertArrayEquals(new byte[] {1, 2, 3}, readAll(unchanged));
+      }
+      source.checkVersion(blob, 0L, 3L);
+      EtagStatusFileSystem.versionId = "version-b";
+      assertThrows(BlobSourceChangedException.class, () -> {
+        try (InputStream changed = source.open(blob, 3L)) {
+          readAll(changed);
+        }
+      });
+    } finally {
+      EtagStatusFileSystem.unavailableEtag = false;
+      EtagStatusFileSystem.versionId = null;
+    }
   }
 
   private BlobBytesSource source() {

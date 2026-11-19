@@ -18,6 +18,8 @@
 
 package org.apache.hudi.utilities.sources.blob;
 
+import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableVersion;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -26,6 +28,8 @@ import java.io.InputStreamReader;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -147,4 +151,23 @@ class TestBlobFileNames {
     assertNull(BlobFileNames.contentType("mp4"), "video types are not named here");
   }
 
+  /** The extension-to-MIME map of blob layout version 1, whole: a change to it needs a new blob layout version. */
+  @Test
+  void contentTypesAreFrozenForBlobLayoutVersion1() {
+    Map<String, String> layoutVersion1 = new HashMap<>();
+    layoutVersion1.put("pdf", "application/pdf");
+    layoutVersion1.put("png", "image/png");
+    layoutVersion1.put("jpg", "image/jpeg");
+    layoutVersion1.put("jpeg", "image/jpeg");
+    layoutVersion1.put("gif", "image/gif");
+    layoutVersion1.put("bmp", "image/bmp");
+    layoutVersion1.put("tif", "image/tiff");
+    layoutVersion1.put("tiff", "image/tiff");
+    layoutVersion1.put("webp", "image/webp");
+    assertEquals("1", UnstructuredTableVersion.tablePropertiesBuilder("fixture", "blob").build().tableProperties()
+        .getProperty(UnstructuredTableVersion.BLOB_LAYOUT_VERSION.key()), "a new layout version may have its own map");
+    assertEquals(layoutVersion1, BlobFileNames.CONTENT_TYPES);
+    assertThrows(UnsupportedOperationException.class, () -> BlobFileNames.CONTENT_TYPES.put("mp4", "video/mp4"));
+    assertNull(BlobFileNames.contentType("mp4"), "a video row has no content type in layout version 1");
+  }
 }

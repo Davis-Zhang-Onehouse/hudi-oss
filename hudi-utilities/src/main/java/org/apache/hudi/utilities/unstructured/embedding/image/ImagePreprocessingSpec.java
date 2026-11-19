@@ -126,6 +126,18 @@ public final class ImagePreprocessingSpec implements Serializable {
     return decoder;
   }
 
+  /**
+   * The compute-side input transform this spec applies before a model call, for a VECTOR column's identity: the decoding logic's
+   * pixel-transform version ({@link ImageResizeLogicV1#PIXEL_TRANSFORM_VERSION}, not its full logic version, which also changes
+   * when only the refused images change) and every setting that changes the pixels or bytes sent (long side, raster budget,
+   * which sets the decode subsampling, encoding and, for JPEG, the quality). The pixel cap and the intermediate budget only
+   * refuse an image.
+   */
+  public String inputTransformVersion() {
+    return ImageResizeLogicV1.PIXEL_TRANSFORM_VERSION + ";long.side=" + longSide() + ";raster.budget.bytes=" + rasterBudgetBytes()
+        + ";encoding=" + encoding() + (ENCODING_JPEG.equals(encoding()) ? ";jpeg.quality=" + jpegQuality() : "");
+  }
+
   public int longSide() {
     return longSide;
   }

@@ -38,7 +38,9 @@ import java.util.stream.Collectors;
  * Configuration for selecting object announcements and storing their bytes in a blob table. The unstructured data source owns
  * the upstream checkpoint, instant and byte budgets.
  * Inline values use the configured threshold or its default. The blob job's Parquet codec and bloom filter are set by its
- * source class when the job leaves them unset (uncompressed, no bloom filter); any value the job sets is kept.
+ * source class when the job leaves them unset (uncompressed, no bloom filter); any value the job sets is kept. The effective
+ * threshold, codec and bloom switch are pinned in the table's properties when it is created ({@link BlobPhysicalPins}), and a
+ * job whose effective values differ is refused.
  */
 @Immutable
 @ConfigClassProperty(name = "Blob Table Source Configs",
@@ -57,13 +59,10 @@ public class BlobTableConfig extends HoodieConfig {
    * listed, without offset or length, so readers read the whole current file. The costs of referencing in place are listed once, in this
    * key's documentation. The declared 1 MiB default is effective on Parquet 1.14+ (the Spark 4 builds). On Spark 3.5's older
    * Parquet, which cannot disable statistics per column, the effective default is 10 KiB and configured values are capped at
-   * 80 KiB ({@link ParquetInlineCap}). When this key is unset, upgrading an existing table's writer from Spark 3.5 to Spark 4 raises
-   * its effective threshold from 10 KiB to 1 MiB: subsequent writes store files larger than 10 KiB and at most 1 MiB inline,
-   * where they were stored out of line before the upgrade. Previously stored values keep their existing storage shape.
+   * 80 KiB ({@link ParquetInlineCap}). The effective value is pinned in the table's properties when it is created
+   * ({@link BlobPhysicalPins#INLINE_MAX_BYTES}): a job whose effective value differs (for example a Spark 3.5-created table,
+   * 10 KiB, written by a Spark 4 job that leaves this key unset, 1 MiB) is refused before anything is written.
    * Bounded above by {@link BlobInlineCeiling}. Read it with {@link #inlineMaxBytes(TypedProperties)}.
-   * On legacy Parquet, blob-table writes require 128 times the effective threshold to fit the positive
-   * {@code hoodie.parquet.block.size}: each completed row group's retained min/max payload (twice the threshold) has
-   * a budget of 1/64 of that target, checked before source processing and again after writer delegation.
    */
   public static final ConfigProperty<Long> INLINE_MAX_BYTES = ConfigProperty
       .key(PREFIX + "inline.max.bytes")
@@ -78,9 +77,9 @@ public class BlobTableConfig extends HoodieConfig {
           + "source bucket, and table cleaning never touches source objects. The declared default is 1 MiB (1048576 bytes), "
           + "effective on Parquet 1.14+ (the Spark 4 builds). On Spark 3.5's Parquet older than 1.14, which cannot turn off min/max "
           + "statistics for one column, the effective default is 10 KiB (10240 bytes); a configured value above 80 KiB (81920 bytes) "
-          + "is logged at WARN and capped at 81920. With this key unset, upgrading an existing table's writer from Spark 3.5 to "
-          + "Spark 4 raises its effective threshold from 10 KiB to 1 MiB. Subsequent writes store files larger than 10 KiB and at "
-          + "most 1 MiB inline instead of out of line; previously stored values keep their existing storage shape. "
+          + "is logged at WARN and capped at 81920. The effective threshold is pinned when the table is created; a job whose "
+          + "effective threshold differs is refused before anything is written. A Spark 4 job writing a table created with "
+          + "Spark 3.5's default must set this key to the table's stored threshold. "
           + "On Parquet without per-column statistics, blob-table writes require 128 times this effective threshold <= "
           + "hoodie.parquet.block.size, which must be positive. Each completed row group's retained blob min/max payload "
           + "(2 times the effective threshold) has a budget of 1/64 of the effective row-group target. The job checks its "
@@ -94,8 +93,8 @@ public class BlobTableConfig extends HoodieConfig {
 
   /**
    * The inline threshold a blob round uses: {@link #INLINE_MAX_BYTES} as the job sets it, or its default, on a Parquet with the
-   * per-column statistics switch; without it 10 KiB by default and at most 80 KiB ({@link ParquetInlineCap}). For an unset key,
-   * a Spark 3.5-to-4 writer upgrade raises the effective threshold to 1 MiB even when writing an existing table.
+   * per-column statistics switch; without it 10 KiB by default and at most 80 KiB ({@link ParquetInlineCap}). A job writing an
+   * existing table must match its pinned effective threshold ({@link BlobPhysicalPins#INLINE_MAX_BYTES}).
    */
   public static long inlineMaxBytes(TypedProperties props) {
     return inlineMaxBytes(props, HoodieBaseParquetWriter.supportsColumnStatisticsSwitch());

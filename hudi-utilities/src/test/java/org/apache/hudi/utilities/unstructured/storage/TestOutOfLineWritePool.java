@@ -30,10 +30,12 @@ import org.apache.hudi.storage.hadoop.HoodieHadoopStorage;
 
 import org.apache.hadoop.conf.Configuration;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -43,16 +45,20 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The out-of-line write pool's thread rules: a file is named with the write token of the thread that asks for its path (the
- * task's), never the pool thread's; close waits, through interrupts, for a running write that ignores them; and a closed pool
- * refuses writes.
+ * task's), never the pool thread's; close waits, through interrupts, for a running write that ignores them; every wait (close,
+ * awaitAll, and submit waiting for room) gives up on a stuck write after the bound; and a closed pool refuses writes.
  */
 class TestOutOfLineWritePool {
 
   private static final String INSTANT = "20261110120000000";
+  /** The bound of the slow-drain tests: each of their writes takes {@link #SLOW_WRITE_MILLIS}, well within it. */
+  private static final long SLOW_BOUND_MILLIS = 1000;
+  private static final long SLOW_WRITE_MILLIS = 600;
 
   @TempDir
   Path temp;
@@ -122,7 +128,7 @@ class TestOutOfLineWritePool {
       while (System.nanoTime() < until) {
         try {
           // by design: simulates a write that ignores interrupts for 300 ms; not a wait
-          Thread.sleep(10);
+          Thread.sleep(10); // NOSONAR (by design: see above)
         } catch (InterruptedException ignored) {
           // as a store or marker call that swallows the interrupt and goes on
         }
@@ -138,6 +144,145 @@ class TestOutOfLineWritePool {
     } finally {
       Thread.interrupted();
     }
+  }
+
+  /**
+   * A write that never ends (a stuck PUT) does not hold close forever: after the bound, close throws naming the write's thread,
+   * so the task fails and the executor slot is freed; the stuck thread is a daemon.
+   */
+  @Test
+  @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void closeGivesUpOnAStuckWriteAfterItsBoundNamingIt() throws Exception {
+    OutOfLineWritePool pool = new OutOfLineWritePool(200);
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    pool.submit(1, ".hoodie/.blob/stuck.parquet", () -> {
+      started.countDown();
+      while (release.getCount() > 0) {
+        try {
+          release.await();
+        } catch (InterruptedException ignored) {
+          // as a store call that swallows the interrupt and stays stuck
+        }
+      }
+    });
+    assertTrue(started.await(10, TimeUnit.SECONDS));
+    long begin = System.nanoTime();
+    try {
+      HoodieException stuck = assertTimeoutPreemptively(Duration.ofSeconds(2), () -> assertThrows(HoodieException.class, pool::close));
+      assertTrue(stuck.getMessage().contains("out-of-line writes did not end within 200 ms"), stuck.getMessage());
+      assertTrue(stuck.getMessage().contains(".hoodie/.blob/stuck.parquet on hudi-out-of-line-write-"), stuck.getMessage());
+      assertTrue(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - begin) < 10, "close returned after its bound");
+    } finally {
+      release.countDown();
+    }
+  }
+
+  /**
+   * The end of input waits for the writes ({@link OutOfLineWritePool#awaitAll}) before it reaches close: a stuck write does not
+   * hold that wait forever either; after the bound it throws the same failure naming the write.
+   */
+  @Test
+  void awaitAllGivesUpOnAStuckWriteAfterItsBoundNamingIt() throws Exception {
+    OutOfLineWritePool pool = new OutOfLineWritePool(200);
+    CountDownLatch release = new CountDownLatch(1);
+    try {
+      submitStuckWrite(pool, 1, release);
+      HoodieException stuck = assertTimeoutPreemptively(Duration.ofSeconds(2), () -> assertThrows(HoodieException.class, pool::awaitAll),
+          "awaitAll waited past its bound for a stuck write");
+      assertNamesTheStuckWrite(stuck);
+    } finally {
+      release.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * A stuck write that holds every byte of room does not block the next submit forever: after the bound, submit throws the same
+   * failure naming the write.
+   */
+  @Test
+  void submitGivesUpWaitingForRoomHeldByAStuckWriteAfterItsBound() throws Exception {
+    OutOfLineWritePool pool = new OutOfLineWritePool(200);
+    CountDownLatch release = new CountDownLatch(1);
+    try {
+      submitStuckWrite(pool, OutOfLineWritePool.MAX_PENDING_BYTES, release);
+      HoodieException stuck = assertTimeoutPreemptively(Duration.ofSeconds(2),
+          () -> assertThrows(HoodieException.class, () -> pool.submit(1, () -> { })), "submit waited past its bound for room");
+      assertNamesTheStuckWrite(stuck);
+    } finally {
+      release.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * The bound is on a write that does not end, not on the whole drain: writes that each end within the bound but together take
+   * longer than it (a slow, healthy store) are waited for by awaitAll.
+   */
+  @Test
+  void awaitAllWaitsForASlowDrainLongerThanItsBoundWhileWritesKeepEnding() {
+    OutOfLineWritePool pool = new OutOfLineWritePool(SLOW_BOUND_MILLIS);
+    try {
+      // three rounds of four writes: about 3 x 600 ms in all, each write well within the 1 s bound
+      for (int i = 0; i < 3 * OutOfLineWritePool.THREADS; i++) {
+        pool.submit(1, TestOutOfLineWritePool::slowWrite);
+      }
+      long begin = System.nanoTime();
+      assertTimeoutPreemptively(Duration.ofSeconds(20), pool::awaitAll, "awaitAll gave up on a drain that kept making progress");
+      assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - begin) > SLOW_BOUND_MILLIS, "the drain outlasted the bound");
+    } finally {
+      pool.close();
+    }
+  }
+
+  /**
+   * A submit waiting for room that earlier writes give back slowly, each within the bound but together after it, gets its room
+   * rather than give up.
+   */
+  @Test
+  void submitWaitsForRoomGivenBackSlowerThanItsBoundWhileWritesKeepEnding() {
+    OutOfLineWritePool pool = new OutOfLineWritePool(SLOW_BOUND_MILLIS);
+    try {
+      // two rounds of four writes hold all the room; the next whole-bound payload needs every one of them to end
+      for (int i = 0; i < 2 * OutOfLineWritePool.THREADS; i++) {
+        pool.submit(OutOfLineWritePool.MAX_PENDING_BYTES / (2 * OutOfLineWritePool.THREADS), TestOutOfLineWritePool::slowWrite);
+      }
+      long begin = System.nanoTime();
+      assertTimeoutPreemptively(Duration.ofSeconds(20), () -> pool.submit(OutOfLineWritePool.MAX_PENDING_BYTES, () -> { }),
+          "submit gave up on room that kept coming back");
+      assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - begin) > SLOW_BOUND_MILLIS, "the wait outlasted the bound");
+      assertTimeoutPreemptively(Duration.ofSeconds(20), pool::awaitAll);
+    } finally {
+      pool.close();
+    }
+  }
+
+  /** A write that takes {@link #SLOW_WRITE_MILLIS} and then ends (a slow store call that succeeds). */
+  private static void slowWrite() throws InterruptedException {
+    // by design: simulates a store call that takes a while and succeeds; not a wait
+    Thread.sleep(SLOW_WRITE_MILLIS); // NOSONAR (by design: see above)
+  }
+
+  /** Submits a write of {@code bytes} that ignores interrupts and runs until {@code release}, and waits until it runs. */
+  private static void submitStuckWrite(OutOfLineWritePool pool, long bytes, CountDownLatch release) throws InterruptedException {
+    CountDownLatch started = new CountDownLatch(1);
+    pool.submit(bytes, ".hoodie/.blob/stuck.parquet", () -> {
+      started.countDown();
+      while (release.getCount() > 0) {
+        try {
+          release.await();
+        } catch (InterruptedException ignored) {
+          // as a store call that swallows the interrupt and stays stuck
+        }
+      }
+    });
+    assertTrue(started.await(10, TimeUnit.SECONDS));
+  }
+
+  private static void assertNamesTheStuckWrite(HoodieException stuck) {
+    assertTrue(stuck.getMessage().contains("out-of-line writes did not end within 200 ms"), stuck.getMessage());
+    assertTrue(stuck.getMessage().contains(".hoodie/.blob/stuck.parquet on hudi-out-of-line-write-"), stuck.getMessage());
   }
 
   /**

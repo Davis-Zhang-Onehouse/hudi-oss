@@ -21,20 +21,11 @@ package org.apache.hudi.utilities.unstructured.embedding.streamer;
 import org.apache.hudi.client.transaction.lock.LockManager;
 import org.apache.hudi.common.config.ConfigProperty;
 import org.apache.hudi.common.config.TypedProperties;
-import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.WriteConcurrencyMode;
-import org.apache.hudi.common.model.WriteOperationType;
-import org.apache.hudi.common.schema.HoodieSchema;
-import org.apache.hudi.common.schema.HoodieSchemaField;
-import org.apache.hudi.common.schema.HoodieSchemaType;
-import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
-import org.apache.hudi.common.table.timeline.ArchivedTimelineLoader;
-import org.apache.hudi.common.table.timeline.HoodieArchivedTimeline;
-import org.apache.hudi.common.table.timeline.HoodieInstant;
-import org.apache.hudi.common.table.timeline.HoodieTimeline;
+import org.apache.hudi.common.table.TableSchemaResolver;
 import org.apache.hudi.common.util.HoodieStorageUtils;
-import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.VisibleForTesting;
 import org.apache.hudi.config.HoodieLockConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.core.transaction.lock.InProcessLockProvider;
@@ -62,7 +53,6 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -70,13 +60,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Stream-owned model history in one auxiliary JSON file ({@value #RELATIVE_PATH}), plus a commit-time identity fence
@@ -85,26 +73,31 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * publication ({@link #publishAfterCommit}) on a fenced table. Every operation but the in-commit one takes the configured table
  * lock itself, and publication rereads history and fence under that lock.
  *
- * <p>Concurrent writers are fenced inside the data commit: {@link #validateBeforeCommit}, called while the commit holds the
- * table lock (when the writer's configuration requires one; a single writer without a lock provider runs it unlocked),
- * rechecks the round against the committed identities and replaces one fence file ({@value #FENCE_PATH}) holding the
- * confirmed committed state and this commit's candidate state. A candidate becomes committed authority only once its instant
- * completed, so a failed commit reserves nothing, and an identity committed by a writer that has not published its history yet
- * still refuses a conflicting writer before that writer's data becomes durable.
+ * <p>One table has one stream writer. The fence closes the window in which history publication fails after a successful data
+ * commit and a later round could otherwise accept a different model of the same dimension for that column.
+ * {@link #validateBeforeCommit}, called inside the data commit, rechecks the round against the committed identities and
+ * replaces one fence file ({@value #FENCE_PATH}) holding the confirmed committed state and this commit's candidate state.
+ * It runs under the table lock when the writer's configuration requires one; a writer without a lock provider runs it unlocked.
+ * A candidate becomes committed authority only once its instant completed, so a failed commit reserves nothing.
  */
 public class EmbeddingColumnInfoStore {
   /** Governs the parser of the auxiliary history file, independently of blob layout and table schema versions. */
   public static final ConfigProperty<String> LAYOUT_VERSION = ConfigProperty
       .key("hoodie.table.embedding.column.info.layout.version").noDefaultValue();
+  /** The {@link #LAYOUT_VERSION} this build writes and reads; written with the table's other pins when the table is created. */
+  public static final String CURRENT_LAYOUT_VERSION = "1";
   public static final String RELATIVE_PATH = ".hoodie/.aux/embedding-column-info.json";
+  private static final String SCRATCH_DIRECTORY = ".hoodie/.temp/embedding-column-info";
   /** The commit-time identity fence: {layout_version: 1, committed: snapshot or null, pending: {instant, snapshot}}. */
   static final String FENCE_PATH = ".hoodie/.aux/embedding-column-fence.json";
   /** The fence file's own layout version, independent of the history file's {@link #LAYOUT_VERSION}. */
   private static final int FENCE_LAYOUT_VERSION = 1;
   private static final String FENCE_SCRATCH_DIRECTORY = ".hoodie/.temp/embedding-column-fence";
-  /** The fence's {@link #replaceAtomically} step before the swap: none. */
+  /** The {@link #replaceAtomically} step before the swap of the fence and of the history: none. */
   private static final Runnable NOTHING_BEFORE_SWAP = () -> { };
-  private static final String SCRATCH_DIRECTORY = ".hoodie/.temp/embedding-column-info";
+  private static final String FIELD_COMMITTED = "committed";
+  private static final String FIELD_PENDING = "pending";
+  private static final String FIELD_SNAPSHOT = "snapshot";
   private static final Logger LOG = LoggerFactory.getLogger(EmbeddingColumnInfoStore.class);
   private static final ObjectMapper JSON = new ObjectMapper()
       .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION).enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
@@ -123,11 +116,15 @@ public class EmbeddingColumnInfoStore {
   private static final String FIELD_PROVIDER = "provider";
   private static final String FIELD_MODEL_NAME = "model_name";
   private static final String FIELD_MODEL_VERSION = "model_version";
+  private static final String FIELD_INPUT_TRANSFORM_VERSION = "input_transform_version";
   private static final String FIELD_ADDED_AT_INSTANT = "added_at_instant";
   private static final String VECTOR_COLUMN = "VECTOR column ";
   private static final Set<String> SNAPSHOT_FIELDS = fields(FIELD_LAYOUT_VERSION, FIELD_REVISION, FIELD_EVENTS);
   private static final Set<String> EVENT_FIELDS = fields(FIELD_SEQUENCE, FIELD_COLUMN_NAME, FIELD_EVENT, FIELD_INSTANT, FIELD_ADDED_AT_INSTANT, FIELD_IDENTITY);
-  private static final Set<String> IDENTITY_FIELDS = fields(FIELD_PROVIDER, FIELD_MODEL_NAME, FIELD_DIMENSION, FIELD_MODEL_VERSION);
+  private static final Set<String> IDENTITY_FIELDS = fields(FIELD_PROVIDER, FIELD_MODEL_NAME, FIELD_DIMENSION, FIELD_MODEL_VERSION,
+      FIELD_INPUT_TRANSFORM_VERSION);
+  private static final Set<String> FENCE_FIELDS = fields(FIELD_LAYOUT_VERSION, FIELD_COMMITTED, FIELD_PENDING);
+  private static final Set<String> PENDING_FIELDS = fields(FIELD_INSTANT, FIELD_SNAPSHOT);
 
   private final String basePath;
   // The table writer passes its configured path verbatim; lock providers may key on that exact string.
@@ -163,31 +160,30 @@ public class EmbeddingColumnInfoStore {
   }
 
   /**
-   * Refuses present mismatches, retired-name reuse and invalid retirements before prep. A missing identity warns once per
-   * table/column and skips only the identity check; the physical VECTOR dimension is still checked. Inactive columns remain
+   * Refuses present mismatches, missing authoritative identities on existing job-owned VECTOR columns, retired-name reuse and invalid
+   * retirements before prep. A surviving committed fence can validate and restore a missing auxiliary history. Inactive columns remain
    * active unless explicitly retired. Retirement is logical and need not remove a physical schema field. Repeating a
-   * retirement request is a no-op; configuring a model under that retired name remains forbidden. When an earlier committed
-   * schema transition proves a missing entry's creation instant, the returned in-memory Update retains it for post-commit ADD
-   * publication. This start check never writes metadata.
+   * retirement request is a no-op; configuring a model under that retired name remains forbidden. Backend support is checked
+   * with an owned temporary probe; this start check never publishes identity metadata.
    */
   public Update checkAtStart(Map<String, Identity> configured, Map<String, Integer> existingVectorColumns,
                              Set<String> retiredColumns) {
-    Update update = new Update(basePath, configured, existingVectorColumns, retiredColumns);
     return locked(meta -> {
       Snapshot snapshot = read(meta);
-      validate(readFence(meta, snapshot), update, false);
-      for (String column : update.configured.keySet()) {
-        if (update.existing.containsKey(column) && !snapshot.latest.containsKey(column) && warned.add(column)) {
-          LOG.warn("Embedding VECTOR column {} has no model identity information in auxiliary history; recovering after a successful commit", column);
-        }
+      Snapshot committed = readFence(meta, snapshot);
+      Update update = new Update(basePath, configured, existingVectorColumns, retiredColumns, ConcurrentHashMap.newKeySet());
+      validate(committed, update);
+      if (!update.owned.isEmpty() || !retiredColumns.isEmpty()) {
+        swap.checkSupported(auxiliaryStorage, path);
       }
-      return update.withKnownBirths(committedColumnBirths(meta, snapshot, update));
+      warnMissingHistory(snapshot, committed, update);
+      return update;
     });
   }
 
   /**
    * The manual publication path, for a caller that committed without the commit-time fence (no {@link #validateBeforeCommit}):
-   * after a successful table commit, appends new/recovered identities and requested retirements to the committed history, and
+   * after a successful table commit, appends new identities and requested retirements to the committed history, and
    * on a fenced table records the result in the fence too. The streamer publishes with {@link #publishCommittedState} instead,
    * which only writes out what the fence already holds. Repeating an already-applied update is a no-op. Pre-publication
    * failures preserve the previous bytes. Object-store close acknowledgement failures may occur after the complete new object
@@ -198,144 +194,158 @@ public class EmbeddingColumnInfoStore {
     if (!basePath.equals(update.basePath)) {
       throw invalid("Update belongs to another table");
     }
+    locked(meta -> publishLocked(meta, instant, update));
+  }
+
+  /**
+   * Under the table lock, appends this update's events to the committed history and writes it when anything changed. On a
+   * fenced table the fence takes the result too, so a manual publication stays part of the one committed authority.
+   */
+  private Void publishLocked(HoodieTableMetaClient meta, String instant, Update update) throws IOException {
+    requireCompleted(meta, instant);
+    Snapshot published = read(meta);
+    Snapshot snapshot = readFence(meta, published);
+    validate(snapshot, update);
+    Snapshot updated = append(snapshot, update, instant);
+    // an empty snapshot has no layout 1 form (revision 0): with nothing committed there is nothing to fence
+    if (!updated.events.isEmpty() && auxiliaryStorage.exists(new StoragePath(basePath, FENCE_PATH))) {
+      writeFence(updated, updated, instant);
+    }
+    if (!Arrays.equals(serialize(updated), serialize(published))) {
+      write(updated);
+    }
+    return null;
+  }
+
+  /**
+   * Called by the driver's commit callback while the data commit holds the table lock (when the writer's configuration requires
+   * one); never acquires a lock itself. Rechecks {@code update} against the committed identities, including a committed fence
+   * candidate whose history publication failed after commit, and fences the resulting state as this commit's candidate.
+   * This preserves column identity across the single-writer publication window described above. A conflict fails the commit
+   * before its instant completes, with a {@link HoodiePreCommitRefusalException}.
+   *
+   * <p>Cost: every data commit whose candidate state has an identity (from the first commit that adds a model column on)
+   * replaces the fence (one small file, created and atomically swapped) while it holds the lock, so a later round can tell
+   * whether this candidate completed even if its history publication failed.
+   */
+  public void validateBeforeCommit(HoodieTableMetaClient committingMetaClient, String instant, Update update) {
+    requireInstant(instant, FIELD_INSTANT);
+    if (!basePath.equals(new StoragePath(committingMetaClient.getBasePath().toString()).toString()) || !basePath.equals(update.basePath)) {
+      throw invalid("Embedding identity validation belongs to another table");
+    }
+    try {
+      HoodieTableMetaClient fresh = HoodieTableMetaClient.builder().setBasePath(basePath).setConf(storageConf.newInstance()).build();
+      Snapshot committed = readFence(fresh, read(fresh));
+      try {
+        // A concurrent writer may have added a model column after this round started. An empty table's create schema only
+        // describes planned columns, so only a completed table can refresh physical ownership here.
+        Update current = update;
+        if (fresh.isTimelineNonEmpty()) {
+          current = new TableSchemaResolver(fresh).getTableSchemaIfPresent(false)
+              .map(schema -> update.withExistingColumns(EmbeddingColumnInfoConfig.vectorColumns(schema))).orElse(update);
+        }
+        validate(committed, current);
+      } catch (IllegalArgumentException conflict) {
+        // the streamer rolls a refused instant back, so its files do not wait for the failed-writes cleaner
+        throw new HoodiePreCommitRefusalException(conflict.getMessage(), conflict);
+      }
+      Snapshot candidate = append(committed, update, instant);
+      if (!candidate.events.isEmpty()) {
+        writeFence(committed, candidate, instant);
+      }
+    } catch (IOException e) {
+      throw new HoodieIOException("Cannot fence embedding model identity before commit " + instant, e);
+    }
+  }
+
+  /**
+   * After a successful table commit, publishes the committed state the fence holds (this commit's and any whose callback was
+   * delayed). Never replaces newer published state with older: the committed state already contains it.
+   */
+  public void publishCommittedState(String instant, Update update) {
+    requireInstant(instant, FIELD_INSTANT);
+    if (!basePath.equals(update.basePath)) {
+      throw invalid("Update belongs to another table");
+    }
     locked(meta -> {
-      if (!CompletedWrite.exists(meta, instant)) {
-        throw invalid("Cannot publish embedding column information before completed table instant " + instant);
-      }
+      requireCompleted(meta, instant);
       Snapshot published = read(meta);
-      Snapshot snapshot = readFence(meta, published);
-      validate(snapshot, update, false);
-      Snapshot updated = append(snapshot, update, instant);
-      // An empty in-memory snapshot has no persisted layout-1 form.
-      if (!updated.events.isEmpty() && auxiliaryStorage.exists(new StoragePath(basePath, FENCE_PATH))) {
-        // A manual publisher is already past its data commit; retain its confirmed state in the same authority.
-        writeFence(updated, updated, instant);
-      }
-      if (!Arrays.equals(serialize(updated), serialize(published))) {
-        write(meta, updated);
+      Snapshot committed = readFence(meta, published);
+      if (!committed.events.isEmpty() && !Arrays.equals(serialize(published), serialize(committed))) {
+        write(committed);
       }
       return null;
     });
   }
 
-  private Snapshot append(Snapshot snapshot, Update update, String instant) {
+  private static void requireCompleted(HoodieTableMetaClient meta, String instant) {
+    if (!CompletedWrite.exists(meta, instant)) {
+      throw invalid("Cannot publish embedding column information before completed table instant " + instant);
+    }
+  }
+
+  /** {@code snapshot} with this update's retire and add events appended; the same snapshot when nothing changes. */
+  private static Snapshot append(Snapshot snapshot, Update update, String instant) {
     List<Event> appended = new ArrayList<>(snapshot.events);
     long sequence = snapshot.events.isEmpty() ? 0 : snapshot.events.get(snapshot.events.size() - 1).sequence;
-    for (String column : update.retired) {
-      Event previous = snapshot.latest.get(column);
-      if (!EVENT_RETIRE.equals(previous.action)) {
-        appended.add(new Event(next(sequence), column, EVENT_RETIRE, instant, previous.addedAt, previous.identity));
-        sequence++;
-      }
-    }
-    for (Map.Entry<String, Identity> entry : update.configured.entrySet()) {
-      if (!snapshot.latest.containsKey(entry.getKey())) {
-        boolean existing = update.existing.containsKey(entry.getKey());
-        // A surviving snapshot plus an exact schema transition can prove an earlier failed publication's birth.
-        // Whole-file loss retains the recovery contract even when this Update once observed a surviving snapshot.
-        String knownBirth = snapshot.revision == 0 ? null : update.knownBirths.get(entry.getKey());
-        boolean recovery = existing && knownBirth == null;
-        String eventInstant = knownBirth == null ? instant : knownBirth;
-        appended.add(new Event(next(sequence), entry.getKey(), recovery ? EVENT_RECOVER : EVENT_ADD, eventInstant,
-            recovery ? null : eventInstant, entry.getValue()));
-        sequence++;
-      }
-    }
+    sequence = appendRetirements(snapshot, update, instant, appended, sequence);
+    appendConfiguredColumns(snapshot, update, instant, appended, sequence);
     if (appended.size() == snapshot.events.size()) {
       return snapshot;
     }
     return new Snapshot(next(snapshot.revision), appended);
   }
 
-  /**
-   * Called by the driver's commit callback while the data commit holds the table lock (when the writer's configuration requires
-   * one); never acquires a lock itself. Rechecks {@code update} against the committed identities, including a committed fence
-   * candidate whose writer has not published yet, and fences the resulting state as this commit's candidate. A conflict fails
-   * the commit before its instant completes, with a {@link HoodiePreCommitRefusalException}.
-   *
-   * <p>Cost: every data commit whose candidate state has an identity (from the first commit that adds a model column on)
-   * replaces the fence (one small file, created and atomically swapped) while it holds the lock, so the next writer can tell
-   * whether this candidate completed.
-   */
-  public void validateBeforeCommit(HoodieTableMetaClient committingMetaClient, String instant, Update update) {
-    requireInstant(instant, "instant");
-    if (!basePath.equals(committingMetaClient.getBasePath().toString()) || !basePath.equals(update.basePath)) {
-      throw invalid("Embedding identity validation belongs to another table");
-    }
-    try {
-      HoodieTableMetaClient fresh = HoodieTableMetaClient.builder().setBasePath(basePath).setConf(storageConf.newInstance()).build();
-      Snapshot published = read(fresh);
-      Snapshot committed = readFence(fresh, published);
-      try {
-        validate(committed, update, false);
-      } catch (IllegalArgumentException conflict) {
-        // the streamer rolls a refused instant back, so the losing writer's files do not wait for the failed-writes cleaner
-        throw new HoodiePreCommitRefusalException(conflict.getMessage(), conflict);
-      }
-      Snapshot candidate = append(committed, update, instant);
-      if (candidate.events.isEmpty()) {
-        return;
-      }
-      writeFence(committed, candidate, instant);
-    } catch (IOException e) {
-      throw new HoodieIOException("Cannot fence embedding model identity before commit " + instant, e);
-    }
-  }
-
+  /** Replaces the fence with the confirmed committed state and this commit's candidate, as one complete file. */
   private void writeFence(Snapshot committed, Snapshot candidate, String instant) throws IOException {
     ObjectNode envelope = JSON.createObjectNode();
-    envelope.put("layout_version", FENCE_LAYOUT_VERSION);
+    envelope.put(FIELD_LAYOUT_VERSION, FENCE_LAYOUT_VERSION);
     if (committed.events.isEmpty()) {
-      envelope.putNull("committed");
+      envelope.putNull(FIELD_COMMITTED);
     } else {
-      envelope.set("committed", JSON.readTree(serialize(committed)));
+      envelope.set(FIELD_COMMITTED, JSON.readTree(serialize(committed)));
     }
-    ObjectNode pending = envelope.putObject("pending");
-    pending.put("instant", instant);
-    pending.set("snapshot", JSON.readTree(serialize(candidate)));
+    ObjectNode pending = envelope.putObject(FIELD_PENDING);
+    pending.put(FIELD_INSTANT, instant);
+    pending.set(FIELD_SNAPSHOT, JSON.readTree(serialize(candidate)));
     replaceAtomically(new StoragePath(basePath, FENCE_PATH), FENCE_SCRATCH_DIRECTORY, JSON.writeValueAsBytes(envelope),
         "embedding column fence", NOTHING_BEFORE_SWAP);
   }
 
-  /** Publishes the latest committed fence, including updates whose earlier callbacks were delayed. */
-  void publishCommittedState(String instant, Update update) {
-    locked(meta -> {
-      if (!CompletedWrite.exists(meta, instant)) {
-        throw invalid("Cannot publish embedding column information before completed table instant " + instant);
-      }
-      Snapshot published = read(meta);
-      Snapshot committed = readFence(meta, published);
-      if (!committed.events.isEmpty() && !Arrays.equals(serialize(published), serialize(committed))) {
-        write(meta, committed);
-      }
-      return null;
-    });
-  }
-
-  private Snapshot readFence(HoodieTableMetaClient meta, Snapshot fallback) throws IOException {
+  /**
+   * The committed identity state: the fence's candidate when its instant completed, else its confirmed committed state, merged
+   * with {@code published} history; {@code published} alone on a table without a fence. Malformed fences refuse.
+   */
+  private Snapshot readFence(HoodieTableMetaClient meta, Snapshot published) throws IOException {
     StoragePath fence = new StoragePath(basePath, FENCE_PATH);
     EmbeddingColumnInfoAtomicSwap.checkLocalChecksum(auxiliaryStorage, fence);
     if (!auxiliaryStorage.exists(fence)) {
-      return fallback;
+      return published;
     }
     JsonNode root;
     try (InputStream input = auxiliaryStorage.open(fence)) {
       root = JSON.readTree(input);
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("Malformed embedding identity fence JSON at " + fence, e);
     }
-    exactFields(root, fields("layout_version", "committed", "pending"), fields("layout_version", "committed", "pending"), "identity fence");
-    if (positiveLong(root.get("layout_version"), "identity fence layout_version") != FENCE_LAYOUT_VERSION) {
+    exactFields(root, FENCE_FIELDS, FENCE_FIELDS, "identity fence");
+    if (positiveLong(root.get(FIELD_LAYOUT_VERSION), "identity fence " + FIELD_LAYOUT_VERSION) != FENCE_LAYOUT_VERSION) {
       throw invalid("Unsupported embedding identity fence layout version");
     }
-    Snapshot committed = root.get("committed").isNull() ? fallback : parseSnapshot(root.get("committed"));
-    JsonNode pending = root.get("pending");
-    exactFields(pending, fields("instant", "snapshot"), fields("instant", "snapshot"), "pending identity");
-    String instant = text(pending.get("instant"), "pending instant");
+    Snapshot committed = root.get(FIELD_COMMITTED).isNull() ? published : parseSnapshot(root.get(FIELD_COMMITTED));
+    JsonNode pending = root.get(FIELD_PENDING);
+    exactFields(pending, PENDING_FIELDS, PENDING_FIELDS, "pending identity");
+    String instant = text(pending.get(FIELD_INSTANT), "pending instant");
     requireInstant(instant, "pending instant");
-    Snapshot candidate = parseSnapshot(pending.get("snapshot"));
-    return mergePublished(CompletedWrite.exists(meta, instant) ? candidate : committed, fallback);
+    Snapshot candidate = parseSnapshot(pending.get(FIELD_SNAPSHOT));
+    return mergePublished(CompletedWrite.exists(meta, instant) ? candidate : committed, published);
   }
 
-  private Snapshot mergePublished(Snapshot authority, Snapshot published) throws IOException {
+  /**
+   * {@code authority} plus what only {@code published} history holds: columns a manual publication added and retirements; a
+   * column both name with different identities refuses.
+   */
+  private static Snapshot mergePublished(Snapshot authority, Snapshot published) throws IOException {
     List<Event> merged = new ArrayList<>(authority.events);
     long sequence = merged.isEmpty() ? 0 : merged.get(merged.size() - 1).sequence;
     Set<String> missing = new HashSet<>(published.latest.keySet());
@@ -353,14 +363,14 @@ public class EmbeddingColumnInfoStore {
         continue;
       }
       if (!previous.identity.equals(event.identity)) {
-        throw invalid("VECTOR column " + event.column + " has conflicting committed model identities");
+        throw invalid(VECTOR_COLUMN + event.column + " has conflicting committed model identities");
       }
       if (EVENT_RETIRE.equals(event.action) && !EVENT_RETIRE.equals(previous.action)) {
         merged.add(new Event(next(sequence), event.column, EVENT_RETIRE, event.instant, previous.addedAt, previous.identity));
         sequence++;
       }
     }
-    // A delayed callback may merge the same older fence again. Keep the complete published state when nothing changed.
+    // A delayed callback may merge the same older fence again. Keep complete published history when nothing changed.
     if (published.revision >= authority.revision
         && Arrays.equals(serialize(new Snapshot(published.revision, merged)), serialize(published))) {
       return published;
@@ -371,108 +381,40 @@ public class EmbeddingColumnInfoStore {
     return new Snapshot(next(Math.max(authority.revision, published.revision)), merged);
   }
 
-  /**
-   * Finds actual creation instants only from exact committed writer-schema transitions, never from schema-resolver
-   * fallbacks or the first visible containing schema. A schema-less operation that may change schema breaks the absence
-   * proof. A timestamp/action-only archive query rejects gaps between retained schemas, including after savepoint removal.
-   * Archived/unprovable history and whole-file loss therefore keep the recover/unknown-birth policy.
-   */
-  private Map<String, String> committedColumnBirths(HoodieTableMetaClient meta, Snapshot snapshot, Update update) throws IOException {
-    if (snapshot.revision == 0) {
-      return Collections.emptyMap();
-    }
-    Map<String, Integer> missing = missingIdentityColumns(snapshot, update);
-    if (missing.isEmpty()) {
-      return Collections.emptyMap();
-    }
-    HoodieTimeline timeline = meta.getActiveTimeline().getCommitsTimeline().filterCompletedInstants();
-    List<HoodieInstant> instants = new ArrayList<>(timeline.getInstants());
-    instants.sort(Comparator.comparing(HoodieInstant::requestedTime));
-    Map<String, String> knownAbsent = new HashMap<>();
-    Set<String> seen = new HashSet<>();
-    Map<String, String> births = new TreeMap<>();
-    for (HoodieInstant instant : instants) {
-      HoodieCommitMetadata commit = timeline.readCommitMetadata(instant);
-      String schemaJson = commit.getMetadata(HoodieCommitMetadata.SCHEMA_KEY);
-      if (schemaJson == null || schemaJson.trim().isEmpty()) {
-        if (WriteOperationType.canUpdateSchema(commit.getOperationType())) {
-          knownAbsent.clear();
-        }
-      } else {
-        recordSchemaTransitions(meta, instant, HoodieSchema.parse(schemaJson), missing, knownAbsent, seen, births);
-        if (seen.size() == missing.size()) {
-          break;
-        }
+  /** Appends a retire event for each requested column not already retired; returns the last sequence used. */
+  private static long appendRetirements(Snapshot snapshot, Update update, String instant, List<Event> appended, long sequence) {
+    long last = sequence;
+    for (String column : update.retired) {
+      Event previous = snapshot.latest.get(column);
+      if (!EVENT_RETIRE.equals(previous.action)) {
+        appended.add(new Event(next(last), column, EVENT_RETIRE, instant, previous.addedAt, previous.identity));
+        last++;
       }
     }
-    return births;
+    return last;
   }
 
-  /** Returns the configured, physically present columns with no history entry, mapped to their configured dimension. */
-  private static Map<String, Integer> missingIdentityColumns(Snapshot snapshot, Update update) {
-    Map<String, Integer> missing = new TreeMap<>();
-    update.configured.forEach((column, identity) -> {
-      if (update.existing.containsKey(column) && !snapshot.latest.containsKey(column)) {
-        missing.put(column, identity.dimension);
-      }
-    });
-    return missing;
-  }
-
-  /**
-   * Records, for each not-yet-seen missing column, its absence from or first appearance in one committed schema; a first
-   * appearance right after a proven absence, with the configured VECTOR dimension and no archived write between, is a birth.
-   */
-  private void recordSchemaTransitions(HoodieTableMetaClient meta, HoodieInstant instant, HoodieSchema schema,
-                                              Map<String, Integer> missing, Map<String, String> knownAbsent,
-                                              Set<String> seen, Map<String, String> births) {
-    for (Map.Entry<String, Integer> entry : missing.entrySet()) {
-      String column = entry.getKey();
-      if (seen.contains(column)) {
-        continue;
-      }
-      Option<HoodieSchemaField> field = schema.getField(column);
-      if (!field.isPresent()) {
-        knownAbsent.put(column, instant.requestedTime());
-      } else {
-        seen.add(column);
-        HoodieSchema type = field.get().schema().getNonNullType();
-        String absentAt = knownAbsent.remove(column);
-        if (absentAt != null && type.getType() == HoodieSchemaType.VECTOR
-            && ((HoodieSchema.Vector) type).getDimension() == entry.getValue()
-            && !hasArchivedWriteBetween(meta, absentAt, instant.requestedTime())) {
-          births.put(column, instant.requestedTime());
-        }
-      }
-    }
-  }
-
-  /** Checks only archive timestamps/actions, because retained savepoints can leave holes in the active write timeline. */
-  private boolean hasArchivedWriteBetween(HoodieTableMetaClient meta, String absentAt, String presentAt) {
-    ArchivedTimelineLoader loader = meta.getTableFormat().getTimelineFactory().createArchivedTimelineLoader();
-    HoodieArchivedTimeline.TimeRangeFilter interval = new HoodieArchivedTimeline.TimeRangeFilter(absentAt, presentAt) {
-      @Override
-      public boolean isInRange(String instant) {
-        return super.isInRange(instant) && !instant.equals(presentAt);
-      }
-    };
-    AtomicBoolean found = new AtomicBoolean();
-    loader.loadInstants(meta, interval, HoodieArchivedTimeline.LoadMode.ACTION, archived -> {
-      Object value = archived.get("action");
-      if (value == null) {
-        // A historical record without an action cannot establish that the interval has no archived writes.
-        return true;
-      }
-      String action = value.toString();
-      return HoodieTimeline.COMMIT_ACTION.equals(action) || HoodieTimeline.DELTA_COMMIT_ACTION.equals(action)
-          || HoodieTimeline.REPLACE_COMMIT_ACTION.equals(action);
-    }, (instant, archived) -> found.set(true), Option.of(1));
-    return found.get();
-  }
-
-  private void validate(Snapshot snapshot, Update update, boolean atStart) {
+  /** Appends an add event for each configured column absent from the history. */
+  private static void appendConfiguredColumns(Snapshot snapshot, Update update, String instant, List<Event> appended,
+                                              long sequence) {
+    long last = sequence;
     for (Map.Entry<String, Identity> entry : update.configured.entrySet()) {
-      validateConfigured(snapshot, entry.getKey(), entry.getValue(), update.existing.get(entry.getKey()), atStart);
+      if (!snapshot.latest.containsKey(entry.getKey())) {
+        appended.add(new Event(next(last), entry.getKey(), EVENT_ADD, instant, instant, entry.getValue()));
+        last++;
+      }
+    }
+  }
+
+  private void validate(Snapshot snapshot, Update update) {
+    update.owned.addAll(snapshot.latest.keySet());
+    for (String column : update.existing.keySet()) {
+      if (update.owned.contains(column) && !snapshot.latest.containsKey(column)) {
+        throw invalid(VECTOR_COLUMN + column + " has no model identity information in the history or committed fence; use a new table");
+      }
+    }
+    for (Map.Entry<String, Identity> entry : update.configured.entrySet()) {
+      validateConfigured(snapshot, entry.getKey(), entry.getValue(), update.existing.get(entry.getKey()));
     }
     for (String column : update.retired) {
       validateRetired(snapshot, column);
@@ -480,7 +422,7 @@ public class EmbeddingColumnInfoStore {
   }
 
   /** A configured column: its physical dimension and its identity history agree with the configuration. */
-  private void validateConfigured(Snapshot snapshot, String column, Identity configured, Integer physicalDimension, boolean atStart) {
+  private void validateConfigured(Snapshot snapshot, String column, Identity configured, Integer physicalDimension) {
     if (physicalDimension != null && physicalDimension != configured.dimension) {
       throw invalid(VECTOR_COLUMN + column + " has dimension " + physicalDimension
           + ", configured model requires " + configured.dimension);
@@ -493,9 +435,21 @@ public class EmbeddingColumnInfoStore {
       if (!current.identity.equals(configured)) {
         throw invalid(VECTOR_COLUMN + column + " has a different model identity; use a new physical column name");
       }
-    } else if (atStart && physicalDimension != null && warned.add(column)) {
-      LOG.warn("Embedding VECTOR column {} has no model identity information; skipping identity validation and recovering "
-          + "the configured identity after a successful commit (dimension validation still applies)", column);
+    }
+  }
+
+  /**
+   * Warns once per column that exists physically and has a committed identity in the fence but none in the auxiliary history:
+   * validation used the fence, and publication after a successful commit restores the history. A column the fence does not
+   * know either is refused by {@link #validate} before this warning step.
+   */
+  private void warnMissingHistory(Snapshot published, Snapshot committed, Update update) {
+    for (String column : update.configured.keySet()) {
+      if (update.existing.containsKey(column) && !published.latest.containsKey(column) && committed.latest.containsKey(column)
+          && warned.add(column)) {
+        LOG.warn("Embedding VECTOR column {} has no model identity information in auxiliary history; validated against the "
+            + "committed identity fence and recovering the history after a successful commit", column);
+      }
     }
   }
 
@@ -513,13 +467,11 @@ public class EmbeddingColumnInfoStore {
 
   private Snapshot read(HoodieTableMetaClient meta) throws IOException {
     String version = meta.getTableConfig().getString(LAYOUT_VERSION);
-    if (version != null && !"1".equals(version)) {
-      throw invalid("Unsupported " + LAYOUT_VERSION.key() + "=" + version + "; supported layout version is 1");
+    if (!CURRENT_LAYOUT_VERSION.equals(version)) {
+      throw invalid("Unsupported " + LAYOUT_VERSION.key() + "=" + (version == null ? "none" : version)
+          + "; supported layout version is " + CURRENT_LAYOUT_VERSION + ", written when the table is created");
     }
     boolean exists = auxiliaryStorage.exists(path);
-    if (version == null && exists) {
-      throw invalid("Embedding column info file exists without governing " + LAYOUT_VERSION.key());
-    }
     EmbeddingColumnInfoAtomicSwap.checkLocalChecksum(auxiliaryStorage, path);
     if (!exists) {
       return new Snapshot(0, Collections.emptyList());
@@ -533,6 +485,7 @@ public class EmbeddingColumnInfoStore {
     return parseSnapshot(root);
   }
 
+  /** Parses one strict layout 1 snapshot: the history file's content, also held by the fence. */
   private static Snapshot parseSnapshot(JsonNode root) {
     exactFields(root, SNAPSHOT_FIELDS, SNAPSHOT_FIELDS, "snapshot");
     if (positiveLong(root.get(FIELD_LAYOUT_VERSION), FIELD_LAYOUT_VERSION) != 1) {
@@ -593,25 +546,20 @@ public class EmbeddingColumnInfoStore {
       throw invalid("An add event must retain its actual creation instant");
     }
     JsonNode identity = node.get(FIELD_IDENTITY);
-    exactFields(identity, IDENTITY_FIELDS, fields(FIELD_PROVIDER, FIELD_MODEL_NAME, FIELD_DIMENSION), FIELD_IDENTITY);
+    exactFields(identity, IDENTITY_FIELDS, fields(FIELD_PROVIDER, FIELD_MODEL_NAME, FIELD_DIMENSION, FIELD_INPUT_TRANSFORM_VERSION),
+        FIELD_IDENTITY);
     long dimension = positiveLong(identity.get(FIELD_DIMENSION), FIELD_DIMENSION);
     if (dimension > Integer.MAX_VALUE) {
       throw invalid("dimension exceeds integer range");
     }
     Identity model = new Identity(text(identity.get(FIELD_PROVIDER), FIELD_PROVIDER), text(identity.get(FIELD_MODEL_NAME), FIELD_MODEL_NAME),
-        (int) dimension, identity.has(FIELD_MODEL_VERSION) ? text(identity.get(FIELD_MODEL_VERSION), FIELD_MODEL_VERSION) : null);
+        (int) dimension, identity.has(FIELD_MODEL_VERSION) ? text(identity.get(FIELD_MODEL_VERSION), FIELD_MODEL_VERSION) : null,
+        text(identity.get(FIELD_INPUT_TRANSFORM_VERSION), FIELD_INPUT_TRANSFORM_VERSION));
     return new Event(sequence, column, action, instant, addedAt, model);
   }
 
-  private void write(HoodieTableMetaClient meta, Snapshot snapshot) throws IOException {
-    replaceAtomically(path, SCRATCH_DIRECTORY, serialize(snapshot), "embedding column info", () -> {
-      // Establish the parser selector first: interruption leaves a supported missing file, recovered by the next round.
-      if (meta.getTableConfig().getString(LAYOUT_VERSION) == null) {
-        Properties properties = new Properties();
-        properties.setProperty(LAYOUT_VERSION.key(), "1");
-        HoodieTableConfig.update(storage, meta.getMetaPath(), properties);
-      }
-    });
+  private void write(Snapshot snapshot) throws IOException {
+    replaceAtomically(path, SCRATCH_DIRECTORY, serialize(snapshot), "embedding column info", NOTHING_BEFORE_SWAP);
   }
 
   /**
@@ -663,6 +611,7 @@ public class EmbeddingColumnInfoStore {
       if (event.identity.modelVersion != null) {
         identity.put(FIELD_MODEL_VERSION, event.identity.modelVersion);
       }
+      identity.put(FIELD_INPUT_TRANSFORM_VERSION, event.identity.inputTransformVersion);
     }
     return JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(root);
   }
@@ -755,26 +704,24 @@ public class EmbeddingColumnInfoStore {
     return new IllegalArgumentException(message);
   }
 
-  /** In-memory intent only; never serialized into the table schema or a pending sidecar. */
+  /** In-memory intent only; round views share ownership learned from committed history, never a persisted sidecar. */
   public static final class Update implements Serializable {
     private static final long serialVersionUID = 1L;
     private final String basePath;
     private final Map<String, Identity> configured;
     private final Map<String, Integer> existing;
     private final Set<String> retired;
-    private final Map<String, String> knownBirths;
-
-    private Update(String basePath, Map<String, Identity> configured, Map<String, Integer> existing, Set<String> retired) {
-      this(basePath, configured, existing, retired, Collections.emptyMap());
-    }
+    private final Set<String> owned;
 
     private Update(String basePath, Map<String, Identity> configured, Map<String, Integer> existing, Set<String> retired,
-                   Map<String, String> knownBirths) {
+                   Set<String> ownedColumns) {
       this.basePath = basePath;
-      this.knownBirths = Collections.unmodifiableMap(new TreeMap<>(knownBirths));
       this.configured = Collections.unmodifiableMap(new TreeMap<>(configured));
       this.existing = Collections.unmodifiableMap(new TreeMap<>(existing));
       this.retired = Collections.unmodifiableSet(new TreeSet<>(retired));
+      // Keep observations shared across cached round views; VECTOR type alone does not establish ownership.
+      this.owned = ownedColumns;
+      this.owned.addAll(configured.keySet());
       for (Map.Entry<String, Identity> entry : this.configured.entrySet()) {
         nonempty(entry.getKey(), FIELD_COLUMN_NAME);
         Objects.requireNonNull(entry.getValue(), "model identity");
@@ -791,20 +738,35 @@ public class EmbeddingColumnInfoStore {
       });
     }
 
-    private Update withKnownBirths(Map<String, String> births) {
-      return new Update(basePath, configured, existing, retired, births);
+    /** Refreshes physical columns from this round's committed schema without repeating the job's startup checks. */
+    Update withExistingColumns(Map<String, Integer> columns) {
+      return new Update(basePath, configured, columns, retired, owned);
     }
   }
 
-  /** The only allow-listed model fields accepted by the history writer; no connection/configuration map is retained. */
+  /**
+   * The only allow-listed model fields accepted by the history writer; no connection/configuration map is retained. The
+   * input-transform version is the compute-side transform applied to an input before the model call (the in-memory image
+   * resize for a model that embeds images, {@link #NO_INPUT_TRANSFORM} otherwise): the same model behind another transform
+   * produces other vectors, so it is a different identity.
+   */
   public static final class Identity implements Serializable {
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;
+    /** The input-transform version of a model whose inputs are sent as they are (text). */
+    public static final String NO_INPUT_TRANSFORM = "none";
     private final String provider;
     private final String modelName;
     private final int dimension;
     private final String modelVersion;
+    private final String inputTransformVersion;
 
-    public Identity(String provider, String modelName, int dimension, String modelVersion) {
+    /** The identity of a model whose inputs are sent as they are ({@link #NO_INPUT_TRANSFORM}); for tests. */
+    @VisibleForTesting
+    Identity(String provider, String modelName, int dimension, String modelVersion) {
+      this(provider, modelName, dimension, modelVersion, NO_INPUT_TRANSFORM);
+    }
+
+    public Identity(String provider, String modelName, int dimension, String modelVersion, String inputTransformVersion) {
       this.provider = nonempty(provider, FIELD_PROVIDER);
       this.modelName = nonempty(modelName, FIELD_MODEL_NAME);
       if (dimension < 1) {
@@ -812,6 +774,7 @@ public class EmbeddingColumnInfoStore {
       }
       this.dimension = dimension;
       this.modelVersion = modelVersion == null ? null : nonempty(modelVersion, FIELD_MODEL_VERSION);
+      this.inputTransformVersion = nonempty(inputTransformVersion, FIELD_INPUT_TRANSFORM_VERSION);
     }
 
     public String getProvider() {
@@ -830,6 +793,10 @@ public class EmbeddingColumnInfoStore {
       return modelVersion;
     }
 
+    public String getInputTransformVersion() {
+      return inputTransformVersion;
+    }
+
     @Override
     public boolean equals(Object other) {
       if (this == other) {
@@ -840,12 +807,12 @@ public class EmbeddingColumnInfoStore {
       }
       Identity that = (Identity) other;
       return dimension == that.dimension && provider.equals(that.provider) && modelName.equals(that.modelName)
-          && Objects.equals(modelVersion, that.modelVersion);
+          && Objects.equals(modelVersion, that.modelVersion) && inputTransformVersion.equals(that.inputTransformVersion);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(provider, modelName, dimension, modelVersion);
+      return Objects.hash(provider, modelName, dimension, modelVersion, inputTransformVersion);
     }
   }
 

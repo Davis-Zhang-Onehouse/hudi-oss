@@ -390,6 +390,44 @@ class TestPreparedImagePayload {
     assertEquals(Collections.emptySet(), left, "the task's write threads ended");
   }
 
+  /**
+   * When the barrier at the end of input fails and the close that follows fails too, the barrier's failure is the one thrown,
+   * with the close's suppressed on it: the task's failure names its write, not the cleanup after it.
+   */
+  @Test
+  void failedWriteAtTheEndIsThrownWithTheCloseFailureSuppressedOnIt() throws Exception {
+    TypedProperties props = props();
+    preprocessor(props, "one", OneDerivedPayloadPreprocessor.class);
+    props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(DERIVED.length - 1));
+    props.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
+    // the blob folder is a file, so the payload file cannot be created
+    Path blobFolder = temp.resolve("embedding").resolve(ManagedBlobPaths.FOLDER);
+    Files.createDirectories(blobFolder.getParent());
+    Files.write(blobFolder, new byte[0]);
+    IllegalStateException closeFailure = new IllegalStateException("the registry's close failed");
+    PreprocessorRegistry registry = new PreprocessorRegistry(props) {
+      @Override
+      public void close() {
+        super.close();
+        throw closeFailure;
+      }
+    };
+    PreprocessingIterator iterator = PreprocessingIterator.builder(
+            Collections.singletonList(inlineRow("sha-fail", "one", new byte[] {1})).iterator(), EmbeddingTableConfig.from(props), "001")
+        .bytesSource(new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())))
+        .registry(registry)
+        .tokenizer(new WordCountTokenizer())
+        .counters(counters())
+        .destination(new PayloadDestination(HadoopFSUtils.getStorageConf(new Configuration()), embeddingTable, props))
+        .build();
+
+    assertTrue(iterator.hasNext());
+    iterator.next();
+    EmbeddingPayloadWriteException thrown = assertThrows(EmbeddingPayloadWriteException.class, iterator::hasNext);
+    assertEquals(1, thrown.getSuppressed().length, Arrays.toString(thrown.getSuppressed()));
+    assertSame(closeFailure, thrown.getSuppressed()[0], "the close's failure is suppressed on the write's");
+  }
+
   /** The live threads of every out-of-line write pool. */
   private static Set<Thread> writeThreads() {
     return Thread.getAllStackTraces().keySet().stream().filter(Thread::isAlive)

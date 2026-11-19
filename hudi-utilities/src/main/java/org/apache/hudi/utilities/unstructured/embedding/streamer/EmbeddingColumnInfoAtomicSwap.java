@@ -96,8 +96,39 @@ class EmbeddingColumnInfoAtomicSwap {
   }
 
   private static void replaceObject(HoodieStorage storage, StoragePath scratch, StoragePath target) throws IOException {
+    probeObjectOutput(storage, scratch.getParent());
+    byte[] complete;
+    try (InputStream input = storage.open(scratch)) {
+      complete = input.readAllBytes();
+    }
+    OutputStream output = storage.create(target, true);
+    AbortHandle handle = abortHandle(output);
+    if (handle == null) {
+      // Closing would publish an empty object. The scratch probe proved support; an inconsistent connector is unsafe.
+      throw new IOException("Destination output lost its advertised abort capability; refusing to close/publish it");
+    }
+    writeAndClose(output, handle, complete);
+  }
+
+  /** Checks publication support using only an owned temporary object, before prep or data writes. */
+  void checkSupported(HoodieStorage storage, StoragePath target) throws IOException {
+    String scheme = storage.getScheme().toLowerCase(Locale.ROOT);
+    if ("file".equals(scheme)) {
+      checkLocalChecksum(storage, target);
+      if (!(storage.getFileSystem() instanceof RawLocalFileSystem)) {
+        throw new IOException("Atomic embedding column replacement requires raw local storage");
+      }
+    } else if ("s3a".equals(scheme) || "gs".equals(scheme)) {
+      storage.createDirectory(target.getParent());
+      probeObjectOutput(storage, target.getParent());
+    } else if (!"hdfs".equals(scheme)) {
+      throw new IOException("Storage scheme " + scheme + " does not provide a supported atomic embedding column replacement");
+    }
+  }
+
+  private static void probeObjectOutput(HoodieStorage storage, StoragePath parent) throws IOException {
     // Probe only an owned temporary object, before opening or changing the durable destination.
-    StoragePath probe = new StoragePath(scratch.getParent(), UUID.randomUUID() + ".abort-probe");
+    StoragePath probe = new StoragePath(parent, UUID.randomUUID() + ".abort-probe");
     try {
       OutputStream output = storage.create(probe, false);
       AbortHandle handle = abortHandle(output);
@@ -110,17 +141,6 @@ class EmbeddingColumnInfoAtomicSwap {
     } finally {
       storage.deleteFile(probe);
     }
-    byte[] complete;
-    try (InputStream input = storage.open(scratch)) {
-      complete = input.readAllBytes();
-    }
-    OutputStream output = storage.create(target, true);
-    AbortHandle handle = abortHandle(output);
-    if (handle == null) {
-      // Closing would publish an empty object. The scratch probe proved support; an inconsistent connector is unsafe.
-      throw new IOException("Destination output lost its advertised abort capability; refusing to close/publish it");
-    }
-    writeAndClose(output, handle, complete);
   }
 
   /** Never close a failed upload: close can commit its partial bytes. Abort discards them instead. */

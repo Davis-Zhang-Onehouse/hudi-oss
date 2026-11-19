@@ -31,6 +31,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Tells a failure that must fail the prep round from a file's own bad input. A preprocessor or decoder may wrap, or add
@@ -60,6 +61,20 @@ public final class PrepFailures {
    * {@link PrepPlatformException} carrying {@code failure}), or null when there is none.
    */
   public static RuntimeException roundFailure(Throwable failure) {
+    return findFailure(failure, cause -> {
+      if (failsTheRound(cause)) {
+        return (RuntimeException) cause;
+      }
+      if ((cause instanceof VirtualMachineError && !(cause instanceof StackOverflowError)) || cause instanceof LinkageError) {
+        return new PrepPlatformException("the JVM failed while the file was read, not the file: " + cause.getClass().getSimpleName()
+            + ": " + cause.getMessage() + ", under " + failure.getClass().getSimpleName() + ": " + failure.getMessage(), failure);
+      }
+      return null;
+    });
+  }
+
+  /** First matching failure in the cause/suppressed graph, with identity-based cycle protection and no eager list. */
+  static <T extends Throwable> T findFailure(Throwable failure, Function<Throwable, T> classify) {
     Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
     Deque<Throwable> pending = new ArrayDeque<>();
     pending.add(failure);
@@ -68,12 +83,9 @@ public final class PrepFailures {
       if (!visited.add(cause)) {
         continue;
       }
-      if (failsTheRound(cause)) {
-        return (RuntimeException) cause;
-      }
-      if ((cause instanceof VirtualMachineError && !(cause instanceof StackOverflowError)) || cause instanceof LinkageError) {
-        return new PrepPlatformException("the JVM failed while the file was read, not the file: " + cause.getClass().getSimpleName()
-            + ": " + cause.getMessage() + ", under " + failure.getClass().getSimpleName() + ": " + failure.getMessage(), failure);
+      T found = classify.apply(cause);
+      if (found != null) {
+        return found;
       }
       if (cause.getCause() != null) {
         pending.addLast(cause.getCause());

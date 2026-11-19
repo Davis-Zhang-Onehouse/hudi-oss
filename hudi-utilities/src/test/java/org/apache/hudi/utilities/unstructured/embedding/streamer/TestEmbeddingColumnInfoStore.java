@@ -46,14 +46,14 @@ import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.utilities.exception.HoodiePreCommitRefusalException;
 import org.apache.hudi.utilities.streamer.CompletedWrite;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.image.ImagePreprocessingSpec;
+import org.apache.hudi.utilities.unstructured.embedding.image.ImageResizeLogicV1;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.Logger;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -67,9 +67,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -81,6 +83,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -100,16 +104,19 @@ class TestEmbeddingColumnInfoStore {
   void setUp() throws Exception {
     base = temp.resolve("table").toUri().toString();
     conf = HoodieTestUtils.getDefaultStorageConf();
+    // the layout version is a creation pin of every embedding table
+    Properties pins = new Properties();
+    pins.setProperty(EmbeddingColumnInfoStore.LAYOUT_VERSION.key(), EmbeddingColumnInfoStore.CURRENT_LAYOUT_VERSION);
     meta = HoodieTableMetaClient.newTableBuilder().setTableVersion(9).setTableName("column_info")
-        .setTableType(HoodieTableType.COPY_ON_WRITE).initTable(conf, base);
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setAdditionalProperties(pins).initTable(conf, base);
   }
 
   @Test
-  void noModelsLeavesBothPropertyAndFileAbsent() {
+  void noModelsLeavesTheFileAbsentAndThePinAsCreated() {
     EmbeddingColumnInfoStore store = store();
     store.checkAtStart(Collections.emptyMap(), Collections.emptyMap());
     assertFalse(Files.exists(file()));
-    assertFalse(meta.getTableConfig().contains(EmbeddingColumnInfoStore.LAYOUT_VERSION));
+    assertEquals("1", reload().getTableConfig().getString(EmbeddingColumnInfoStore.LAYOUT_VERSION));
   }
 
   @Test
@@ -130,9 +137,62 @@ class TestEmbeddingColumnInfoStore {
     assertEquals(FIRST, event.path("instant").textValue());
     assertEquals(FIRST, event.path("added_at_instant").textValue());
     assertEquals(6, event.size());
-    assertEquals(JSON.readTree("{\"provider\":\"openai\",\"model_name\":\"text-embedding-3-small\",\"dimension\":1536}"), event.path("identity"));
+    assertEquals(JSON.readTree("{\"provider\":\"openai\",\"model_name\":\"text-embedding-3-small\",\"dimension\":1536,\"input_transform_version\":\"none\"}"), event.path("identity"));
     assertEquals("1", reload().getTableConfig().getString(EmbeddingColumnInfoStore.LAYOUT_VERSION));
     assertFalse(Files.exists(file().resolveSibling(".embedding-column-info.json.crc")), "aux history has no checksum sidecar");
+  }
+
+  @Test
+  void missingIdentityOnAnExistingColumnRefusesBeforeWork() {
+    commit(FIRST);
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+        () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)));
+    assertTrue(refused.getMessage().contains("no model identity"), refused.getMessage());
+    assertFalse(Files.exists(file()), "startup must not invent a configured identity for existing data");
+  }
+
+  @Test
+  void customerVectorsNeedNoModelHistoryOrPublicationBackend() {
+    commit(FIRST);
+    EmbeddingColumnInfoStore customerOnly = new EmbeddingColumnInfoStore(base, conf, new TypedProperties(), new EmbeddingColumnInfoAtomicSwap() {
+      @Override
+      void checkSupported(HoodieStorage storage, StoragePath target) throws IOException {
+        throw new IOException("fixture model publication unsupported");
+      }
+    });
+    Map<String, Integer> vectors = Collections.singletonMap("user_vector", 4);
+    EmbeddingColumnInfoStore.Update update = customerOnly.checkAtStart(Collections.emptyMap(), vectors);
+    commitFenced(customerOnly, update, SECOND, true);
+    customerOnly.publishCommittedState(SECOND, update);
+    assertFalse(Files.exists(file()), "customer columns do not create model identity history");
+    HoodieIOException refused = assertThrows(HoodieIOException.class,
+        () -> customerOnly.checkAtStart(Collections.singletonMap("text", MODEL), vectors));
+    assertTrue(refused.getCause().getMessage().contains("model publication unsupported"), refused.toString());
+  }
+
+  public static class PlainObjectFileSystem extends org.apache.hadoop.fs.RawLocalFileSystem {
+    @Override
+    public java.net.URI getUri() {
+      return java.net.URI.create("gs://bucket");
+    }
+  }
+
+  @Test
+  void nonabortableObjectOutputRefusesAtStart() throws Exception {
+    org.apache.hadoop.conf.Configuration configuration = new org.apache.hadoop.conf.Configuration(false);
+    configuration.set("fs.gs.impl", PlainObjectFileSystem.class.getName());
+    configuration.setBoolean("fs.gs.impl.disable.cache", true);
+    StorageConfiguration<?> objectConf = org.apache.hudi.hadoop.fs.HadoopFSUtils.getStorageConf(configuration);
+    String objectBase = "gs://bucket" + temp.resolve("object-table");
+    Properties pins = new Properties();
+    pins.setProperty(EmbeddingColumnInfoStore.LAYOUT_VERSION.key(), EmbeddingColumnInfoStore.CURRENT_LAYOUT_VERSION);
+    HoodieTableMetaClient.newTableBuilder().setTableVersion(9).setTableName("object_column_info")
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setAdditionalProperties(pins).initTable(objectConf, objectBase);
+    EmbeddingColumnInfoStore objectStore = new EmbeddingColumnInfoStore(objectBase, objectConf, new TypedProperties());
+    HoodieIOException failure = assertThrows(HoodieIOException.class,
+        () -> objectStore.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap()));
+    assertTrue(failure.getCause().getMessage().contains("fs.capability.outputstream.abortable"), failure.toString());
+    assertFalse(Files.exists(temp.resolve("object-table/.hoodie/.aux/embedding-column-info.json")));
   }
 
   @Test
@@ -141,7 +201,7 @@ class TestEmbeddingColumnInfoStore {
     EmbeddingColumnInfoStore.Update update = store.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
     assertThrows(IllegalArgumentException.class, () -> store.publishAfterCommit(FIRST, update));
     assertFalse(Files.exists(file()));
-    assertFalse(reload().getTableConfig().contains(EmbeddingColumnInfoStore.LAYOUT_VERSION));
+    assertEquals("1", reload().getTableConfig().getString(EmbeddingColumnInfoStore.LAYOUT_VERSION), "the creation pin is untouched");
   }
 
   @Test
@@ -158,43 +218,168 @@ class TestEmbeddingColumnInfoStore {
   }
 
   @Test
-  void anyPresentIdentityMismatchRefusesTheSamePhysicalColumn() throws Exception {
+  void anyPresentIdentityMismatchRefusesTheSamePhysicalColumn() {
     add("text", MODEL, FIRST);
     for (EmbeddingColumnInfoStore.Identity changed : Arrays.asList(identity("bedrock", "text-embedding-3-small", 1536, null),
         identity("openai", "another", 1536, null), identity("openai", "text-embedding-3-small", 3072, null),
         identity("openai", "text-embedding-3-small", 1536, "r1"))) {
-      assertThrows(IllegalArgumentException.class,
-          () -> store().checkAtStart(Collections.singletonMap("text", changed), Collections.singletonMap("text", 1536)));
+      EmbeddingColumnInfoStore reopened = store();
+      Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", changed);
+      Map<String, Integer> vectorColumns = Collections.singletonMap("text", 1536);
+      assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns));
     }
   }
 
   @Test
-  void missingEntryRecoveryRetainsOtherHistoryAndDoesNotInventBirth() throws Exception {
+  void missingEntryRefusesWithoutChangingOtherHistory() throws Exception {
     add("old", MODEL, FIRST);
-    EmbeddingColumnInfoStore.Identity recovered = identity("bedrock", "amazon.titan-embed-image-v1", 1024, null);
-    EmbeddingColumnInfoStore store = store();
-    EmbeddingColumnInfoStore.Update update = store.checkAtStart(Collections.singletonMap("image", recovered),
-        Collections.singletonMap("image", 1024));
-    commit(SECOND);
-    store.publishAfterCommit(SECOND, update);
-    JsonNode snapshot = read();
-    assertEquals(2, snapshot.path("revision").intValue());
-    assertEquals(2, snapshot.path("events").size());
-    assertEquals("old", snapshot.path("events").get(0).path("column_name").textValue());
-    JsonNode recoveredEvent = snapshot.path("events").get(1);
-    assertEquals("recover", recoveredEvent.path("event").textValue());
-    assertTrue(recoveredEvent.path("added_at_instant").isNull());
-    assertEquals(SECOND, recoveredEvent.path("instant").textValue());
+    byte[] before = Files.readAllBytes(file());
+    EmbeddingColumnInfoStore.Identity configured = identity("bedrock", "amazon.titan-embed-image-v1", 1024, null);
+    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(Collections.singletonMap("image", configured),
+        Collections.singletonMap("image", 1024)));
+    assertArrayEquals(before, Files.readAllBytes(file()));
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void partialHistoryRefusesConfiguredExistingColumnsWithoutChangingKnownHistory(boolean includeKnownModel) throws Exception {
+    add("old", MODEL, FIRST);
+    byte[] before = Files.readAllBytes(file());
+    Map<String, Integer> vectors = new java.util.TreeMap<>();
+    vectors.put("old", 1536);
+    vectors.put("legacy", 3072);
+    commit(SECOND, vectors);
+    Map<String, EmbeddingColumnInfoStore.Identity> configured = new java.util.TreeMap<>();
+    configured.put("legacy", identity("openai", "legacy-model", 3072, null));
+    if (includeKnownModel) {
+      configured.put("old", MODEL);
+    }
+    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(configured, vectors));
+    assertArrayEquals(before, Files.readAllBytes(file()));
+    store().checkAtStart(Collections.emptyMap(), Collections.singletonMap("old", 1536));
+    store().checkAtStart(Collections.singletonMap("old", MODEL), Collections.singletonMap("old", 1536));
   }
 
   @Test
-  void failedPublicationWithSurvivingHistoryAddsTheColumnAtItsActualCommittedBirth() throws Exception {
+  void cachedUpdateKeepsRecordedOwnershipAndIgnoresCustomerVectors() throws Exception {
+    EmbeddingColumnInfoStore store = store();
+    EmbeddingColumnInfoStore.Update first = store.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+    commitFenced(store, first, FIRST, true);
+    store.publishCommittedState(FIRST, first);
+    Map<String, Integer> vectors = new java.util.TreeMap<>();
+    vectors.put("text", 1536);
+    vectors.put("user_vector", 4);
+    EmbeddingColumnInfoStore.Update cached = store.checkAtStart(Collections.emptyMap(), vectors);
+    commitFenced(store, cached, SECOND, true);
+    store.publishCommittedState(SECOND, cached);
+    assertEquals(1, read().path("events").size(), "customer columns never enter the model history");
+    Files.delete(file());
+    Files.delete(temp.resolve("table/" + EmbeddingColumnInfoStore.FENCE_PATH));
+    EmbeddingColumnInfoStore.Update next = cached.withExistingColumns(vectors);
+    // the commit-time check refuses through the pre-commit refusal, so the streamer rolls the instant back
+    HoodiePreCommitRefusalException refused = assertThrows(HoodiePreCommitRefusalException.class,
+        () -> commitFenced(store, next, THIRD, true));
+    assertInstanceOf(IllegalArgumentException.class, refused.getCause());
+    assertTrue(refused.getMessage().contains("text has no model identity"), refused.getMessage());
+    assertFalse(Files.exists(file()), "configuration cannot recreate lost authority");
+  }
+
+  @Test
+  void cachedUpdateLearnsOwnershipRecordedAfterStartup() throws Exception {
+    EmbeddingColumnInfoStore longRunning = store();
+    EmbeddingColumnInfoStore.Update cached = longRunning.checkAtStart(Collections.emptyMap(), Collections.emptyMap());
+    EmbeddingColumnInfoStore otherWriter = store();
+    EmbeddingColumnInfoStore.Update addition = otherWriter.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+    commitFenced(otherWriter, addition, FIRST, true);
+    otherWriter.publishCommittedState(FIRST, addition);
+    Map<String, Integer> vectors = Collections.singletonMap("text", 1536);
+    EmbeddingColumnInfoStore.Update observed = cached.withExistingColumns(vectors);
+    commitFenced(longRunning, observed, SECOND, true);
+    longRunning.publishCommittedState(SECOND, observed);
+    Files.delete(file());
+    Files.delete(temp.resolve("table/" + EmbeddingColumnInfoStore.FENCE_PATH));
+    EmbeddingColumnInfoStore.Update next = cached.withExistingColumns(vectors);
+    // the commit-time check refuses through the pre-commit refusal, so the streamer rolls the instant back
+    HoodiePreCommitRefusalException refused = assertThrows(HoodiePreCommitRefusalException.class,
+        () -> commitFenced(longRunning, next, THIRD, true));
+    assertInstanceOf(IllegalArgumentException.class, refused.getCause());
+    assertTrue(refused.getMessage().contains("text has no model identity"), refused.getMessage());
+    assertFalse(Files.exists(file()));
+  }
+
+  @Test
+  void firstCommitWithPlannedVectorSchemaNeedsNoPriorIdentity() throws Exception {
+    HoodieSchema planned = HoodieSchema.createRecord("column_info_record", null, null, Collections.singletonList(
+        HoodieSchemaField.of("text", HoodieSchema.createNullable(HoodieSchema.createVector(1536)))));
+    Properties properties = new Properties();
+    properties.setProperty(HoodieTableConfig.CREATE_SCHEMA.key(), planned.toString());
+    HoodieTableConfig.update(meta.getStorage(), meta.getMetaPath(), properties);
+    assertTrue(reload().getCommitsTimeline().filterCompletedInstants().empty());
+    EmbeddingColumnInfoStore store = store();
+    EmbeddingColumnInfoStore.Update update = store.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+
+    commitFenced(store, update, FIRST, true);
+    store.publishCommittedState(FIRST, update);
+    assertTrue(CompletedWrite.exists(reload(), FIRST));
+    assertEquals(1, read().path("events").size());
+    assertEquals("text-embedding-3-small", read().path("events").get(0).path("identity").path("model_name").textValue());
+  }
+
+  @Test
+  void columnAddedDuringRoundCannotLoseItsIdentityAuthorityBeforeCommit() throws Exception {
+    EmbeddingColumnInfoStore longRunning = store();
+    EmbeddingColumnInfoStore.Update started = longRunning.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+    EmbeddingColumnInfoStore otherWriter = store();
+    EmbeddingColumnInfoStore.Update addition = otherWriter.checkAtStart(Collections.singletonMap("text",
+        identity("openai", "another-model", 1536, null)), Collections.emptyMap());
+    commit(FIRST, Collections.singletonMap("text", 1536));
+    otherWriter.publishAfterCommit(FIRST, addition);
+    Files.delete(file());
+
+    HoodiePreCommitRefusalException refused = assertThrows(HoodiePreCommitRefusalException.class,
+        () -> commitFenced(longRunning, started, SECOND, true));
+    assertInstanceOf(IllegalArgumentException.class, refused.getCause());
+    assertTrue(refused.getMessage().contains("text has no model identity"), refused.getMessage());
+    assertFalse(CompletedWrite.exists(reload(), SECOND), "the stale round cannot attach its configured identity to existing vectors");
+    assertFalse(Files.exists(file()), "configuration cannot recreate lost authority");
+    assertFalse(Files.exists(temp.resolve("table/" + EmbeddingColumnInfoStore.FENCE_PATH)), "a refused round creates no fence");
+  }
+
+  @Test
+  void columnAddedDuringRoundWithMatchingAuthorityStillCommits() throws Exception {
+    EmbeddingColumnInfoStore longRunning = store();
+    EmbeddingColumnInfoStore.Update started = longRunning.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+    EmbeddingColumnInfoStore otherWriter = store();
+    EmbeddingColumnInfoStore.Update addition = otherWriter.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+    commit(FIRST, Collections.singletonMap("text", 1536));
+    otherWriter.publishAfterCommit(FIRST, addition);
+
+    commitFenced(longRunning, started, SECOND, true);
+    longRunning.publishCommittedState(SECOND, started);
+    assertTrue(CompletedWrite.exists(reload(), SECOND));
+    assertEquals(1, read().path("events").size());
+    assertEquals("text-embedding-3-small", read().path("events").get(0).path("identity").path("model_name").textValue());
+  }
+
+  @Test
+  void customerColumnAddedDuringRoundNeedsNoModelIdentity() throws Exception {
+    EmbeddingColumnInfoStore longRunning = store();
+    EmbeddingColumnInfoStore.Update started = longRunning.checkAtStart(Collections.emptyMap(), Collections.emptyMap());
+    commit(FIRST, Collections.singletonMap("user_vector", 4));
+
+    commitFenced(longRunning, started, SECOND, true);
+    assertTrue(CompletedWrite.exists(reload(), SECOND));
+    assertFalse(Files.exists(file()));
+    assertFalse(Files.exists(temp.resolve("table/" + EmbeddingColumnInfoStore.FENCE_PATH)));
+  }
+
+  @Test
+  void failedManualPublicationWithoutFenceCannotInventTheModelIdentity() throws Exception {
     EmbeddingColumnInfoStore initial = store();
     EmbeddingColumnInfoStore.Update old = initial.checkAtStart(Collections.singletonMap("old", MODEL), Collections.emptyMap());
     commit(FIRST, Collections.singletonMap("old", 1536));
     initial.publishAfterCommit(FIRST, old);
     byte[] before = Files.readAllBytes(file());
-    JsonNode oldEvent = read().path("events").get(0);
     EmbeddingColumnInfoStore.Identity newer = identity("openai", "text-embedding-3-large", 3072, null);
     EmbeddingColumnInfoStore failing = new EmbeddingColumnInfoStore(base, conf, new TypedProperties(), new EmbeddingColumnInfoAtomicSwap() {
       @Override
@@ -210,30 +395,9 @@ class TestEmbeddingColumnInfoStore {
     assertThrows(HoodieIOException.class, () -> failing.publishAfterCommit(SECOND, adding));
     assertArrayEquals(before, Files.readAllBytes(file()), "failed publication preserves the earlier history snapshot");
 
-    EmbeddingColumnInfoStore nextRound = store();
-    EmbeddingColumnInfoStore.Update repair = nextRound.checkAtStart(Collections.singletonMap("new", newer), committedVectors);
-    assertArrayEquals(before, Files.readAllBytes(file()), "start captures provenance without writing metadata");
-    String third = "20261112110000000";
-    commit(third, committedVectors);
-    nextRound.publishAfterCommit(third, repair);
-    JsonNode snapshot = read();
-    assertEquals(2, snapshot.path("revision").intValue());
-    assertEquals(2, snapshot.path("events").size());
-    assertEquals(oldEvent, snapshot.path("events").get(0));
-    JsonNode added = snapshot.path("events").get(1);
-    assertEquals("add", added.path("event").textValue());
-    assertEquals(SECOND, added.path("instant").textValue(), "add belongs to the original successful table commit");
-    assertEquals(SECOND, added.path("added_at_instant").textValue());
-    assertEquals("new", added.path("column_name").textValue());
-    assertEquals("text-embedding-3-large", added.path("identity").path("model_name").textValue());
-    assertEquals(3072, added.path("identity").path("dimension").intValue());
-    assertEquals(6, added.size());
-    assertEquals(3, added.path("identity").size());
-    byte[] repaired = Files.readAllBytes(file());
-    nextRound.publishAfterCommit(third, repair);
-    assertArrayEquals(repaired, Files.readAllBytes(file()), "publication retry retains a single ADD");
-    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(
-        Collections.singletonMap("new", identity("openai", "different-model", 3072, null)), committedVectors));
+    assertThrows(IllegalArgumentException.class,
+        () -> store().checkAtStart(Collections.singletonMap("new", newer), committedVectors));
+    assertArrayEquals(before, Files.readAllBytes(file()), "a schema proves dimensions and birth, but cannot prove model identity");
   }
 
   @Test
@@ -243,15 +407,8 @@ class TestEmbeddingColumnInfoStore {
     vectors.put("old", 1536);
     vectors.put("new", 3072);
     commit(SECOND, vectors);
-    EmbeddingColumnInfoStore store = store();
-    EmbeddingColumnInfoStore.Update update = store.checkAtStart(
-        Collections.singletonMap("new", identity("openai", "new-model", 3072, null)), vectors);
-    String third = "20261112110000000";
-    commit(third, vectors);
-    store.publishAfterCommit(third, update);
-    JsonNode recovered = read().path("events").get(1);
-    assertEquals("recover", recovered.path("event").textValue());
-    assertTrue(recovered.path("added_at_instant").isNull(), "no preceding committed schema proves when the column first appeared");
+    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(
+        Collections.singletonMap("new", identity("openai", "new-model", 3072, null)), vectors));
   }
 
   @Test
@@ -266,15 +423,8 @@ class TestEmbeddingColumnInfoStore {
     vectors.put("new", 3072);
     String third = "20261112110000000";
     commit(third, vectors);
-    EmbeddingColumnInfoStore store = store();
-    EmbeddingColumnInfoStore.Update update = store.checkAtStart(
-        Collections.singletonMap("new", identity("openai", "new-model", 3072, null)), vectors);
-    String fourth = "20261112120000000";
-    commit(fourth, vectors);
-    store.publishAfterCommit(fourth, update);
-    JsonNode recovered = read().path("events").get(1);
-    assertEquals("recover", recovered.path("event").textValue());
-    assertTrue(recovered.path("added_at_instant").isNull(), "the column may have been created by the intervening schema-less commit");
+    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(
+        Collections.singletonMap("new", identity("openai", "new-model", 3072, null)), vectors));
   }
 
   @Test
@@ -303,28 +453,20 @@ class TestEmbeddingColumnInfoStore {
     assertTrue(meta.getActiveTimeline().getCommitsTimeline().filterCompletedInstants().containsInstant(third));
     assertTrue(reload().getArchivedTimeline().containsInstant(SECOND), "actual creation is archived between retained schemas");
 
-    EmbeddingColumnInfoStore nextRound = store();
-    EmbeddingColumnInfoStore.Update update = nextRound.checkAtStart(
-        Collections.singletonMap("new", identity("openai", "new-model", 3072, null)), vectors);
-    String fourth = "20261112120000000";
-    commit(fourth, vectors);
-    nextRound.publishAfterCommit(fourth, update);
-    JsonNode recovered = read().path("events").get(1);
-    assertEquals("recover", recovered.path("event").textValue(), "retained absent/containing schemas do not prove adjacent commits");
-    assertTrue(recovered.path("added_at_instant").isNull(), "never substitute the later retained containing instant for an archived birth");
+    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(
+        Collections.singletonMap("new", identity("openai", "new-model", 3072, null)), vectors));
   }
 
   @Test
-  void missingFileRecoveryStillChecksVectorDimensions() throws Exception {
+  void missingFileRefusesConfiguredColumnAtEitherDimension() throws Exception {
     pin("1");
-    assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 8)));
-    EmbeddingColumnInfoStore store = store();
-    EmbeddingColumnInfoStore.Update update = store.checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536));
-    commit(FIRST);
-    store.publishAfterCommit(FIRST, update);
-    assertEquals("recover", read().path("events").get(0).path("event").textValue());
-    assertTrue(read().path("events").get(0).path("added_at_instant").isNull());
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", MODEL);
+    Map<String, Integer> vectorColumns = Collections.singletonMap("text", 8);
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns));
+    IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+        () -> store().checkAtStart(configuredModels, Collections.singletonMap("text", 1536)));
+    assertTrue(missing.getMessage().contains("no model identity"), missing.getMessage());
   }
 
   @Test
@@ -343,8 +485,10 @@ class TestEmbeddingColumnInfoStore {
     assertEquals(events.get(0).path("identity"), events.get(1).path("identity"));
     assertEquals("add", events.get(2).path("event").textValue());
     assertEquals("r2", events.get(2).path("identity").path("model_version").textValue());
-    assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("old", MODEL), Collections.singletonMap("old", 1536)));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("old", MODEL);
+    Map<String, Integer> vectorColumns = Collections.singletonMap("old", 1536);
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns));
   }
 
   @Test
@@ -372,31 +516,54 @@ class TestEmbeddingColumnInfoStore {
     assertArrayEquals(before, Files.readAllBytes(file()), "a persistent retirement setting does not append or rewrite history");
     assertEquals(2, read().path("revision").intValue());
     assertEquals(3, read().path("events").size());
-    assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("old", MODEL), existing), "configured retired-name reuse still refuses");
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("old", MODEL);
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, existing), "configured retired-name reuse still refuses");
   }
 
   @Test
   void invalidRetirementRequestsNeverChangeHistory() throws Exception {
     add("old", MODEL, FIRST);
     byte[] before = Files.readAllBytes(file());
-    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(Collections.singletonMap("old", MODEL),
-        Collections.singletonMap("old", 1536), Collections.singleton("old")));
-    assertThrows(IllegalArgumentException.class, () -> store().checkAtStart(Collections.emptyMap(),
-        Collections.singletonMap("old", 1536), Collections.singleton("unknown")));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("old", MODEL);
+    Map<String, Integer> vectorColumns = Collections.singletonMap("old", 1536);
+    Set<String> retirements = Collections.singleton("old");
+    assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns, retirements));
+    EmbeddingColumnInfoStore again = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> noModels = Collections.emptyMap();
+    Set<String> unknownRetirement = Collections.singleton("unknown");
+    assertThrows(IllegalArgumentException.class, () -> again.checkAtStart(noModels, vectorColumns, unknownRetirement));
     assertArrayEquals(before, Files.readAllBytes(file()));
+  }
+
+  /** A table without the layout pin is refused even with no history file: the pin is written when the table is created. */
+  @Test
+  void missingLayoutPinRefusesWithoutAHistoryFile() {
+    HoodieTableConfig.delete(meta.getStorage(), meta.getMetaPath(), Collections.singleton(EmbeddingColumnInfoStore.LAYOUT_VERSION.key()));
+    assertFalse(Files.exists(file()));
+    EmbeddingColumnInfoStore store = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", MODEL);
+    Map<String, Integer> noColumns = Collections.emptyMap();
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> store.checkAtStart(configuredModels, noColumns));
+    assertTrue(refused.getMessage().contains("Unsupported " + EmbeddingColumnInfoStore.LAYOUT_VERSION.key()
+        + "=none; supported layout version is 1, written when the table is created"), refused.getMessage());
+    assertFalse(Files.exists(file()), "the refusal writes nothing");
+    assertFalse(reload().getTableConfig().contains(EmbeddingColumnInfoStore.LAYOUT_VERSION), "nor the pin");
   }
 
   @Test
   void unsupportedLayoutRefusesBeforeParsingAndUngovernedFileRefuses() throws Exception {
     pin("2");
     raw("not JSON");
-    IllegalArgumentException unsupported = assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", MODEL);
+    Map<String, Integer> vectorColumns = Collections.singletonMap("text", 1536);
+    IllegalArgumentException unsupported = assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns));
     assertTrue(unsupported.getMessage().contains("layout"), unsupported.getMessage());
     HoodieTableConfig.delete(meta.getStorage(), meta.getMetaPath(), Collections.singleton(EmbeddingColumnInfoStore.LAYOUT_VERSION.key()));
-    assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)));
+    EmbeddingColumnInfoStore ungoverned = store();
+    assertThrows(IllegalArgumentException.class, () -> ungoverned.checkAtStart(configuredModels, vectorColumns));
   }
 
   @Test
@@ -404,23 +571,30 @@ class TestEmbeddingColumnInfoStore {
     pin("1");
     String valid = "{\"layout_version\":1,\"revision\":1,\"events\":[{\"sequence\":1,\"column_name\":\"text\","
         + "\"event\":\"add\",\"instant\":\"" + FIRST + "\",\"added_at_instant\":\"" + FIRST + "\","
-        + "\"identity\":{\"provider\":\"openai\",\"model_name\":\"text-embedding-3-small\",\"dimension\":1536}}]}";
+        + "\"identity\":{\"provider\":\"openai\",\"model_name\":\"text-embedding-3-small\",\"dimension\":1536,\"input_transform_version\":\"none\"}}]}";
     for (String malformed : Arrays.asList(valid.replace("\"layout_version\":1", "\"layout_version\":2"),
         valid.replace("\"revision\":1", "\"revision\":\"1\""), valid.replace("\"revision\":1", "\"revision\":0"),
         valid.replace("\"revision\":1", "\"revision\":1,\"revision\":2"),
         valid.replace("\"events\":", "\"unknown\":true,\"events\":"),
         valid.replace("\"dimension\":1536", "\"dimension\":1536.0"),
         valid.replace("\"dimension\":1536", "\"dimension\":1536,\"endpoint\":\"secret\""),
+        valid.replace(",\"input_transform_version\":\"none\"", ""),
         valid.replace("\"event\":\"add\"", "\"event\":\"migrate\""),
         valid.replace("\"sequence\":1", "\"sequence\":0"),
         valid.replace("\"added_at_instant\":\"" + FIRST + "\"", "\"added_at_instant\":null"),
         valid + " {}")) {
       raw(malformed);
-      assertThrows(IllegalArgumentException.class,
-          () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)), malformed);
+      EmbeddingColumnInfoStore reopened = store();
+      Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.singletonMap("text", MODEL);
+      Map<String, Integer> vectorColumns = Collections.singletonMap("text", 1536);
+      assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns), malformed);
     }
   }
 
+  /**
+   * A writer that started before another writer committed a new column must be refused on that column's committed identity
+   * even when the other writer has not published auxiliary history yet: the commit-time fence is the committed authority.
+   */
   @ParameterizedTest
   @ValueSource(booleans = {true, false})
   void committedIdentityFencesStaleWritersBeforeAuxiliaryPublication(boolean sameColumn) throws Exception {
@@ -432,39 +606,40 @@ class TestEmbeddingColumnInfoStore {
     Map<String, EmbeddingColumnInfoStore.Identity> a = Collections.singletonMap("text", MODEL);
     Map<String, EmbeddingColumnInfoStore.Identity> b = Collections.singletonMap(sameColumn ? "text" : "other",
         identity("openai", "another-model", 1536, null));
-    first.checkAtStart(a, Collections.emptyMap());
-    second.checkAtStart(b, Collections.emptyMap());
-    HoodieCommitMetadata committed = new HoodieCommitMetadata();
-    // The existing strict layout1 snapshot is the committed identity contract, independent of auxiliary publication.
+    Map<String, Integer> noVectors = Collections.emptyMap();
+    first.checkAtStart(a, noVectors);
+    second.checkAtStart(b, noVectors);
+    // the strict layout 1 snapshot the first writer fenced inside its data commit, before any auxiliary publication
     String snapshot = "{\"layout_version\":1,\"revision\":1,\"events\":[{\"sequence\":1,\"column_name\":\"text\","
-            + "\"event\":\"add\",\"instant\":\"" + FIRST + "\",\"added_at_instant\":\"" + FIRST + "\","
-            + "\"identity\":{\"provider\":\"openai\",\"model_name\":\"text-embedding-3-small\",\"dimension\":1536}}]}";
+        + "\"event\":\"add\",\"instant\":\"" + FIRST + "\",\"added_at_instant\":\"" + FIRST + "\","
+        + "\"identity\":{\"provider\":\"openai\",\"model_name\":\"text-embedding-3-small\",\"dimension\":1536,\"input_transform_version\":\"none\"}}]}";
     Path fence = temp.resolve("table/.hoodie/.aux/embedding-column-fence.json");
     Files.createDirectories(fence.getParent());
     Files.write(fence, ("{\"layout_version\":1,\"committed\":null,\"pending\":{\"instant\":\"" + FIRST
         + "\",\"snapshot\":" + snapshot + "}}").getBytes(StandardCharsets.UTF_8));
-    commit(FIRST, committed);
+    commit(FIRST, new HoodieCommitMetadata());
     assertFalse(Files.exists(file()), "the first writer has not published auxiliary history yet");
     if (sameColumn) {
-      IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class,
-          () -> second.checkAtStart(b, Collections.emptyMap()));
+      IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class, () -> second.checkAtStart(b, noVectors));
       assertTrue(conflict.getMessage().contains("different model identity"), conflict.getMessage());
       assertEquals(1, reload().getActiveTimeline().getCommitsTimeline().filterCompletedInstants().countInstants());
     } else {
-      second.checkAtStart(b, Collections.emptyMap());
+      second.checkAtStart(b, noVectors);
       commit(SECOND);
       assertEquals(2, reload().getActiveTimeline().getCommitsTimeline().filterCompletedInstants().countInstants());
     }
   }
 
+  /** Two writers that started on the same new column: the second is refused inside its data commit, before it completes. */
   @ParameterizedTest
   @ValueSource(booleans = {true, false})
   void staleWritersAreRecheckedInsideTheDataCommitTransaction(boolean sameColumn) throws Exception {
     EmbeddingColumnInfoStore first = store();
     EmbeddingColumnInfoStore second = store();
-    EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+    Map<String, Integer> noVectors = Collections.emptyMap();
+    EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("text", MODEL), noVectors);
     EmbeddingColumnInfoStore.Update b = second.checkAtStart(Collections.singletonMap(sameColumn ? "text" : "other",
-        identity("openai", "another-model", 1536, null)), Collections.emptyMap());
+        identity("openai", "another-model", 1536, null)), noVectors);
     commitFenced(first, a, FIRST, true);
     assertFalse(Files.exists(file()), "publication remains delayed after the first data commit");
     if (sameColumn) {
@@ -482,48 +657,52 @@ class TestEmbeddingColumnInfoStore {
     }
   }
 
+  /** A commit that failed after its fence reserves nothing: another model may take the column, and the first is then refused. */
   @Test
   void uncompletedCandidateDoesNotReserveTheColumnAfterCommitFailure() throws Exception {
     EmbeddingColumnInfoStore first = store();
     EmbeddingColumnInfoStore second = store();
-    EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+    Map<String, Integer> noVectors = Collections.emptyMap();
+    EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("text", MODEL), noVectors);
     EmbeddingColumnInfoStore.Update b = second.checkAtStart(Collections.singletonMap("text",
-        identity("openai", "another-model", 1536, null)), Collections.emptyMap());
+        identity("openai", "another-model", 1536, null)), noVectors);
     commitFenced(first, a, FIRST, false);
     commitFenced(second, b, SECOND, true);
     second.publishCommittedState(SECOND, b);
     assertEquals("another-model", read().path("events").get(0).path("identity").path("model_name").textValue());
-    assertThrows(HoodiePreCommitRefusalException.class, () -> commitFenced(first, a, "20261112110000000", true));
+    assertThrows(HoodiePreCommitRefusalException.class, () -> commitFenced(first, a, THIRD, true));
     assertEquals(1, reload().getActiveTimeline().getCommitsTimeline().filterCompletedInstants().countInstants());
   }
 
+  /** A retirement committed after another writer started refuses that writer's commit on the retired column. */
   @Test
   void retirementFencesAnAlreadyStartedWriterBeforeItsCommit() throws Exception {
     EmbeddingColumnInfoStore seed = store();
     EmbeddingColumnInfoStore.Update add = seed.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
     commitFenced(seed, add, FIRST, true);
     seed.publishCommittedState(FIRST, add);
+    Map<String, Integer> vectors = Collections.singletonMap("text", 1536);
     EmbeddingColumnInfoStore writer = store();
-    EmbeddingColumnInfoStore.Update stale = writer.checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536));
+    EmbeddingColumnInfoStore.Update stale = writer.checkAtStart(Collections.singletonMap("text", MODEL), vectors);
     EmbeddingColumnInfoStore retirement = store();
-    EmbeddingColumnInfoStore.Update retire = retirement.checkAtStart(Collections.emptyMap(), Collections.singletonMap("text", 1536),
-        Collections.singleton("text"));
+    EmbeddingColumnInfoStore.Update retire = retirement.checkAtStart(Collections.emptyMap(), vectors, Collections.singleton("text"));
     commitFenced(retirement, retire, SECOND, true);
-    HoodiePreCommitRefusalException failure = assertThrows(HoodiePreCommitRefusalException.class,
-        () -> commitFenced(writer, stale, "20261112110000000", true));
+    HoodiePreCommitRefusalException failure = assertThrows(HoodiePreCommitRefusalException.class, () -> commitFenced(writer, stale, THIRD, true));
     assertTrue(failure.getMessage().contains("retired"), failure.getMessage());
     seed.publishCommittedState(FIRST, add);
     assertEquals("retire", read().path("events").get(1).path("event").textValue());
     assertEquals(2, reload().getActiveTimeline().getCommitsTimeline().filterCompletedInstants().countInstants());
   }
 
+  /** A fenced commit that was archived before the next writer commits is still committed authority. */
   @Test
   void archivedPendingCommitStillFencesAdmissionAndPublishesItsDelayedCallback() throws Exception {
     EmbeddingColumnInfoStore first = store();
     EmbeddingColumnInfoStore second = store();
-    EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap());
+    Map<String, Integer> noVectors = Collections.emptyMap();
+    EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("text", MODEL), noVectors);
     EmbeddingColumnInfoStore.Update b = second.checkAtStart(Collections.singletonMap("text",
-        identity("openai", "another-model", 1536, null)), Collections.emptyMap());
+        identity("openai", "another-model", 1536, null)), noVectors);
     commitFenced(first, a, FIRST, true);
     HoodieInstant archived = meta.reloadActiveTimeline().getCommitsTimeline().filterCompletedInstants().firstInstant().get();
     HoodieWriteConfig config = HoodieWriteConfig.newBuilder().withPath(base).forTable("column_info").build();
@@ -594,22 +773,22 @@ class TestEmbeddingColumnInfoStore {
   @Test
   void manualPublicationOnAFencedTableRetainsOneCommittedAuthority() throws Exception {
     EmbeddingColumnInfoStore first = store();
-    EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("a", MODEL), Collections.emptyMap());
+    Map<String, Integer> noVectors = Collections.emptyMap();
+    EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("a", MODEL), noVectors);
     commitFenced(first, a, FIRST, true);
     first.publishCommittedState(FIRST, a);
     EmbeddingColumnInfoStore manual = store();
-    EmbeddingColumnInfoStore.Update c = manual.checkAtStart(Collections.singletonMap("c", MODEL), Collections.emptyMap());
+    EmbeddingColumnInfoStore.Update c = manual.checkAtStart(Collections.singletonMap("c", MODEL), noVectors);
     commit(SECOND);
     manual.publishAfterCommit(SECOND, c);
     assertEquals(2, read().path("events").size());
     EmbeddingColumnInfoStore next = store();
-    assertThrows(IllegalArgumentException.class, () -> next.checkAtStart(Collections.singletonMap("c",
-        identity("openai", "another-model", 1536, null)), Collections.emptyMap()));
+    Map<String, EmbeddingColumnInfoStore.Identity> another = Collections.singletonMap("c", identity("openai", "another-model", 1536, null));
+    assertThrows(IllegalArgumentException.class, () -> next.checkAtStart(another, noVectors));
     Files.delete(file());
     first.publishCommittedState(FIRST, a);
     assertEquals(2, read().path("events").size(), "the fence retains the manually published column even after auxiliary loss");
-    assertThrows(IllegalArgumentException.class, () -> next.checkAtStart(Collections.singletonMap("c",
-        identity("openai", "another-model", 1536, null)), Collections.emptyMap()));
+    assertThrows(IllegalArgumentException.class, () -> next.checkAtStart(another, noVectors));
   }
 
   /**
@@ -640,14 +819,13 @@ class TestEmbeddingColumnInfoStore {
     assertFalse(CompletedWrite.exists(reload(), "20261112103000000"), "an instant that never existed is not");
   }
 
+  /** A manual publication that adds nothing, on a table whose only fence candidate failed, keeps the fence readable. */
   @Test
   void emptyManualPublicationKeepsTheFenceReadable() throws Exception {
     EmbeddingColumnInfoStore first = store();
     Map<String, Integer> noVectors = Collections.emptyMap();
     EmbeddingColumnInfoStore.Update a = first.checkAtStart(Collections.singletonMap("text", MODEL), noVectors);
     commitFenced(first, a, FIRST, false);
-    Path fence = temp.resolve("table").resolve(EmbeddingColumnInfoStore.FENCE_PATH);
-    byte[] originalFence = Files.readAllBytes(fence);
     EmbeddingColumnInfoStore manual = store();
     EmbeddingColumnInfoStore.Update nothing = manual.checkAtStart(Collections.emptyMap(), noVectors);
     commit(SECOND);
@@ -655,74 +833,13 @@ class TestEmbeddingColumnInfoStore {
     EmbeddingColumnInfoStore next = store();
     Map<String, EmbeddingColumnInfoStore.Identity> another = Collections.singletonMap("text", identity("openai", "another-model", 1536, null));
     EmbeddingColumnInfoStore.Update admitted = next.checkAtStart(another, noVectors);
-    assertArrayEquals(originalFence, Files.readAllBytes(fence), "an empty publication keeps the valid fence unchanged");
-    assertFalse(Files.exists(file()), "nothing has a committed identity to publish yet");
-    assertFalse(reload().getTableConfig().contains(EmbeddingColumnInfoStore.LAYOUT_VERSION));
     commitFenced(next, admitted, THIRD, true);
     next.publishCommittedState(THIRD, admitted);
     assertEquals("another-model", read().path("events").get(0).path("identity").path("model_name").textValue(),
         "the failed candidate reserved nothing and the fence still reads");
   }
 
-  /** A completed publication with no models keeps the optional history absent. */
-  @Test
-  void completedEmptyManualPublicationLeavesHistoryAbsent() throws Exception {
-    EmbeddingColumnInfoStore manual = store();
-    EmbeddingColumnInfoStore.Update nothing = manual.checkAtStart(Collections.emptyMap(), Collections.emptyMap());
-    commit(FIRST);
-    manual.publishAfterCommit(FIRST, nothing);
-    assertFalse(Files.exists(file()));
-    assertFalse(Files.exists(temp.resolve("table").resolve(EmbeddingColumnInfoStore.FENCE_PATH)));
-    assertFalse(reload().getTableConfig().contains(EmbeddingColumnInfoStore.LAYOUT_VERSION));
-  }
-
-  /** Coexisting valid legacy and fenced histories retain all identities and never lower a published revision. */
-  @ParameterizedTest(name = "publishedNewer={0}")
-  @ValueSource(booleans = {false, true})
-  void mergedHistoriesKeepRevisionAndRepeatedCallbacksStable(boolean publishedNewer) throws Exception {
-    String fourth = "20261112120000000";
-    String[] instants = {FIRST, SECOND, THIRD, fourth};
-    String[] authorityColumns = publishedNewer ? new String[] {"a"} : new String[] {"a", "c", "d"};
-    EmbeddingColumnInfoStore.Update firstUpdate = null;
-    for (int index = 0; index < authorityColumns.length; index++) {
-      EmbeddingColumnInfoStore authorityStore = store();
-      EmbeddingColumnInfoStore.Update update = authorityStore.checkAtStart(
-          Collections.singletonMap(authorityColumns[index], MODEL), Collections.emptyMap());
-      if (index == 0) {
-        firstUpdate = update;
-      }
-      commitFenced(authorityStore, update, instants[index], true);
-      authorityStore.publishCommittedState(instants[index], update);
-    }
-    JsonNode authority = read();
-    Path fence = temp.resolve("table").resolve(EmbeddingColumnInfoStore.FENCE_PATH);
-    byte[] authoritativeFence = Files.readAllBytes(fence);
-    // Prepare independent, valid legacy history in this isolated fixture; then restore the real fence before the call.
-    Files.delete(fence);
-    Files.delete(file());
-    String[] publishedColumns = publishedNewer ? new String[] {"b", "c", "d"} : new String[] {"b"};
-    for (int index = 0; index < publishedColumns.length; index++) {
-      add(publishedColumns[index], MODEL, instants[authorityColumns.length + index]);
-    }
-    JsonNode published = read();
-    Files.write(fence, authoritativeFence);
-    com.fasterxml.jackson.databind.node.ArrayNode expectedEvents = authority.path("events").deepCopy();
-    for (JsonNode event : published.path("events")) {
-      com.fasterxml.jackson.databind.node.ObjectNode copied = event.deepCopy();
-      copied.put("sequence", expectedEvents.size() + 1);
-      expectedEvents.add(copied);
-    }
-    store().publishCommittedState(FIRST, firstUpdate);
-    assertEquals(expectedEvents, read().path("events"), "all identity, birth and commit fields survive reconciliation");
-    assertEquals(4, read().path("revision").intValue(), "the changed merge is above both valid input revisions");
-    assertArrayEquals(authoritativeFence, Files.readAllBytes(fence), "canonical publication preserves fence authority");
-    byte[] merged = Files.readAllBytes(file());
-    store().publishCommittedState(FIRST, firstUpdate);
-    assertArrayEquals(merged, Files.readAllBytes(file()), "an identical delayed callback changes no bytes or revision");
-    store().publishCommittedState(FIRST, firstUpdate);
-    assertArrayEquals(merged, Files.readAllBytes(file()), "repeated callbacks remain idempotent");
-  }
-
+  /** Runs {@code store}'s pre-commit check inside a real table transaction, then completes {@code instant} when asked. */
   private void commitFenced(EmbeddingColumnInfoStore store, EmbeddingColumnInfoStore.Update update, String instant, boolean complete) {
     TypedProperties props = new TypedProperties();
     props.setProperty("hoodie.write.concurrency.mode", "optimistic_concurrency_control");
@@ -811,53 +928,40 @@ class TestEmbeddingColumnInfoStore {
       }
       events.add(second);
       raw(JSON.writeValueAsString(snapshot));
-      assertThrows(IllegalArgumentException.class,
-          () -> store().checkAtStart(Collections.emptyMap(), Collections.singletonMap("text", 1536)), corruption);
+      EmbeddingColumnInfoStore reopened = store();
+      Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.emptyMap();
+      Map<String, Integer> vectorColumns = Collections.singletonMap("text", 1536);
+      assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns), corruption);
     }
   }
 
   @Test
   void unknownHistoricalProvidersRemainOpaqueAndUnknownBirthRetirementRefuses() throws Exception {
-    EmbeddingColumnInfoStore store = store();
-    EmbeddingColumnInfoStore.Update update = store.checkAtStart(Collections.singletonMap("legacy", MODEL), Collections.singletonMap("legacy", 1536));
-    commit(FIRST);
-    store.publishAfterCommit(FIRST, update);
-    raw(JSON.writeValueAsString(read()).replace("openai", "historical-provider-no-longer-installed"));
+    add("legacy", MODEL, FIRST);
+    com.fasterxml.jackson.databind.node.ObjectNode history = (com.fasterxml.jackson.databind.node.ObjectNode) read();
+    com.fasterxml.jackson.databind.node.ObjectNode event = (com.fasterxml.jackson.databind.node.ObjectNode) history.path("events").get(0);
+    event.put("event", "recover");
+    event.putNull("added_at_instant");
+    ((com.fasterxml.jackson.databind.node.ObjectNode) event.path("identity")).put("provider", "historical-provider-no-longer-installed");
+    raw(JSON.writeValueAsString(history));
     store().checkAtStart(Collections.emptyMap(), Collections.singletonMap("legacy", 1536));
-    IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class,
-        () -> store().checkAtStart(Collections.emptyMap(), Collections.singletonMap("legacy", 1536), Collections.singleton("legacy")));
+    EmbeddingColumnInfoStore reopened = store();
+    Map<String, EmbeddingColumnInfoStore.Identity> configuredModels = Collections.emptyMap();
+    Map<String, Integer> vectorColumns = Collections.singletonMap("legacy", 1536);
+    Set<String> retirements = Collections.singleton("legacy");
+    IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class, () -> reopened.checkAtStart(configuredModels, vectorColumns, retirements));
     assertTrue(conflict.getMessage().contains("unknown creation instant"), conflict.getMessage());
   }
 
   @Test
-  void eachNewRoundWarnsAgainAfterMetadataIsLostAgain() throws Exception {
+  void lostHistoryWithoutAFenceRefusesEveryNewJob() throws Exception {
     add("text", MODEL, FIRST);
     Files.delete(file());
-    List<LogEvent> warnings = new ArrayList<>();
-    AbstractAppender appender = new AbstractAppender("column-info-warnings", null, PatternLayout.createDefaultLayout(), false) {
-      @Override
-      public void append(LogEvent event) {
-        warnings.add(event.toImmutable());
-      }
-    };
-    Logger logger = (Logger) LogManager.getLogger(EmbeddingColumnInfoStore.class);
-    appender.start();
-    logger.addAppender(appender);
-    try {
-      EmbeddingColumnInfoStore firstRound = store();
-      EmbeddingColumnInfoStore.Update recovery = firstRound.checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536));
-      firstRound.checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536));
-      commit(SECOND);
-      firstRound.publishAfterCommit(SECOND, recovery);
-      Files.delete(file());
-      EmbeddingColumnInfoStore secondRound = store();
-      secondRound.checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536));
-      secondRound.checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536));
-    } finally {
-      logger.removeAppender(appender);
-      appender.stop();
+    for (int job = 0; job < 2; job++) {
+      assertThrows(IllegalArgumentException.class,
+          () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)));
     }
-    assertEquals(2, warnings.stream().filter(event -> event.getMessage().getFormattedMessage().contains("VECTOR column text has no model identity")).count());
+    assertFalse(Files.exists(file()));
   }
 
   @Test
@@ -923,7 +1027,7 @@ class TestEmbeddingColumnInfoStore {
     return new EmbeddingColumnInfoStore(base, conf, new TypedProperties());
   }
 
-  private void add(String column, EmbeddingColumnInfoStore.Identity identity, String instant) throws Exception {
+  private void add(String column, EmbeddingColumnInfoStore.Identity identity, String instant) {
     EmbeddingColumnInfoStore store = store();
     EmbeddingColumnInfoStore.Update update = store.checkAtStart(Collections.singletonMap(column, identity), Collections.emptyMap());
     commit(instant);
@@ -974,5 +1078,98 @@ class TestEmbeddingColumnInfoStore {
 
   private static EmbeddingColumnInfoStore.Identity identity(String provider, String model, int dimension, String version) {
     return new EmbeddingColumnInfoStore.Identity(provider, model, dimension, version);
+  }
+
+  /**
+   * A model's identity carries the compute-side input transform: the image resize's pixel transform and settings for a model
+   * that embeds images, none for a text model, so the same model behind another resize is another identity.
+   */
+  @Test
+  void identityCarriesTheInputTransformVersion() {
+    EmbeddingModelSpec text = new EmbeddingModelSpec("t", "emb_t", 8, null, "dummy", "dummy",
+        Collections.singleton(EmbeddingTableSchema.MODALITY_TEXT));
+    EmbeddingModelSpec image = new EmbeddingModelSpec("m", "emb_m", 8, null, "dummy", "dummy",
+        new HashSet<>(Arrays.asList(EmbeddingTableSchema.MODALITY_TEXT, EmbeddingTableSchema.MODALITY_IMAGE)));
+    EmbeddingColumnInfoStore.Identity textIdentity = EmbeddingColumnInfoConfig.identity(text, new TypedProperties());
+    EmbeddingColumnInfoStore.Identity imageIdentity = EmbeddingColumnInfoConfig.identity(image, new TypedProperties());
+    assertEquals(EmbeddingColumnInfoStore.Identity.NO_INPUT_TRANSFORM, textIdentity.getInputTransformVersion());
+    assertEquals("image-pixels-v1;long.side=" + ImagePreprocessingSpec.DEFAULT_LONG_SIDE + ";raster.budget.bytes="
+        + ImagePreprocessingSpec.DEFAULT_RASTER_BUDGET_BYTES + ";encoding=jpeg;jpeg.quality=" + ImagePreprocessingSpec.DEFAULT_JPEG_QUALITY,
+        imageIdentity.getInputTransformVersion());
+    TypedProperties larger = new TypedProperties();
+    larger.setProperty(EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key(), "1024");
+    assertNotEquals(imageIdentity, EmbeddingColumnInfoConfig.identity(image, larger), "another resize setting is another identity");
+    assertNotEquals(new EmbeddingColumnInfoStore.Identity("dummy", "dummy", 8, null, "image-pixels-v0"), imageIdentity,
+        "another resize is another identity");
+    assertFalse(imageIdentity.getInputTransformVersion().contains(ImageResizeLogicV1.LOGIC_VERSION),
+        "a refusal-only logic bump keeps the identity: it carries the pixel-transform version, not the logic version");
+  }
+
+  @Test
+  void imageResizeSettingsArePartOfThePersistedModelIdentity() {
+    EmbeddingModelSpec image = new EmbeddingModelSpec("m", "emb_m", 8, null, "dummy", "dummy",
+        Collections.singleton(EmbeddingTableSchema.MODALITY_IMAGE));
+    TypedProperties larger = new TypedProperties();
+    larger.setProperty(EmbeddingTableConfig.COMPUTE_IMAGE_LONG_SIDE.key(), "1024");
+    assertNotEquals(EmbeddingColumnInfoConfig.identity(image, new TypedProperties()),
+        EmbeddingColumnInfoConfig.identity(image, larger), "another resize must be another model input identity");
+  }
+
+  @Test
+  void completedEmptyManualPublicationLeavesHistoryAbsent() throws Exception {
+    EmbeddingColumnInfoStore manual = store();
+    EmbeddingColumnInfoStore.Update nothing = manual.checkAtStart(Collections.emptyMap(), Collections.emptyMap());
+    commit(FIRST);
+    manual.publishAfterCommit(FIRST, nothing);
+    assertFalse(Files.exists(file()));
+    assertFalse(Files.exists(temp.resolve("table").resolve(EmbeddingColumnInfoStore.FENCE_PATH)));
+    assertEquals("1", reload().getTableConfig().getString(EmbeddingColumnInfoStore.LAYOUT_VERSION));
+  }
+
+  /** Coexisting valid legacy and fenced histories retain all identities and never lower a published revision. */
+  @ParameterizedTest(name = "publishedNewer={0}")
+  @ValueSource(booleans = {false, true})
+  void mergedHistoriesKeepRevisionAndRepeatedCallbacksStable(boolean publishedNewer) throws Exception {
+    String fourth = "20261112120000000";
+    String[] instants = {FIRST, SECOND, THIRD, fourth};
+    String[] authorityColumns = publishedNewer ? new String[] {"a"} : new String[] {"a", "c", "d"};
+    EmbeddingColumnInfoStore.Update firstUpdate = null;
+    for (int index = 0; index < authorityColumns.length; index++) {
+      EmbeddingColumnInfoStore authorityStore = store();
+      EmbeddingColumnInfoStore.Update update = authorityStore.checkAtStart(
+          Collections.singletonMap(authorityColumns[index], MODEL), Collections.emptyMap());
+      if (index == 0) {
+        firstUpdate = update;
+      }
+      commitFenced(authorityStore, update, instants[index], true);
+      authorityStore.publishCommittedState(instants[index], update);
+    }
+    JsonNode authority = read();
+    Path fence = temp.resolve("table").resolve(EmbeddingColumnInfoStore.FENCE_PATH);
+    byte[] authoritativeFence = Files.readAllBytes(fence);
+    // Prepare independent, valid legacy history in this isolated fixture; then restore the real fence before the call.
+    Files.delete(fence);
+    Files.delete(file());
+    String[] publishedColumns = publishedNewer ? new String[] {"b", "c", "d"} : new String[] {"b"};
+    for (int index = 0; index < publishedColumns.length; index++) {
+      add(publishedColumns[index], MODEL, instants[authorityColumns.length + index]);
+    }
+    JsonNode published = read();
+    Files.write(fence, authoritativeFence);
+    com.fasterxml.jackson.databind.node.ArrayNode expectedEvents = authority.path("events").deepCopy();
+    for (JsonNode event : published.path("events")) {
+      com.fasterxml.jackson.databind.node.ObjectNode copied = event.deepCopy();
+      copied.put("sequence", expectedEvents.size() + 1);
+      expectedEvents.add(copied);
+    }
+    store().publishCommittedState(FIRST, firstUpdate);
+    assertEquals(expectedEvents, read().path("events"), "all identity, birth and commit fields survive reconciliation");
+    assertEquals(4, read().path("revision").intValue(), "the changed merge is above both valid input revisions");
+    assertArrayEquals(authoritativeFence, Files.readAllBytes(fence), "canonical publication preserves fence authority");
+    byte[] merged = Files.readAllBytes(file());
+    store().publishCommittedState(FIRST, firstUpdate);
+    assertArrayEquals(merged, Files.readAllBytes(file()), "an identical delayed callback changes no bytes or revision");
+    store().publishCommittedState(FIRST, firstUpdate);
+    assertArrayEquals(merged, Files.readAllBytes(file()), "repeated callbacks remain idempotent");
   }
 }

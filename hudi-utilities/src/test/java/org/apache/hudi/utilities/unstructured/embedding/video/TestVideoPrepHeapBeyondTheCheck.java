@@ -34,15 +34,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The heap a video prep task holds beside what the frame-heap start check counts. The check's slot term is
- * {@code 6 · maxPixels + 16 MiB + 2 · prefetch}: data prep's read ahead is counted (2 buffers per task, admitted only where they
- * fit). Two bounded buffers are not counted, and their bounds are pinned here so a change to either is a change to this sum:
+ * {@code 6 · maxPixels + 16 MiB + 10 MiB + 2 · prefetch}: data prep's read ahead is counted (2 buffers per task, admitted only
+ * where they fit), and so are two bounded buffers, whose bounds are pinned here so a change to either is a change to this sum:
  * <ul>
  *   <li>the FFmpeg frame source's block reads: at most {@code BLOCKS × BLOCK_BYTES} = 2 MiB per clip, one clip per task;</li>
  *   <li>the background out-of-line writes: at most {@link OutOfLineWritePool#MAX_PENDING_BYTES} = 4 MiB pending per task, plus
  *       the one payload of at most that size the task holds while it waits for room.</li>
  * </ul>
- * Together 10 MiB per task slot that the check's measured 16 MiB per-slot overhead does not include (the check's class doc
- * says so).
+ * Together 10 MiB per task slot, counted by the check as {@code VideoFrameHeapCheck.STREAMING_BUFFER_BYTES} beside its measured
+ * 16 MiB per-slot overhead.
  */
 class TestVideoPrepHeapBeyondTheCheck {
 
@@ -84,12 +84,12 @@ class TestVideoPrepHeapBeyondTheCheck {
       });
       task.start();
       assertTrue(firstAdmitted.await(30, TimeUnit.SECONDS));
-      // the second submit can only park waiting for the pending bytes
+      // the second submit can only park waiting for the pending bytes, up to the pool's bound on a wait
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-      while (task.getState() != Thread.State.WAITING && System.nanoTime() < deadline) {
+      while (task.getState() != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) {
         task.join(10);
       }
-      assertEquals(Thread.State.WAITING, task.getState(), "the second payload waits for room");
+      assertEquals(Thread.State.TIMED_WAITING, task.getState(), "the second payload waits for room");
       assertEquals(1, admitted.get());
       release.countDown();
       task.join(TimeUnit.SECONDS.toMillis(30));

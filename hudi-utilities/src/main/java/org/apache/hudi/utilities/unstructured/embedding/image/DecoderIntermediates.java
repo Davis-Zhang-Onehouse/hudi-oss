@@ -41,7 +41,8 @@ import java.util.Arrays;
  * are the ones the header DECLARES: Deflate allocates the declared byte count before reading a byte, and the other readers
  * read up to it (at or above one 1,024,000-byte unit, the staggered read of LZW, PackBits, CCITT and BMP RLE allocates its units
  * as the data arrives, so a declared size beyond the data costs only what is read). For the terms below the estimate is an upper
- * bound of the reader's own arrays; it does not count a BMP's embedded JPEG/PNG (BI_JPEG/BI_PNG) or JPEG-in-TIFF tables:
+ * bound of the reader's own arrays; it does not count JPEG-in-TIFF tables, and a BMP whose bitmap is an embedded JPEG or PNG
+ * (BI_JPEG/BI_PNG), which a reader decodes at full size, is refused instead (the JDK readers report no image type for it):
  * <ul>
  *   <li>TIFF: the reader decodes a whole strip (or tile) at full resolution, then subsamples it: one strip/tile =
  *       {@code width x rowsPerStrip} (or {@code tileWidth x tileLength}) x bits per pixel / 8; a compressed strip/tile is
@@ -87,6 +88,10 @@ final class DecoderIntermediates {
   private static final long BMP_BI_RLE8 = 1;
   private static final long BMP_BI_RLE4 = 2;
   private static final long BMP_BI_BITFIELDS = 3;
+  /** A BMP whose bitmap is an embedded JPEG stream. */
+  private static final long BMP_BI_JPEG = 4;
+  /** A BMP whose bitmap is an embedded PNG stream. */
+  private static final long BMP_BI_PNG = 5;
   private static final long BMP_BI_ALPHABITFIELDS = 6;
   /** The RLE bitmap is held twice while it is read: the units, then the one array they are copied into. */
   private static final long BMP_RLE_COPIES = 2;
@@ -228,7 +233,7 @@ final class DecoderIntermediates {
    * headers retain the conservative source-row allowance. Embedded JPEG/PNG decoder buffers are not counted. The fields are
    * read from {@code header}, the file's first bytes ({@code BMPMetadata} does not carry imageSize).
    */
-  private static long bmpBitmapOrRow(byte[] header, ImageHeader image) {
+  private static long bmpBitmapOrRow(byte[] header, ImageHeader image) throws ImageRefusedException {
     long sourceRow = 4L * image.getWidth();
     // shorter than a BITMAPINFOHEADER (an OS/2 1.x header or a truncated file), or an OS/2 1.x / Windows 2.x header: a 16-bit
     // width, never RLE
@@ -236,6 +241,10 @@ final class DecoderIntermediates {
       return sourceRow;
     }
     long compression = le32(header, BMP_COMPRESSION_OFFSET);
+    if (compression == BMP_BI_JPEG || compression == BMP_BI_PNG) {
+      throw new ImageRefusedException(ImageRefusedException.REFUSED_BEFORE_DECODE + image + " is a BMP with an embedded JPEG or "
+          + "PNG bitmap (compression " + compression + "), which is decoded at full size outside the decoder-intermediate budget");
+    }
     if (compression == BMP_BI_RGB || compression == BMP_BI_BITFIELDS || compression == BMP_BI_ALPHABITFIELDS) {
       long bitsPerPixel = (header[BMP_BITS_PER_PIXEL_OFFSET] & 0xffL) | (header[BMP_BITS_PER_PIXEL_OFFSET + 1] & 0xffL) << 8;
       return (image.getWidth() * bitsPerPixel + 31) / 32 * 4;

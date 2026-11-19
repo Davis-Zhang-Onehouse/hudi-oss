@@ -23,6 +23,7 @@ import org.apache.hudi.exception.HoodieException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -33,21 +34,28 @@ public final class BlobFileNames {
   /** Hex characters of the sha-256 kept as source_path_sha: 128 bits. */
   private static final int SOURCE_PATH_SHA_HEX_LENGTH = 32;
   private static final char[] HEX = "0123456789abcdef".toCharArray();
-  private static final Map<String, String> CONTENT_TYPES = new HashMap<>();
-
-  static {
-    CONTENT_TYPES.put("pdf", "application/pdf");
-    CONTENT_TYPES.put("png", "image/png");
-    CONTENT_TYPES.put("jpg", "image/jpeg");
-    CONTENT_TYPES.put("jpeg", "image/jpeg");
-    CONTENT_TYPES.put("gif", "image/gif");
-    CONTENT_TYPES.put("bmp", "image/bmp");
-    CONTENT_TYPES.put("tif", "image/tiff");
-    CONTENT_TYPES.put("tiff", "image/tiff");
-    CONTENT_TYPES.put("webp", "image/webp");
-  }
+  /**
+   * The extension-to-MIME map behind every blob row's {@code content_type}, frozen for blob layout version 1
+   * ({@link org.apache.hudi.utilities.sources.unstructured.UnstructuredTableVersion#CURRENT_BLOB_LAYOUT_VERSION}): rows already
+   * written keep the type it gave them, so a change to it (a new extension or another type) needs a new blob layout version.
+   */
+  static final Map<String, String> CONTENT_TYPES = contentTypesOfLayoutVersion1();
 
   private BlobFileNames() {
+  }
+
+  private static Map<String, String> contentTypesOfLayoutVersion1() {
+    Map<String, String> types = new HashMap<>();
+    types.put("pdf", "application/pdf");
+    types.put("png", "image/png");
+    types.put("jpg", "image/jpeg");
+    types.put("jpeg", "image/jpeg");
+    types.put("gif", "image/gif");
+    types.put("bmp", "image/bmp");
+    types.put("tif", "image/tiff");
+    types.put("tiff", "image/tiff");
+    types.put("webp", "image/webp");
+    return Collections.unmodifiableMap(types);
   }
 
   /**

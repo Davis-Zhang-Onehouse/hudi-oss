@@ -25,7 +25,7 @@ import org.apache.hudi.io.SeekableDataInputStream;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
-import org.apache.hudi.storage.StoragePathInfo;
+import org.apache.hudi.storage.StorageSchemes;
 import org.apache.hudi.utilities.unstructured.retry.TransientRetry;
 import org.apache.hudi.utilities.unstructured.storage.StorageReferenceRules;
 
@@ -44,6 +44,7 @@ import java.io.Serializable;
 import java.net.URI;
 import java.nio.file.AccessDeniedException;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 import scala.Option;
@@ -87,6 +88,8 @@ public class BlobBytesSource implements Serializable {
   // 0: the file system's own read-ahead
   private final long readaheadBytes;
   private transient HoodieStorage baseStorage;
+  /** The last whole-object status checked on this source, consumed by its next open. */
+  private transient SourceObjectVersion checkedVersion;
   private transient Map<String, HoodieStorage> storageBySchemeAuthority;
 
   /** A source of absolute paths only, that tries each open once ({@link TransientRetry#NONE}). */
@@ -209,38 +212,44 @@ public class BlobBytesSource implements Serializable {
   /**
    * Verifies the listed version before prep consumes a whole out-of-line source object, including read-ahead bytes.
    * Inline bytes and explicit stored ranges already identify their bytes. A zero modification time is unknown; size is always
-   * compared. Changed objects fail their file, while a status request's storage failure keeps the source-open retry policy.
+   * compared. The next open retains the checked status for a pinned read when available and verifies the status after reading.
+   * Changed objects fail their file, while a status request's storage failure keeps the source-open retry policy.
    */
-  public void checkVersion(Row blob, long modificationTime, long length) throws IOException {
+  public synchronized void checkVersion(Row blob, long modificationTime, long length) throws IOException {
+    checkedVersion = null;
     ParsedBlob parsed = parse(blob);
     if (parsed.data != null || parsed.offset != null) {
       return;
     }
-    openRetry.call("check blob source version " + parsed.path, () -> {
+    checkedVersion = openRetry.call("check blob source version " + parsed.path, () -> {
       HoodieStorage storage = storageFor(parsed.path, parsed.absolute);
       try {
-        StoragePathInfo info = storage.getPathInfo(parsed.path);
-        if (info.getLength() != length || (modificationTime > 0 && info.getModificationTime() != modificationTime)) {
-          throw new BlobSourceChangedException("Source object " + parsed.path + " changed since it was listed: expected mtime="
-              + modificationTime + ", size=" + length + "; found mtime=" + info.getModificationTime() + ", size=" + info.getLength());
-        }
+        SourceObjectVersion version = SourceObjectVersion.read(storage, parsed.path);
+        version.checkListed(modificationTime, length);
+        return version;
       } catch (IOException | RuntimeException failure) {
         throw notFoundChecked(storage, parsed.path, failure);
       }
-      return null;
     }, BlobBytesSource::isTransient);
+  }
+
+  private synchronized SourceObjectVersion takeCheckedVersion(StoragePath path) {
+    SourceObjectVersion version = checkedVersion;
+    checkedVersion = null;
+    return version != null && version.names(path) ? version : null;
   }
 
   private InputStream open(ParsedBlob parsed, Long objectLength) throws IOException {
     if (parsed.data != null) {
       return new ByteArrayInputStream(parsed.data);
     }
-    return openRetry.call("open blob " + parsed.path, () -> openRange(parsed, objectLength), BlobBytesSource::isTransient);
+    SourceObjectVersion version = takeCheckedVersion(parsed.path);
+    return openRetry.call("open blob " + parsed.path, () -> openRange(parsed, objectLength, version), BlobBytesSource::isTransient);
   }
 
-  private InputStream openRange(ParsedBlob blob, Long objectLength) throws IOException {
+  private InputStream openRange(ParsedBlob blob, Long objectLength, SourceObjectVersion version) throws IOException {
     HoodieStorage pathStorage = storageFor(blob.path, blob.absolute);
-    SeekableDataInputStream in = openChecked(pathStorage, blob.path, knownObjectLength(blob, objectLength));
+    SeekableDataInputStream in = openChecked(pathStorage, blob.path, knownObjectLength(blob, objectLength), version);
     try {
       if (blob.offset != null && blob.offset > 0) {
         seekChecked(in, pathStorage, blob.path, blob.offset);
@@ -307,7 +316,8 @@ public class BlobBytesSource implements Serializable {
     if (parsed.data != null) {
       return new ByteArrayBlob(parsed.data);
     }
-    return openRetry.call("open blob " + parsed.path, () -> openSeekableRange(parsed, objectLength), BlobBytesSource::isTransient);
+    SourceObjectVersion version = takeCheckedVersion(parsed.path);
+    return openRetry.call("open blob " + parsed.path, () -> openSeekableRange(parsed, objectLength, version), BlobBytesSource::isTransient);
   }
 
   /** The listed length of the object an unranged reference names; null for a ranged one, whose object length is not known. */
@@ -315,7 +325,7 @@ public class BlobBytesSource implements Serializable {
     return blob.offset == null && blob.length == null ? objectLength : null;
   }
 
-  private SeekableBlob openSeekableRange(ParsedBlob blob, Long objectLength) throws IOException {
+  private SeekableBlob openSeekableRange(ParsedBlob blob, Long objectLength, SourceObjectVersion version) throws IOException {
     HoodieStorage pathStorage = storageFor(blob.path, blob.absolute);
     long base = blob.offset == null ? 0L : blob.offset;
     Long knownLength = knownObjectLength(blob, objectLength);
@@ -329,7 +339,7 @@ public class BlobBytesSource implements Serializable {
     } catch (IOException | RuntimeException e) {
       throw notFoundChecked(pathStorage, blob.path, e);
     }
-    SeekableDataInputStream in = openChecked(pathStorage, blob.path, knownLength);
+    SeekableDataInputStream in = openChecked(pathStorage, blob.path, knownLength, version);
     try {
       if (base > 0) {
         seekChecked(in, pathStorage, blob.path, base);
@@ -410,9 +420,11 @@ public class BlobBytesSource implements Serializable {
    * denied" is a FileNotFoundException of a file that is there: an access denial, a platform failure). An open with a known
    * length is lazy on S3A: a missing object is then reported at the first read or seek, which re-check it the same way.
    */
-  private SeekableDataInputStream openChecked(HoodieStorage storage, StoragePath path, Long knownLength) throws IOException {
+  private SeekableDataInputStream openChecked(HoodieStorage storage, StoragePath path, Long knownLength,
+                                               SourceObjectVersion version) throws IOException {
     try {
-      return SourceObjectOpener.open(storage, path, READ_BUFFER_BYTES, knownLength, readaheadBytes);
+      return version == null ? SourceObjectOpener.open(storage, path, READ_BUFFER_BYTES, knownLength, readaheadBytes)
+          : version.open(storage, READ_BUFFER_BYTES, knownLength, readaheadBytes);
     } catch (IOException | RuntimeException e) {
       // the storage layer may wrap the FileNotFoundException (HoodieIOException "Exception creating input stream")
       throw notFoundChecked(storage, path, e);
@@ -425,6 +437,13 @@ public class BlobBytesSource implements Serializable {
    * absence either, so that failure becomes a plain storage failure.
    */
   private static Exception notFoundCheckedImpl(HoodieStorage storage, StoragePath path, Exception failure) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
+      if ("org.apache.hadoop.fs.s3a.RemoteFileChangedException".equals(cause.getClass().getName())) {
+        BlobSourceChangedException changed = new BlobSourceChangedException("Source object " + path + " changed during its pinned read");
+        changed.initCause(failure);
+        return changed;
+      }
+    }
     if (!ExceptionUtil.isCausedBy(failure, FileNotFoundException.class)) {
       return failure;
     }
@@ -567,9 +586,11 @@ public class BlobBytesSource implements Serializable {
     URI uri = path.toUri();
     for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (cause instanceof UnsupportedFileSystemException) {
-        // a scheme whose file system resolves in this job but fails to construct is a platform fault; a scheme with no
-        // resolvable file system here (no connector on this executor, or a foreign scheme) is the reference's own fault
-        return !StorageReferenceRules.isServedScheme(uri.getScheme(), storageConf);
+        // a scheme this deployment serves whose file system is missing is a platform fault (a connector jar absent on
+        // the executor), never the reference's; a scheme outside that set is the reference's own fault
+        String scheme = uri.getScheme();
+        return !StorageSchemes.isSchemeSupported(scheme == null ? null : scheme.toLowerCase(Locale.ROOT))
+            && !StorageReferenceRules.isServedScheme(scheme, storageConf);
       }
       if (StorageReferenceRules.isInvalidAuthorityFailure(uri, cause)) {
         return true;

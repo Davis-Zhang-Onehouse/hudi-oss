@@ -22,6 +22,7 @@ import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.io.hadoop.HoodieBaseParquetWriter;
 import org.apache.hudi.keygen.ComplexKeyGenerator;
 import org.apache.hudi.keygen.NonpartitionedKeyGenerator;
 import org.apache.hudi.keygen.SimpleKeyGenerator;
@@ -32,10 +33,12 @@ import org.apache.hudi.utilities.sources.SourceContracts;
 import org.apache.hudi.utilities.sources.UnstructuredDataSource;
 import org.apache.hudi.utilities.sources.blob.BlobParquetConfigInjector;
 import org.apache.hudi.utilities.sources.blob.BlobQuarantineTransformer;
+import org.apache.hudi.utilities.sources.blob.BlobTableConfig;
 import org.apache.hudi.utilities.sources.blob.BlobTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingParquetConfigInjector;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
 import org.apache.hudi.utilities.unstructured.embedding.streamer.EmbeddingTableTransformer;
 
 import org.junit.jupiter.api.Test;
@@ -43,10 +46,12 @@ import org.junit.jupiter.api.Test;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Properties;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -83,6 +88,10 @@ class TestUnstructuredSourceContract {
   }
 
   /** What {@code contract}'s settings add to a job that sets only its mode and cloud. */
+  private static UnstructuredSourceContract contract(TypedProperties props) {
+    return new UnstructuredSourceContract(props);
+  }
+
   private static Map<String, String> settingsOfAnEmptyJob(UnstructuredSourceContract contract) {
     TypedProperties job = mode(contract.mode().configValue());
     Map<String, String> added = asMap(contract.prepareJob(job));
@@ -129,6 +138,64 @@ class TestUnstructuredSourceContract {
     assertEquals("1", merged.getProperty("hoodie.table.unstructured.schema.version"));
   }
 
+  /**
+   * A blob table is created with the job's effective inline threshold, codec and bloom-filter switch; a job whose values differ,
+   * or a table that does not store them, is refused, and the refusal names the job setting that matches the table.
+   */
+  @Test
+  void blobCreationPinsThePhysicalSettingsAndRefusesAnotherWriter() {
+    TypedProperties job = mode("blob");
+    job.setProperty(CODEC, "ZSTD");
+    UnstructuredTableProperties settings = contract(job).requiredTableProperties();
+    Properties pins = settings.tableProperties();
+    assertEquals(Long.toString(BlobTableConfig.inlineMaxBytes(job)), pins.getProperty("hoodie.table.blob.inline.max.bytes"));
+    assertEquals("zstd", pins.getProperty("hoodie.table.blob.parquet.compression.codec"));
+    assertEquals("false", pins.getProperty("hoodie.table.blob.parquet.bloom.filter.enabled"));
+    assertNull(contract("embedding").requiredTableProperties().tableProperties().getProperty("hoodie.table.blob.inline.max.bytes"));
+
+    HoodieTableConfig table = new HoodieTableConfig();
+    table.getProps().putAll(pins);
+    table.setValue(HoodieTableConfig.RECORDKEY_FIELDS, BLOB_KEY);
+    settings.checkTable("file:/tables/blob", table);
+
+    TypedProperties otherThreshold = mode("blob");
+    otherThreshold.setProperty(CODEC, "zstd");
+    otherThreshold.setProperty(BlobTableConfig.INLINE_MAX_BYTES.key(), "4096");
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+        () -> contract(otherThreshold).requiredTableProperties().checkTable("file:/tables/blob", table));
+    assertTrue(refused.getMessage().contains("hoodie.table.blob.inline.max.bytes=4096 (the table stores "
+        + BlobTableConfig.inlineMaxBytes(job) + "; set " + BlobTableConfig.INLINE_MAX_BYTES.key() + "="
+        + BlobTableConfig.inlineMaxBytes(job) + " to match it)"), refused.getMessage());
+
+    // a stored threshold this Parquet cannot write names a newer build, not a setting
+    if (!HoodieBaseParquetWriter.supportsColumnStatisticsSwitch()) {
+      Properties spark4Table = new Properties();
+      spark4Table.putAll(table.getProps());
+      spark4Table.setProperty("hoodie.table.blob.inline.max.bytes", "1048576");
+      HoodieTableConfig created = new HoodieTableConfig();
+      created.getProps().putAll(spark4Table);
+      IllegalArgumentException unreachable = assertThrows(IllegalArgumentException.class,
+          () -> settings.checkTable("file:/tables/blob", created));
+      assertTrue(unreachable.getMessage().contains("use a build with Parquet 1.14 or later"), unreachable.getMessage());
+    }
+    // a blank codec is the default codec, as the job's settings make it
+    TypedProperties blank = mode("blob");
+    blank.setProperty(CODEC, " ");
+    assertEquals("uncompressed", contract(blank).requiredTableProperties().tableProperties()
+        .getProperty("hoodie.table.blob.parquet.compression.codec"));
+
+    table.getProps().remove("hoodie.table.blob.parquet.bloom.filter.enabled");
+    IllegalArgumentException unpinned = assertThrows(IllegalArgumentException.class,
+        () -> settings.checkTable("file:/tables/blob", table));
+    assertTrue(unpinned.getMessage().contains("hoodie.table.blob.parquet.bloom.filter.enabled=false (the table stores none; the table "
+        + "was created by an earlier build that does not store it: write this job to a new table)"), unpinned.getMessage());
+    table.getProps().remove("hoodie.table.blob.inline.max.bytes");
+    IllegalArgumentException noThreshold = assertThrows(IllegalArgumentException.class,
+        () -> settings.checkTable("file:/tables/blob", table));
+    assertTrue(noThreshold.getMessage().contains("hoodie.table.blob.inline.max.bytes=" + BlobTableConfig.inlineMaxBytes(job)
+        + " (the table stores none; the table was created by an earlier build"), noThreshold.getMessage());
+  }
+
   @Test
   void unknownBlobLayoutVersionIsRefused() {
     HoodieTableConfig table = new HoodieTableConfig();
@@ -155,6 +222,29 @@ class TestUnstructuredSourceContract {
       assertThrows(IllegalArgumentException.class,
           () -> settings.checkTable("file:/tables/embedding", table), key);
     }
+  }
+
+  /** An embedding table is created with its column-info layout version among its pins; a table without it, or another, is refused. */
+  @Test
+  void embeddingCreationPinsTheColumnInfoLayoutVersion() {
+    UnstructuredTableProperties settings = contract("embedding").requiredTableProperties();
+    String key = "hoodie.table.embedding.column.info.layout.version";
+    assertEquals("1", settings.tableProperties().getProperty(key), "written when the table is created");
+    assertEquals(Long.toString(EmbeddingInputConfig.inlineMaxBytes(mode("embedding"))),
+        settings.tableProperties().getProperty("hoodie.table.embedding.input.inline.max.bytes"), "the input store's threshold too");
+    assertNull(contract("blob").requiredTableProperties().tableProperties().getProperty(key), "a blob table has no column info");
+    HoodieTableConfig table = new HoodieTableConfig();
+    table.getProps().putAll(settings.tableProperties());
+    table.setValue(HoodieTableConfig.RECORDKEY_FIELDS, EMBEDDING_KEY);
+    settings.checkTable("file:/tables/embedding", table);
+    table.getProps().setProperty(key, "2");
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+        () -> settings.checkTable("file:/tables/embedding", table));
+    assertTrue(refused.getMessage().contains(key + "=1: the table at file:/tables/embedding stores 2"), refused.getMessage());
+    table.getProps().remove(key);
+    IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+        () -> settings.checkTable("file:/tables/embedding", table));
+    assertTrue(missing.getMessage().contains(key + "=1: the table at file:/tables/embedding stores none"), missing.getMessage());
   }
 
   /** The embedding contract is checked key by key: a setting an older table does not store compares as its default. */
@@ -185,10 +275,12 @@ class TestUnstructuredSourceContract {
     blob.put(INJECTOR, BlobParquetConfigInjector.class.getName());
     blob.put(CODEC, "uncompressed");
     blob.put(BLOOM, "false");
+    blob.put("hoodie.table.blob.inline.max.bytes", HoodieBaseParquetWriter.supportsColumnStatisticsSwitch() ? "1048576" : "10240");
+    blob.put("hoodie.table.blob.parquet.compression.codec", "uncompressed");
+    blob.put("hoodie.table.blob.parquet.bloom.filter.enabled", "false");
     UnstructuredSourceContract contract = contract("blob");
     assertEquals(blob, settingsOfAnEmptyJob(contract));
     assertKeyGenerators(contract);
-    assertEquals(BLOB_KEY, String.join(",", BlobTableSchema.KEY_COLUMNS));
 
     TypedProperties markersOff = mode("blob");
     markersOff.setProperty(HoodieWriteConfig.BLOB_MARKERS_ENABLE.key(), "false");
@@ -403,6 +495,8 @@ class TestUnstructuredSourceContract {
     Map<String, String> embedding = new TreeMap<>();
     embedding.put("hoodie.table.blob.layout.version", "1");
     embedding.put("hoodie.table.unstructured.kind", "embedding");
+    embedding.put("hoodie.table.embedding.column.info.layout.version", "1");
+    embedding.put("hoodie.table.embedding.input.inline.max.bytes", Long.toString(EmbeddingInputConfig.inlineMaxBytes(new TypedProperties())));
     embedding.put("hoodie.table.unstructured.schema.version", "1");
     embedding.put("hoodie.table.unstructured.key.encoding.version", "1");
     embedding.put(RECORD_KEY, EMBEDDING_KEY);

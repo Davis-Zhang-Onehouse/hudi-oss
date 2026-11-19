@@ -23,20 +23,29 @@ import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.util.JsonUtils;
+import org.apache.hudi.common.util.Option;
+import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.utilities.streamer.HoodieStreamer;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingRoundTestBase;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingStreamers;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.LogCapture;
+import org.apache.hudi.utilities.unstructured.embedding.prep.TextPipePreprocessor;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
 
@@ -66,7 +75,8 @@ class TestEmbeddingColumnInfoRound extends EmbeddingRoundTestBase {
     assertEquals("dummy", event.get("identity").get("provider").textValue());
     assertEquals("dummy", event.get("identity").get("model_name").textValue());
     assertEquals(8, event.get("identity").get("dimension").intValue());
-    assertEquals(3, event.get("identity").size());
+    assertEquals("none", event.get("identity").get("input_transform_version").textValue(), "a text model sends its inputs as they are");
+    assertEquals(4, event.get("identity").size());
     assertEquals("1", meta().getTableConfig().getProps().getProperty("hoodie.table.embedding.column.info.layout.version"));
     org.apache.spark.sql.types.StructField vector = rows(table()).values().iterator().next().schema().apply(EmbeddingStreamers.MODEL_COLUMN);
     assertFalse(vector.getComment().isDefined());
@@ -114,6 +124,100 @@ class TestEmbeddingColumnInfoRound extends EmbeddingRoundTestBase {
     changed.setProperty(EmbeddingTableConfig.MODEL_PREFIX + EmbeddingStreamers.MODEL + EmbeddingTableConfig.MODEL_NAME_SUFFIX, "another-model");
     assertThrows(RuntimeException.class, () -> round(changed));
     assertEquals(2, rows(table()).size());
+  }
+
+  @Test
+  void identityStartCheckRunsOnceWhileCommitFenceStillChecksEveryRound() throws Exception {
+    announce(text("first", "alpha beta"));
+    TypedProperties job = TypedProperties.copy(compute());
+    job.remove(HoodieWriteConfig.BASE_PATH.key());
+    HoodieStreamer streamer = new HoodieStreamer(EmbeddingStreamers.config(table()),
+        JavaSparkContext.fromSparkContext(spark().sparkContext()), Option.of(job));
+    org.apache.hudi.utilities.streamer.StreamSync sync =
+        ((HoodieStreamer.StreamSyncService) streamer.getIngestionService()).getStreamSync();
+    try {
+      sync.syncOnce();
+      assertEquals(1, TextPipePreprocessor.OPENED.get());
+      Path fence = localPath(table()).resolve(EmbeddingColumnInfoStore.FENCE_PATH);
+      com.fasterxml.jackson.databind.node.ObjectNode unknown =
+          (com.fasterxml.jackson.databind.node.ObjectNode) JsonUtils.getObjectMapper().readTree(Files.readAllBytes(fence));
+      unknown.put("layout_version", 2);
+      Files.write(fence, JsonUtils.getObjectMapper().writeValueAsBytes(unknown));
+      announce(text("second", "gamma delta"));
+      Exception refusal = assertThrows(Exception.class, sync::syncOnce,
+          "the commit-time fence continues to refuse unknown identity layouts");
+      assertTrue(messages(refusal).contains("identity fence layout version"), messages(refusal));
+      assertEquals(2, TextPipePreprocessor.OPENED.get(), "this job's second round reaches prep without repeating identity startup");
+      assertEquals(1, EmbeddingStreamers.commits(table(), storage()).size(), "the commit check still protects durable data");
+    } finally {
+      streamer.shutdownGracefully();
+      spark().catalog().clearCache();
+    }
+  }
+
+  @Test
+  void cachedStartupStillRefusesAuthorityLostBetweenRounds() throws Exception {
+    announce(text("first", "alpha beta"));
+    TypedProperties job = TypedProperties.copy(compute());
+    job.remove(HoodieWriteConfig.BASE_PATH.key());
+    HoodieStreamer streamer = new HoodieStreamer(EmbeddingStreamers.config(table()),
+        JavaSparkContext.fromSparkContext(spark().sparkContext()), Option.of(job));
+    org.apache.hudi.utilities.streamer.StreamSync sync =
+        ((HoodieStreamer.StreamSyncService) streamer.getIngestionService()).getStreamSync();
+    try {
+      sync.syncOnce();
+      assertEquals(1, EmbeddingStreamers.commits(table(), storage()).size(), "first additions remain allowed");
+      Files.delete(auxPath());
+      Files.delete(localPath(table()).resolve(EmbeddingColumnInfoStore.FENCE_PATH));
+      announce(text("second", "gamma delta"));
+      Exception refusal = assertThrows(Exception.class, sync::syncOnce);
+      assertTrue(messages(refusal).contains("no model identity information"), messages(refusal));
+      assertEquals(2, TextPipePreprocessor.OPENED.get(), "startup stays cached; the commit fence refuses the second round");
+      assertEquals(1, EmbeddingStreamers.commits(table(), storage()).size(), "lost authority cannot advance the commit");
+      assertEquals(1, rows(table()).size());
+      assertFalse(Files.exists(auxPath()), "the configured identity must not recreate missing authority");
+    } finally {
+      streamer.shutdownGracefully();
+      spark().catalog().clearCache();
+    }
+  }
+
+  /** Models a reconfigured second apply on the same transformer instance, rather than a restarted job. */
+  public static class ReconfiguredTransformer extends EmbeddingTableTransformer {
+    private int rounds;
+
+    @Override
+    public Dataset<Row> apply(JavaSparkContext jsc, SparkSession spark, Dataset<Row> rows, TypedProperties properties, String instant) {
+      TypedProperties effective = TypedProperties.copy(properties);
+      if (rounds++ > 0) {
+        effective.setProperty(EmbeddingTableConfig.MODEL_PREFIX + EmbeddingStreamers.MODEL + EmbeddingTableConfig.MODEL_NAME_SUFFIX,
+            "another-model");
+      }
+      return super.apply(jsc, spark, rows, effective, instant);
+    }
+  }
+
+  @Test
+  void changedPropertiesInvalidateStartupOnTheSameTransformer() throws Exception {
+    announce(text("first", "alpha beta"));
+    TypedProperties job = TypedProperties.copy(compute());
+    job.remove(HoodieWriteConfig.BASE_PATH.key());
+    HoodieStreamer.Config cfg = EmbeddingStreamers.config(table());
+    cfg.transformerClassNames = Collections.singletonList(ReconfiguredTransformer.class.getName());
+    HoodieStreamer streamer = new HoodieStreamer(cfg, JavaSparkContext.fromSparkContext(spark().sparkContext()), Option.of(job));
+    org.apache.hudi.utilities.streamer.StreamSync sync =
+        ((HoodieStreamer.StreamSyncService) streamer.getIngestionService()).getStreamSync();
+    try {
+      sync.syncOnce();
+      announce(text("second", "gamma delta"));
+      Exception refused = assertThrows(Exception.class, sync::syncOnce);
+      assertTrue(messages(refused).contains("different model identity"), messages(refused));
+      assertEquals(1, TextPipePreprocessor.OPENED.get(), "changed properties recheck identity before preparation");
+      assertEquals(1, EmbeddingStreamers.commits(table(), storage()).size());
+    } finally {
+      streamer.shutdownGracefully();
+      spark().catalog().clearCache();
+    }
   }
 
   @Test

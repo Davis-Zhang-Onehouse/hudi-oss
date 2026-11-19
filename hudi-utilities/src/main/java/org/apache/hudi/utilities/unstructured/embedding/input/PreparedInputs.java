@@ -151,7 +151,10 @@ public final class PreparedInputs implements Serializable, Closeable {
 
   /**
    * Waits for every payload file this task submitted to be written, then throws the first write failure, if any: called before
-   * the task reports its end, so the task succeeds only with every file of its rows.
+   * the task reports its end, so the task succeeds only with every file of its rows. The wait is bounded as the pool's
+   * ({@link OutOfLineWritePool#awaitAll}): a stuck write fails the task rather than hold its executor slot.
+   *
+   * @throws org.apache.hudi.exception.HoodieException when a write does not end within the pool's bound, naming it
    */
   public void awaitWrites() {
     OutOfLineWritePool pool = writes.get();
@@ -162,8 +165,10 @@ public final class PreparedInputs implements Serializable, Closeable {
 
   /**
    * Stops the write threads: writes not yet started are dropped (after {@link #awaitWrites} there are none; a drop is recorded
-   * as a failure, so a later barrier fails), and those running are waited for. Failures are thrown by {@link #awaitWrites},
-   * not here.
+   * as a failure, so a later barrier fails), and those running are waited for, up to the pool's bound. Write failures are thrown
+   * by {@link #awaitWrites}, not here.
+   *
+   * @throws org.apache.hudi.exception.HoodieException when a running write does not end within the pool's bound
    */
   @Override
   public void close() {
@@ -241,8 +246,13 @@ public final class PreparedInputs implements Serializable, Closeable {
    * @throws HoodieIOException when the payload stream cannot be read
    */
   public static byte[] readWhole(BlobBytesSupplier payload, long sizeBytes, String contentType) {
-    checkPayload("inline payload", payload, sizeBytes);
     checkInput(null, contentType);
+    return readWhole(payload, sizeBytes);
+  }
+
+  /** Exactly the declared bytes of a generic inline payload without an input-store content-type restriction. */
+  public static byte[] readWhole(BlobBytesSupplier payload, long sizeBytes) {
+    checkPayload("inline payload", payload, sizeBytes);
     byte[] bytes = new byte[(int) sizeBytes];
     try (InputStream in = payload.open()) {
       int read = 0;

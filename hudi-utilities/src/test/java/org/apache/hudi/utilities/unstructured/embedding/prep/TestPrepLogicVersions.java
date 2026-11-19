@@ -28,7 +28,6 @@ import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceConfig;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredSourceContract;
 import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableProperties;
-import org.apache.hudi.utilities.sources.unstructured.UnstructuredTableVersion;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableChecks;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioConfig;
@@ -246,14 +245,9 @@ class TestPrepLogicVersions {
   @Test
   void changedOutputSettingRefusesAnExistingTable() throws Exception {
     TypedProperties props = new TypedProperties();
-    UnstructuredTableProperties.Builder settings = UnstructuredTableProperties.builder("Embedding prep")
-        .requireTableProperty(UnstructuredTableVersion.BLOB_LAYOUT_VERSION, "1")
-        .requireTableProperty(UnstructuredTableVersion.KIND, "embedding")
-        .requireTableProperty(UnstructuredTableVersion.SCHEMA_VERSION, "1")
-        .requireTableProperty(UnstructuredTableVersion.KEY_ENCODING_VERSION, "1");
-    PrepLogicVersions.from(props).requireTableProperties(settings);
+    UnstructuredTableProperties settings = UnstructuredSourceContract.embeddingTablePins("Embedding prep", props);
     String base = temp.resolve("existing").toUri().toString();
-    HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(settings.build().tableProperties())
+    HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(settings.tableProperties())
         .setTableVersion(9).setTableName("embedding").setTableType(HoodieTableType.COPY_ON_WRITE)
         .initTable(HoodieTestUtils.getDefaultStorageConf(), base);
     EmbeddingTableChecks.checkTableVersion(base, HoodieTestUtils.getDefaultStorageConf(), EmbeddingTableConfig.from(props));
@@ -370,20 +364,21 @@ class TestPrepLogicVersions {
     assertEquals(PrepLogicVersions.from(implicit).tableProperties(), PrepLogicVersions.from(explicit).tableProperties());
   }
 
-  /** Input size caps are pinned at their effective defaults; another value changes only its own key. */
+  /**
+   * The input size caps are not part of the stored contract: they only refuse a file and never change the rows of a file they
+   * accept, so a table created uncapped accepts a job that adds or changes a cap.
+   */
   @Test
-  void inputSizeCapsArePinnedAtTheirEffectiveDefaults() {
-    Map<String, String> defaults = PrepLogicVersions.from(new TypedProperties()).tableProperties();
-    assertEquals("21474836480", defaults.get(PIN + "pdf.max.input.bytes"));
-    assertEquals("21474836480", defaults.get(PIN + "video.max.bytes"));
-    Map<String, String> pdfCapped = PrepLogicVersions.from(job(EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "536870912"))
-        .tableProperties();
-    assertEquals(changed(defaults, PIN + "pdf.max.input.bytes", "536870912"), pdfCapped);
-    Map<String, String> videoCapped = PrepLogicVersions.from(job(EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(), "2147483648"))
-        .tableProperties();
-    assertEquals(changed(defaults, PIN + "video.max.bytes", "2147483648"), videoCapped);
-    assertEquals(defaults, PrepLogicVersions.from(job(EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "21474836480"))
-        .tableProperties(), "an explicit default matches the implicit default");
+  void inputSizeCapsAreNotPinned() {
+    Map<String, String> uncapped = PrepLogicVersions.from(new TypedProperties()).tableProperties();
+    for (String cap : new String[] {EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key(),
+        EmbeddingTableConfig.PREP_IMAGE_MAX_BYTES.key()}) {
+      TypedProperties capped = job(cap, "536870912");
+      assertEquals(uncapped, PrepLogicVersions.from(capped).tableProperties(), cap);
+      assertDoesNotThrow(() -> PrepLogicVersions.from(capped).checkTable(BASE, table(tablePins(new TypedProperties()))), cap);
+    }
+    assertTrue(uncapped.keySet().stream().noneMatch(key -> key.endsWith(".max.input.bytes") || key.endsWith("video.max.bytes")
+        || key.endsWith("image.max.bytes")), uncapped.toString());
   }
 
   /** A setting change is a change of its own key only, and is checked only for the kinds whose output it decides. */
@@ -427,13 +422,8 @@ class TestPrepLogicVersions {
   @Test
   void persistedPinsRefuseChangedLogicAndMissingKeys() throws Exception {
     TypedProperties props = new TypedProperties();
-    UnstructuredTableProperties.Builder settings = UnstructuredTableProperties.builder("Embedding prep")
-        .requireTableProperty(UnstructuredTableVersion.BLOB_LAYOUT_VERSION, "1")
-        .requireTableProperty(UnstructuredTableVersion.KIND, "embedding")
-        .requireTableProperty(UnstructuredTableVersion.SCHEMA_VERSION, "1")
-        .requireTableProperty(UnstructuredTableVersion.KEY_ENCODING_VERSION, "1");
-    PrepLogicVersions.from(props).requireTableProperties(settings);
-    Properties pins = settings.build().tableProperties();
+    UnstructuredTableProperties settings = UnstructuredSourceContract.embeddingTablePins("Embedding prep", props);
+    Properties pins = settings.tableProperties();
     String base = temp.resolve("table").toUri().toString();
     HoodieTableMetaClient meta = HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(pins)
         .setTableVersion(9).setTableName("embedding").setTableType(HoodieTableType.COPY_ON_WRITE)
@@ -453,7 +443,7 @@ class TestPrepLogicVersions {
         missing.getProps().setProperty(key, pins.getProperty(key));
       }
     }
-    UnstructuredTableProperties required = settings.build();
+    UnstructuredTableProperties required = settings;
     String message = assertThrows(IllegalArgumentException.class, () -> required.checkTable(base, missing)).getMessage();
     assertTrue(message.startsWith("Embedding prep requires the table's "), message);
     assertTrue(message.contains(PIN + "text.logic.version=" + PrepLogicVersions.from(new TypedProperties()).version("text")
@@ -501,7 +491,6 @@ class TestPrepLogicVersions {
     Properties pins = tablePins(new TypedProperties());
     assertEquals("256", pins.getProperty(PIN + "chunk.max.tokens"));
     assertEquals("128", pins.getProperty(PIN + "chunk.overlap.tokens"));
-    assertEquals("21474836480", pins.getProperty(PIN + "pdf.max.input.bytes"));
     assertEquals(String.valueOf(EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS.defaultValue()),
         pins.getProperty(PIN + "video.keyframe.interval.ms"));
     assertEquals(String.valueOf(AudioConfigKeys.SAMPLE_RATE.defaultValue()), pins.getProperty(PIN + "audio.sample.rate"));

@@ -239,13 +239,23 @@ public class EmbeddingTableConfig implements Serializable {
       .sinceVersion(SINCE_1_3_0)
       .withDocumentation("De-hyphenation of -\\n line breaks; only false is supported.");
 
-  /** Prefix of the PDF extraction keys; every set one is part of the style. */
+  /**
+   * The input size caps' note on raising a cap on an existing table: prep reads a file again only when its source row changes,
+   * so a file a cap refused keeps its refusal, and the table's content for that file depends on when it arrived.
+   */
+  private static final String RAISED_CAP = " Raising it does not re-prepare a file it already refused: that file keeps its refusal "
+      + "(a FAILED row or a quarantine entry) until its source object changes, while a new file of the same size is prepared.";
+
+  /** Prefix of the PDF extraction keys; every set one is part of the style, except the input size cap. */
   public static final String PDF_PREFIX = UNSTRUCTURED_PREFIX + "pdf.";
   /**
    * Largest PDF chunked (bytes): a larger one is a FAILED {@code INPUT_LIMIT} row, refused before any read when its size is
-   * declared. Default 21474836480 (20 GiB). A set value must be a positive byte count; 0 or a negative value is refused when
-   * the job starts. The file is staged to local disk whole and PDFBox reads it from there, so the cap bounds disk, not heap
-   * (heap follows the per-page and per-stream caps).
+   * declared. Default {@value #DEFAULT_PDF_MAX_INPUT_BYTES} (20 GiB). A set value must be a positive byte count; 0 or a negative
+   * value is refused when the job starts. The file is staged to local disk whole and PDFBox reads it from there, so the cap bounds disk, not heap
+   * (heap follows the per-page and per-stream caps). When the key is set explicitly (to any value, the default included), PDFBox's
+   * scratch storage is also held to this many bytes; when it is unset, that scratch storage is not bounded. Not pinned: it only
+   * refuses a file, so it can be changed on an existing table; raising it does not re-prepare a file it already refused, whose
+   * {@code INPUT_LIMIT} row stays until its source object changes.
    */
   public static final long DEFAULT_PDF_MAX_INPUT_BYTES = 20L * 1024 * 1024 * 1024;
   public static final ConfigProperty<String> PDF_MAX_INPUT_BYTES = ConfigProperty
@@ -255,7 +265,10 @@ public class EmbeddingTableConfig implements Serializable {
       .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Largest PDF chunked (bytes); a larger one is a FAILED INPUT_LIMIT row, refused before any read when its "
           + "size is declared. Default 21474836480 (20 GiB). A set value must be a positive byte count (0 or a negative value is "
-          + "refused at job start). The file is staged whole to local disk, so the cap bounds disk use, not heap.");
+          + "refused at job start). The file is staged whole to local disk, so the cap bounds disk use, not heap. When set "
+          + "explicitly (to any value, the default included), PDFBox's scratch storage is also held to this many bytes; when "
+          + "unset, it is not. Not part of the table's stored prep contract: it only refuses a file, so it can be changed on an "
+          + "existing table." + RAISED_CAP);
   /**
    * Pages read per PDF; the rest is dropped with a {@code PAGE_LIMIT} warning, and a file without text in the pages read
    * fails with {@code PAGE_LIMIT}; default 10 000.
@@ -392,8 +405,9 @@ public class EmbeddingTableConfig implements Serializable {
    * Image data prep: the largest image, in source bytes ({@code file_size}), that prep stores as a model input; a larger one
    * fails data prep (a quarantine entry) before any byte of it is read. An operator's limit, not a memory bound: the row's
    * {@code prepared_image} is the source row's own blob value (its inline bytes, or its reference to the object), never a copy
-   * prep reads, so the default {@link #DEFAULT_PREP_IMAGE_MAX_BYTES} sets no limit. Must be positive. Part of the preprocessing
-   * style when set.
+   * prep reads, so the default {@link #DEFAULT_PREP_IMAGE_MAX_BYTES} sets no limit. Must be positive. Not pinned: it only refuses
+   * a file, so it can be changed on an existing table; raising it does not re-prepare a file it already refused, whose
+   * quarantine entry stays until its source object changes.
    */
   public static final ConfigProperty<Long> PREP_IMAGE_MAX_BYTES = ConfigProperty
       .key(PREP_PREFIX + "image.max.bytes")
@@ -404,15 +418,16 @@ public class EmbeddingTableConfig implements Serializable {
           + "larger one fails data prep (a quarantine entry) before any byte of it is read. An operator's limit, not a "
           + "memory bound: the row's prepared_image is the source row's own blob value (its inline bytes, or its reference "
           + "to the object), never a copy prep reads, so the default 9223372036854775807 sets no limit. Must be positive. "
-          + "Part of the preprocessing style when set.");
+          + "Not part of the table's stored prep contract: it only refuses a file, so it can be changed on an existing table."
+          + RAISED_CAP);
   public static final long DEFAULT_PREP_IMAGE_MAX_BYTES = Long.MAX_VALUE;
   /**
    * The preprocessor of every video extension ({@link org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry#VIDEO_EXTENSIONS}),
    * so a job prepares all its video with one implementation, read once at start. Default
    * {@link #DEFAULT_PREP_VIDEO_PREPROCESSOR_CLASS}, the FFmpeg frame preprocessor. Hudi does not ship FFmpeg (org.bytedeco): it is
    * loaded only when the job's first video is opened, so a job without video runs without it, and a job that prepares video adds
-   * the FFmpeg jars at launch through the Spark setting {@code spark.jars} (the locations of org.bytedeco javacv,
-   * javacpp and ffmpeg plus the javacpp and ffmpeg jars of the platform classifier). The per-extension
+   * the FFmpeg jars to its class path (org.bytedeco javacv, javacpp and ffmpeg plus the javacpp and ffmpeg jars of the platform
+   * classifier, for example with {@code spark.jars}). The per-extension
    * {@code <PREPROCESSOR_CLASS_PREFIX><ext>.class} key is a low-level override that wins for its extension when set. A job that
    * must not prepare video sets {@link #PREP_FILE_EXTENSIONS} to the non-video extensions it prepares.
    */
@@ -425,9 +440,9 @@ public class EmbeddingTableConfig implements Serializable {
           + "with one implementation, read once at start. Default "
           + "org.apache.hudi.utilities.unstructured.embedding.prep.VideoFramePreprocessor, the FFmpeg frame preprocessor. Hudi "
           + "does not ship FFmpeg (org.bytedeco): it is loaded only when the job's first video is opened, so a job without "
-          + "video runs without it, and a job that prepares video adds the FFmpeg jars at launch through the Spark setting "
-          + "spark.jars (the locations of org.bytedeco javacv, javacpp and ffmpeg plus the javacpp and "
-          + "ffmpeg jars of the platform classifier). The per-extension "
+          + "video runs without it, and a job that prepares video adds the FFmpeg jars to its class path (org.bytedeco javacv, "
+          + "javacpp and ffmpeg plus the javacpp and ffmpeg jars of the platform classifier, for example with spark.jars). The "
+          + "per-extension "
           + "hoodie.unstructured.embedding.prep.preprocessor.<ext>.class key is a low-level override that wins for its "
           + "extension when set. A job that must not prepare video sets "
           + "hoodie.unstructured.embedding.prep.file.extensions to the non-video extensions it prepares.");
@@ -435,8 +450,10 @@ public class EmbeddingTableConfig implements Serializable {
   public static final String DEFAULT_PREP_VIDEO_PREPROCESSOR_CLASS = PREP_VIDEO_PREPROCESSOR_CLASS.defaultValue();
   /**
    * Video data prep: a video whose source row declares more bytes ({@code source_file_size}) fails data prep (a quarantine entry)
-   * before any byte is read. Default 21474836480 (20 GiB). A set value must be a positive byte count; 0 or a negative value is
-   * refused on the driver when the job starts. Part of the preprocessing style when set. The video is read through seekable
+   * before any byte is read. Default {@value #DEFAULT_PREP_VIDEO_MAX_BYTES} (20 GiB). A set value must be a positive byte count;
+   * 0 or a negative value is refused on the driver when the job starts. Not pinned: it only refuses a file, so it can be changed
+   * on an existing table; raising it does not re-prepare a file it already refused, whose quarantine entry stays until its source
+   * object changes. The video is read through seekable
    * range reads with a fixed block buffer, so memory does not grow with its size; decode time and frame rows grow with its
    * duration.
    */
@@ -448,7 +465,8 @@ public class EmbeddingTableConfig implements Serializable {
       .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Video data prep: a video whose source row declares more bytes (source_file_size) fails data prep (a quarantine "
           + "entry) before any byte is read. Default 21474836480 (20 GiB). A set value must be a positive byte count (0 or a negative "
-          + "value is refused at job start). Part of the preprocessing style when set.");
+          + "value is refused at job start). Not part of the table's stored prep contract: it only refuses a file, so it can be "
+          + "changed on an existing table." + RAISED_CAP);
   /**
    * X of the video frame source's "closest keyframe every X" ({@code video.FfmpegKeyframeVideoFrameSource}), in milliseconds;
    * default {@link #DEFAULT_PREP_VIDEO_KEYFRAME_INTERVAL_MS}. A frame-extraction parameter, so part of the preprocessing style
@@ -774,7 +792,7 @@ public class EmbeddingTableConfig implements Serializable {
       .markAdvanced()
       .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The ImageDecoder implementation compute decodes and resizes images with, in this JVM or elsewhere; it "
-          + "must have a public no-arg constructor and run this code's decoding logic (image-resize-v1), else the job is "
+          + "must have a public no-arg constructor and run this code's decoding logic (image-resize-v2), else the job is "
           + "refused at start. Default the in-process decoder. Refused under prep_only.");
   /** {@link #COMPUTE_IMAGE_ENCODING} value: JPEG at {@link #COMPUTE_IMAGE_JPEG_QUALITY}. */
   public static final String IMAGE_ENCODING_JPEG = ImagePreprocessingSpec.ENCODING_JPEG;

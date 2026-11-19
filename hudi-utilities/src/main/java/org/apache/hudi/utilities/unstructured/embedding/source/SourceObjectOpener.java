@@ -45,12 +45,13 @@ import java.util.concurrent.ExecutionException;
  * Opens a stored object for reading through its Hadoop file system, using what the caller already knows about it:
  * <ul>
  *   <li>its length: on S3A the object is opened through {@code FileSystem#openFile} with an {@code S3AFileStatus} of that
- *       length, so S3A does not send its own HEAD request before the first GET. Every other file system, and a Hadoop
- *       without that API, gets the plain {@code FileSystem#open};</li>
+ *       length, so S3A does not send its own HEAD request before the first GET. Without a checked status, every other file
+ *       system, and a Hadoop without that API, gets the plain {@code FileSystem#open};</li>
  *   <li>a read-ahead: set on the opened stream when the stream takes one ({@code CanSetReadahead}, as S3A's does), so a
  *       reader that seeks reads that many bytes per request instead of the file system's default.</li>
  * </ul>
- * A storage that is not a Hadoop file system, and an open with neither a known length nor a read-ahead, is opened as
+ * A checked status is passed to the public openFile builder on any connector that supports it, retaining available
+ * conditional-read metadata. A storage that is not a Hadoop file system, and an open without a known length, read-ahead or checked status, is opened as
  * {@link HoodieStorage#openSeekable} opens it. A failure to open is the
  * {@link HoodieIOException} {@link HoodieStorage#openSeekable} throws, so callers classify it as before.
  *
@@ -78,8 +79,14 @@ final class SourceObjectOpener {
    */
   static SeekableDataInputStream open(HoodieStorage storage, StoragePath path, int bufferSize, Long knownLength,
                                       long readaheadBytes) throws IOException {
+    return open(storage, path, bufferSize, knownLength, readaheadBytes, null);
+  }
+
+  /** Uses a previously checked status, retaining its ETag/version for a connector's conditional GET. */
+  static SeekableDataInputStream open(HoodieStorage storage, StoragePath path, int bufferSize, Long knownLength,
+                                      long readaheadBytes, FileStatus checkedStatus) throws IOException {
     Object fileSystem = storage.getFileSystem();
-    if (!(fileSystem instanceof FileSystem) || (knownLength == null && readaheadBytes <= 0)) {
+    if (!(fileSystem instanceof FileSystem) || (knownLength == null && readaheadBytes <= 0 && checkedStatus == null)) {
       // nothing to add to the storage's own open: open exactly as it does
       return storage.openSeekable(path, bufferSize, false);
     }
@@ -87,7 +94,9 @@ final class SourceObjectOpener {
     Path hadoopPath = new Path(path.toUri());
     FSDataInputStream in;
     try {
-      in = knownLength == null ? null : openWithKnownLength(fs, hadoopPath, knownLength, bufferSize);
+      in = checkedStatus != null && OPEN_FILE_API.available()
+          ? OPEN_FILE_API.open(fs, hadoopPath, checkedStatus, checkedStatus.getLen(), bufferSize)
+          : knownLength == null ? null : openWithKnownLength(fs, hadoopPath, knownLength, bufferSize);
       if (in == null) {
         in = fs.open(hadoopPath, bufferSize);
       }

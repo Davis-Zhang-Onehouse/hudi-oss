@@ -20,6 +20,7 @@ package org.apache.hudi.utilities.unstructured.embedding.compute;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
@@ -27,21 +28,32 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImageFixtures;
 import org.apache.hudi.utilities.unstructured.embedding.image.ImagePreparer;
 import org.apache.hudi.utilities.unstructured.embedding.image.PreparedImage;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PrepCounters;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessingIterator;
+import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
+import org.apache.hudi.utilities.unstructured.embedding.source.BlobColumns;
 import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlob;
+import org.apache.hudi.utilities.unstructured.embedding.text.WordCountTokenizer;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema;
 import org.apache.spark.sql.types.BlobType;
+import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.util.LongAccumulator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -49,6 +61,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -78,6 +91,197 @@ class TestStoredImageOutcomes {
   Path base;
 
   @Test
+  void sourceImageChangedBetweenComputeHeaderAndDecodeIsSkipped() throws Exception {
+    TypedProperties props = sourceImageProps(false);
+    EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
+    StructType schema = schema(config);
+    byte[] png = ImageFixtures.image("png", 40, 30);
+    Path file = base.resolve("source.png");
+    Files.write(file, png);
+    Files.setLastModifiedTime(file, FileTime.fromMillis(1000L));
+    Row prepared = prepareSourceImage(props, schema, file, png.length);
+    AtomicInteger opens = new AtomicInteger();
+    BlobBytesSource source = new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())) {
+      @Override
+      public SeekableBlob openSeekable(Row blob) throws IOException {
+        SeekableBlob input = super.openSeekable(blob);
+        if (opens.incrementAndGet() > 1) {
+          return input;
+        }
+        return new SeekableBlob() {
+          @Override
+          public long length() {
+            return input.length();
+          }
+
+          @Override
+          public long getPos() throws IOException {
+            return input.getPos();
+          }
+
+          @Override
+          public void seek(long position) throws IOException {
+            input.seek(position);
+          }
+
+          @Override
+          public int read(byte[] bytes, int offset, int length) throws IOException {
+            return input.read(bytes, offset, length);
+          }
+
+          @Override
+          public void close() throws IOException {
+            input.close();
+            Files.setLastModifiedTime(file, FileTime.fromMillis(2000L));
+          }
+        };
+      }
+    };
+    ComputeCounters counters = counters();
+
+    Row out = drain(config, props, schema, counters, source, prepared).get(0);
+
+    assertTrue(outcome(out, schema, config).startsWith(SKIPPED), outcome(out, schema, config));
+    assertTrue(outcome(out, schema, config).contains("BlobSourceChangedException"), outcome(out, schema, config));
+    assertEquals(1, opens.get(), "the second open must check the listed version before decoding");
+    assertEquals(0L, counters.getRowsEmbedded().value());
+    assertEquals(1L, counters.getRowsPermanent().value());
+  }
+
+  @ParameterizedTest
+  @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+  void sourceImageChangedAfterPrepIsSkippedUnderItsOriginalKey(boolean rawInput, boolean sizeChanged) throws Exception {
+    TypedProperties props = sourceImageProps(rawInput);
+    EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
+    StructType schema = schema(config);
+    byte[] png = ImageFixtures.image("png", 40, 30);
+    Path file = base.resolve("source.png");
+    Files.write(file, png);
+    Files.setLastModifiedTime(file, FileTime.fromMillis(1000L));
+    Row prepared = prepareSourceImage(props, schema, file, png.length);
+    // Prep has finished successfully; compute still holds the raw reference and opens it lazily.
+    Files.write(file, sizeChanged ? ImageFixtures.image("png", 80, 60) : png);
+    Files.setLastModifiedTime(file, FileTime.fromMillis(sizeChanged ? 1000L : 2000L));
+    ComputeCounters counters = counters();
+
+    Row out = drain(config, props, schema, counters, storedInputs(), prepared).get(0);
+
+    String outcome = outcome(out, schema, config);
+    assertTrue(outcome.startsWith(SKIPPED), outcome);
+    assertTrue(outcome.contains("BlobSourceChangedException") && outcome.contains("changed since it was listed"), outcome);
+    assertTrue(outcome.contains("source_path_sha=source source_modification_time=1000 source_file_size=" + png.length
+        + " modality=image chunk_id=0"), outcome);
+    assertEquals(0L, counters.getRowsEmbedded().value());
+    assertEquals(1L, counters.getRowsPermanent().value());
+    assertEquals(0L, counters.getRowsRetried().value());
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void unchangedSourceImageAfterPrepStillEmbeds(boolean rawInput) throws Exception {
+    TypedProperties props = sourceImageProps(rawInput);
+    EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
+    StructType schema = schema(config);
+    byte[] png = ImageFixtures.image("png", 40, 30);
+    Path file = base.resolve("source.png");
+    Files.write(file, png);
+    Files.setLastModifiedTime(file, FileTime.fromMillis(1000L));
+    Row prepared = prepareSourceImage(props, schema, file, png.length);
+    ComputeCounters counters = counters();
+
+    Row out = drain(config, props, schema, counters, storedInputs(), prepared).get(0);
+
+    byte[] expected = rawInput ? png : new ImagePreparer(config.imagePreprocessing()).prepare(ImageFixtures.source(png)).getEncoded();
+    assertEquals(EMBEDDED, outcome(out, schema, config));
+    assertArrayEquals(DummyMultimodalEmbeddingClient.vectorForImage(expected, DIM),
+        (float[]) out.get(schema.fieldIndex(config.model(MODEL).getColumn())));
+    assertEquals(1L, counters.getRowsEmbedded().value());
+    assertEquals(0L, counters.getRowsPermanent().value());
+    assertEquals(0L, counters.getRowsRetried().value());
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void unmanagedRangeKeepsItsOwnBytesRegardlessOfSourceVersion(boolean rawInput) throws Exception {
+    TypedProperties props = sourceImageProps(rawInput);
+    EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
+    StructType schema = schema(config);
+    byte[] png = ImageFixtures.image("png", 40, 30);
+    byte[] padded = new byte[png.length + 10];
+    System.arraycopy(png, 0, padded, 7, png.length);
+    Path file = base.resolve("container.bin");
+    Files.write(file, padded);
+    Files.setLastModifiedTime(file, FileTime.fromMillis(9000L));
+    ComputeCounters counters = counters();
+    // This row's source version belongs to the original input, not to the ranged payload's container.
+    Row input = row(schema, "range", reference(file, 7L, (long) png.length), 1000L, 1L);
+
+    Row out = drain(config, props, schema, counters, storedInputs(), input).get(0);
+
+    byte[] expected = rawInput ? png : new ImagePreparer(config.imagePreprocessing()).prepare(ImageFixtures.source(png)).getEncoded();
+    assertEquals(EMBEDDED, outcome(out, schema, config));
+    assertArrayEquals(DummyMultimodalEmbeddingClient.vectorForImage(expected, DIM),
+        (float[]) out.get(schema.fieldIndex(config.model(MODEL).getColumn())));
+    assertEquals(1L, counters.getRowsEmbedded().value());
+    assertEquals(0L, counters.getRowsPermanent().value());
+  }
+
+  /** A client using the public raw stored-input supplier instead of the resized image supplier. */
+  public static class RawStoredImageClient extends DummyMultimodalEmbeddingClient {
+    @Override
+    public List<EmbeddingResult> embed(List<EmbeddingInput> inputs) {
+      List<EmbeddingResult> results = new ArrayList<>();
+      for (EmbeddingInput input : inputs) {
+        try {
+          byte[] bytes;
+          try (InputStream in = input.storedImage().open()) {
+            bytes = in.readAllBytes();
+          }
+          results.add(EmbeddingResult.ok(vectorForImage(bytes, DIM)));
+        } catch (IOException | RuntimeException failure) {
+          results.add(ImageFailures.result(input, failure));
+        }
+      }
+      return results;
+    }
+  }
+
+  private TypedProperties sourceImageProps(boolean rawInput) {
+    TypedProperties props = props();
+    props.setProperty(HoodieWriteConfig.BASE_PATH.key(), base.resolve("table").toUri().toString());
+    if (rawInput) {
+      props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_CLIENT_CLASS_SUFFIX,
+          RawStoredImageClient.class.getName());
+    }
+    return props;
+  }
+
+  private Row prepareSourceImage(TypedProperties props, StructType schema, Path file, int length) {
+    StructType sourceSchema = new StructType()
+        .add(BlobColumns.SOURCE_PATH_SHA, DataTypes.StringType).add(BlobColumns.SOURCE_FILE_EXTENSION, DataTypes.StringType)
+        .add(BlobColumns.SOURCE_FILE_SIZE, DataTypes.LongType).add(BlobColumns.SOURCE_MODIFICATION_TIME, DataTypes.LongType)
+        .add(BlobColumns.BLOB, BLOB).add(BlobColumns.SOURCE_FILE_PATH, DataTypes.StringType)
+        .add(BlobColumns.SOURCE_FILE_NAME, DataTypes.StringType);
+    Row source = new GenericRowWithSchema(new Object[] {"source", "png", (long) length, 1000L, reference(file),
+        file.toUri().toString(), "source.png"}, sourceSchema);
+    PrepCounters counters = new PrepCounters(new LongAccumulator(), new LongAccumulator(), new LongAccumulator(),
+        new LongAccumulator(), new LongAccumulator());
+    try (PreprocessingIterator prep = PreprocessingIterator.builder(Collections.singletonList(source).iterator(),
+        EmbeddingTableConfig.from(props), "001").bytesSource(storedInputs()).registry(new PreprocessorRegistry(props))
+        .tokenizer(new WordCountTokenizer()).counters(counters).build()) {
+      List<Row> rows = new ArrayList<>();
+      prep.forEachRemaining(rows::add);
+      assertEquals(1, rows.size(), prep.getSideOutputs().toString());
+      assertTrue(prep.getSideOutputs().isEmpty(), prep.getSideOutputs().toString());
+      Object[] values = new Object[schema.size()];
+      for (int index = 0; index < rows.get(0).size(); index++) {
+        values[index] = rows.get(0).get(index);
+      }
+      return new GenericRowWithSchema(values, schema);
+    }
+  }
+
+  @Test
   void storedImageRowIsEmbeddedFromItsPreparedImageAndANullStoredInputFailsTheStep() throws Exception {
     TypedProperties props = props();
     EmbeddingTableConfig config = EmbeddingTableConfig.from(props);
@@ -87,7 +291,7 @@ class TestStoredImageOutcomes {
     Files.write(file, png);
     ComputeCounters counters = counters();
     List<Row> out = drain(config, props, schema, counters, storedInputs(), row(schema, "a0", inline(png)),
-        row(schema, "a1", reference(file)));
+        row(schema, "a1", reference(file), Files.getLastModifiedTime(file).toMillis(), png.length));
     assertEquals(2, out.size());
     PreparedImage expected = new ImagePreparer(config.imagePreprocessing()).prepare(ImageFixtures.source(png));
     assertEquals(512, expected.getWidth(), "the model input is the resized image");
@@ -185,7 +389,7 @@ class TestStoredImageOutcomes {
     List<Row> yielded = new ArrayList<>();
     FlakyStoredInputs flaky = new FlakyStoredInputs();
     Row a0 = row(schema, "a0", inline(ImageFixtures.image("png", 40, 30)));
-    Row d0 = row(schema, "d0", reference(file));
+    Row d0 = row(schema, "d0", reference(file), Files.getLastModifiedTime(file).toMillis(), Files.size(file));
     EmbeddingComputeTransientException thrown = assertThrows(EmbeddingComputeTransientException.class,
         () -> drainInto(yielded, config, props, schema, counters, flaky, a0, d0));
     assertTrue(thrown.getMessage().contains("EMBED-COMPUTE-RETRIES-EXHAUSTED") && thrown.getMessage().contains("first source_path_sha=d0")
@@ -344,7 +548,11 @@ class TestStoredImageOutcomes {
 
   /** An out-of-line stored input: the unmanaged reference to the source file, with no range, as the source row carries it. */
   private static Row reference(Path file) {
-    Row reference = new GenericRowWithSchema(new Object[] {file.toUri().toString(), null, null, false}, REFERENCE);
+    return reference(file, null, null);
+  }
+
+  private static Row reference(Path file, Long offset, Long length) {
+    Row reference = new GenericRowWithSchema(new Object[] {file.toUri().toString(), offset, length, false}, REFERENCE);
     return new GenericRowWithSchema(new Object[] {HoodieSchema.Blob.OUT_OF_LINE, null, reference}, BLOB);
   }
 
@@ -371,10 +579,14 @@ class TestStoredImageOutcomes {
 
   /** An image row of the table schema, as compute reads it from the embedding table. */
   private static Row row(StructType schema, String sourcePathSha, Row preparedImage) {
+    return row(schema, sourcePathSha, preparedImage, 1000L, 1L);
+  }
+
+  private static Row row(StructType schema, String sourcePathSha, Row preparedImage, long modificationTime, long size) {
     Object[] values = new Object[schema.size()];
     values[schema.fieldIndex(EmbeddingTableSchema.SOURCE_PATH_SHA)] = sourcePathSha;
-    values[schema.fieldIndex(EmbeddingTableSchema.SOURCE_MODIFICATION_TIME)] = 1000L;
-    values[schema.fieldIndex(EmbeddingTableSchema.SOURCE_FILE_SIZE)] = 1L;
+    values[schema.fieldIndex(EmbeddingTableSchema.SOURCE_MODIFICATION_TIME)] = modificationTime;
+    values[schema.fieldIndex(EmbeddingTableSchema.SOURCE_FILE_SIZE)] = size;
     values[schema.fieldIndex(EmbeddingTableSchema.CHUNK_ID)] = 0L;
     values[schema.fieldIndex(EmbeddingTableSchema.MODALITY)] = EmbeddingTableSchema.MODALITY_IMAGE;
     values[schema.fieldIndex(EmbeddingTableSchema.PREPARED_IMAGE)] = preparedImage;

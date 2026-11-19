@@ -20,7 +20,7 @@ package org.apache.hudi.utilities.unstructured.embedding.source;
 
 import java.io.IOException;
 
-/** The source object's recorded version no longer names the bytes at its path; a prep failure of that file. */
+/** The source object's recorded version no longer names the bytes at its path; a per-file input failure. */
 public class BlobSourceChangedException extends IOException {
   private static final long serialVersionUID = 1L;
 

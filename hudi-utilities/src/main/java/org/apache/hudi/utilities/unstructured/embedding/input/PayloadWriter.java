@@ -91,8 +91,9 @@ public final class PayloadWriter {
    * As {@link #stream} for a payload already read whole: names the file now, on the calling task's thread, and writes it on
    * {@code pool}, which throws a failure to create or write it, an {@link EmbeddingPayloadWriteException} as {@link #stream}
    * makes it, at the task's next submit or at its {@link OutOfLineWritePool#awaitAll}. A submit refused (the task was
-   * interrupted while waiting for room, or its pool is closed) is an {@link EmbeddingPayloadWriteException} of this payload: a
-   * failure of the round, never of the row's content. Returns the generated relative path.
+   * interrupted while waiting for room, its pool is closed, or no room came back within the pool's bound: a stuck write) is an
+   * {@link EmbeddingPayloadWriteException} of this payload: a failure of the round, never of the row's content. Returns the
+   * generated relative path.
    */
   public static String write(OutOfLineWriter writer, OutOfLineWritePool pool, Payload payload, byte[] bytes) {
     String relative = writer.newPath(payload.partitionPath);
@@ -107,7 +108,7 @@ public final class PayloadWriter {
   }
 
   private static void submit(OutOfLineWriter writer, OutOfLineWritePool pool, Payload payload, byte[] bytes, String relative) {
-    pool.submit(bytes.length, () -> {
+    pool.submit(bytes.length, relative, () -> {
       String[] step = {STEP_CREATE};
       try {
         writer.writeAt(relative, out -> {

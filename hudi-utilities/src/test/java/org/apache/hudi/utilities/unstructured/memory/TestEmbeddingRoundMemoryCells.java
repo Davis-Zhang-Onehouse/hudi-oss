@@ -112,7 +112,7 @@ class TestEmbeddingRoundMemoryCells extends EmbeddingRoundTestBase {
    * (PdfBoxPageSource.java:136-146). PDFBox resolves objects from the exact xref only when they are reached, and nothing reaches
    * the bulk stream: the decode guard walks only each page's /Contents and the forms and fonts of its /Resources
    * (StreamDecodeGuard.java:167-186, 201-228), and the stripper extracts one page's content (PdfBoxPageSource.java:257-260). The
-   * PDF max input bytes key has no default (no cap); the cell sets it to {@value #PDF_OVER_HEAP_MAX_INPUT_BYTES} in its job so
+   * PDF max input bytes key defaults to 20 GiB; the cell sets it to {@value #PDF_OVER_HEAP_MAX_INPUT_BYTES} in its job so
    * the capped path is exercised, and the light cell sets the same key so both run the same code path.
    *
    * <p>Asserted: one round and one commit; the PDF's text chunks are in the table, each with an embedding; the PDF row's stored
