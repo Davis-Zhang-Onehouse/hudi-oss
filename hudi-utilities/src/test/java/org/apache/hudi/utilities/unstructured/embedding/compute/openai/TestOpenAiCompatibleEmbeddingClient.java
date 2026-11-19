@@ -31,6 +31,7 @@ import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingResult;
 import org.apache.hudi.utilities.unstructured.embedding.compute.openai.StubEmbeddingServer.Recorded;
 import org.apache.hudi.utilities.unstructured.embedding.text.OpenAiBpeTokenizer;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
@@ -193,7 +194,7 @@ class TestOpenAiCompatibleEmbeddingClient {
 
   @Test
   void testMissingIndexIsRetryable() {
-    server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
+    server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"model\":\"" + MODEL + "\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
         + "\"embedding\":[0.1,0.2,0.3,0.4]}],\"usage\":{\"prompt_tokens\":2}}"));
     List<EmbeddingResult> results = client(new TypedProperties()).embed(inputs("a", "b"));
     assertEquals(EmbeddingResult.Status.OK, results.get(0).getStatus());
@@ -222,7 +223,7 @@ class TestOpenAiCompatibleEmbeddingClient {
 
   @Test
   void testOneVectorOfAnotherLengthIsRetryable() {
-    server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"data\":["
+    server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"model\":\"" + MODEL + "\",\"data\":["
         + "{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.1,0.2,0.3,0.4]},"
         + "{\"object\":\"embedding\",\"index\":1,\"embedding\":[0.1,0.2,0.3]}]}"));
     List<EmbeddingResult> results = client(new TypedProperties()).embed(inputs("a", "b"));
@@ -655,9 +656,70 @@ class TestOpenAiCompatibleEmbeddingClient {
 
   // ---------------------------------------------------------------- Azure + TEI
 
+  @ParameterizedTest
+  @ValueSource(strings = {"openai", "hf-tei"})
+  void testCompatibleProvidersRefuseWrongServedModel(String provider) {
+    server.otherwise("/info", request -> recorded(200, "tei-info.json"));
+    server.otherwise(PATH, request -> json(200, "{\"model\":\"other-model\","
+        + "\"data\":[{\"index\":0,\"embedding\":[1,2,3,4]}]}"));
+    String model = "hf-tei".equals(provider) ? "BAAI/bge-small-en-v1.5" : MODEL;
+    OpenAiCompatibleEmbeddingClient client = client(provider, model, new TypedProperties());
+    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs("a")));
+    assertEquals(1, server.posts().size());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"\"other/model\"", "null", "123", "\"\""})
+  void testTeiRefusesUnverifiedServedModel(String servedModel) {
+    server.otherwise("/info", request -> json(200, "{\"model_id\":" + servedModel
+        + ",\"model_type\":{\"embedding\":{}},\"max_client_batch_size\":2,\"max_batch_tokens\":16384}"));
+    EmbeddingClientConfigException failure = assertThrows(EmbeddingClientConfigException.class,
+        () -> client("hf-tei", "BAAI/bge-small-en-v1.5", teiProps()));
+    assertTrue(failure.getMessage().contains("model_id"), failure.getMessage());
+    assertTrue(failure.getMessage().contains(key(EmbeddingTableConfig.MODEL_NAME_SUFFIX)), failure.getMessage());
+    assertFalse(failure.getMessage().contains(key(OpenAiClientConfig.BASE_MODEL_SUFFIX)), failure.getMessage());
+    assertTrue(server.posts().isEmpty());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"\"text-embedding-3-large\"", "null", "123", "\"\""})
+  void testAzureRefusesUnverifiedServedModel(String servedModel) {
+    server.otherwise(PATH, request -> json(200, "{\"model\":" + servedModel
+        + ",\"data\":[{\"index\":0,\"embedding\":[1,2,3,4]}]}"));
+    TypedProperties props = new TypedProperties();
+    props.setProperty(key(OpenAiClientConfig.BASE_MODEL_SUFFIX), MODEL);
+    OpenAiCompatibleEmbeddingClient client = client("azure-openai", "my-dep", props);
+    EmbeddingClientConfigException failure = assertThrows(EmbeddingClientConfigException.class,
+        () -> client.embed(inputs("a")));
+    assertTrue(failure.getMessage().contains("served model"), failure.getMessage());
+    assertTrue(failure.getMessage().contains(key(OpenAiClientConfig.BASE_MODEL_SUFFIX)), failure.getMessage());
+    assertEquals(1, server.posts().size(), "identity mismatch is never retried or bisected");
+  }
+
+  @Test
+  void testAzureChecksEveryResponseForDeploymentChanges() {
+    server.then(PATH, request -> json(200, "{\"model\":\"" + MODEL
+        + "\",\"data\":[{\"index\":0,\"embedding\":[1,2,3,4]}]}"))
+        .otherwise(PATH, request -> json(200, "{\"model\":\"text-embedding-3-large\","
+            + "\"data\":[{\"index\":0,\"embedding\":[1,2,3,4]}]}"));
+    TypedProperties props = new TypedProperties();
+    props.setProperty(key(OpenAiClientConfig.BASE_MODEL_SUFFIX), MODEL);
+    OpenAiCompatibleEmbeddingClient client = client("azure-openai", "my-dep", props);
+    assertArrayEquals(new float[] {1, 2, 3, 4}, client.embed(inputs("a")).get(0).getVector());
+    assertThrows(EmbeddingClientConfigException.class, () -> client.embed(inputs("b")));
+    assertEquals(2, server.posts().size());
+  }
+
   @Test
   void testAzureUsesApiKeyHeaderAndDeploymentName() {
-    server.otherwise("/openai/v1/embeddings", embeddings(DIM));
+    server.otherwise("/openai/v1/embeddings", request -> {
+      ObjectNode response = StubEmbeddingServer.MAPPER.createObjectNode().put("model", MODEL);
+      ObjectNode entry = response.putArray("data").addObject().put("index", 0);
+      for (float value : vectorFor(request.inputs().get(0), DIM)) {
+        entry.withArray("embedding").add(value);
+      }
+      return json(200, response.toString());
+    });
     TypedProperties props = new TypedProperties();
     props.setProperty(key(OpenAiClientConfig.ENDPOINT_SUFFIX), server.url() + "/openai/v1");
     props.setProperty(key(OpenAiClientConfig.BASE_MODEL_SUFFIX), MODEL);
@@ -827,7 +889,7 @@ class TestOpenAiCompatibleEmbeddingClient {
 
   @Test
   void testHugeUsageKeepsTheVectors() {
-    server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
+    server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"model\":\"" + MODEL + "\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
         + "\"embedding\":[0.1,0.2,0.3,0.4]}],\"usage\":{\"prompt_tokens\":99999999999999999999999}}"));
     OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
     assertEquals(EmbeddingResult.Status.OK, client.embed(inputs("a")).get(0).getStatus());
@@ -836,7 +898,7 @@ class TestOpenAiCompatibleEmbeddingClient {
 
   @Test
   void testNonNumericUsageKeepsTheVectors() {
-    server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
+    server.otherwise(PATH, request -> json(200, "{\"object\":\"list\",\"model\":\"" + MODEL + "\",\"data\":[{\"object\":\"embedding\",\"index\":0,"
         + "\"embedding\":[0.1,0.2,0.3,0.4]}],\"usage\":{\"prompt_tokens\":\"n/a\"}}"));
     OpenAiCompatibleEmbeddingClient client = client(new TypedProperties());
     assertEquals(EmbeddingResult.Status.OK, client.embed(inputs("a")).get(0).getStatus());

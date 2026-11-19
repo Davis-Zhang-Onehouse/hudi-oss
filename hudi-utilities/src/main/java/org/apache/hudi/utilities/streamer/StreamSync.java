@@ -1715,24 +1715,25 @@ public class StreamSync implements Serializable, Closeable {
    */
   @Override
   public void close() {
-    if (writeClient != null) {
-      writeClient.close();
-      writeClient = null;
-    }
+    try (Transformer closeTransformer = transformer.orElse(null)) {
+      if (writeClient != null) {
+        writeClient.close();
+        writeClient = null;
+      }
 
-    if (formatAdapter != null) {
-      formatAdapter.close();
-    }
+      if (formatAdapter != null) {
+        formatAdapter.close();
+      }
 
-    log.info("Shutting down embedded timeline server");
-    if (embeddedTimelineService.isPresent()) {
-      embeddedTimelineService.get().stopForBasePath(cfg.targetBasePath);
-    }
+      log.info("Shutting down embedded timeline server");
+      if (embeddedTimelineService.isPresent()) {
+        embeddedTimelineService.get().stopForBasePath(cfg.targetBasePath);
+      }
 
-    if (metrics != null) {
-      metrics.shutdown();
+      if (metrics != null) {
+        metrics.shutdown();
+      }
     }
-
   }
 
   /**

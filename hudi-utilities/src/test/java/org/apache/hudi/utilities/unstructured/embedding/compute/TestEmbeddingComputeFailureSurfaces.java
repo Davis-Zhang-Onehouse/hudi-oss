@@ -332,7 +332,8 @@ class TestEmbeddingComputeFailureSurfaces {
           int offset = 4 * Arrays.asList("alpha", "beta", "gamma").indexOf(texts.get(i).asText());
           data.addObject().put("index", i).set("embedding", mapper.valueToTree(new int[] {offset + 1, offset + 2, offset + 3, offset + 4}));
         }
-        return new StubHttpTransport.Response(200, Collections.emptyMap(), mapper.writeValueAsBytes(Collections.singletonMap("data", data)));
+        return new StubHttpTransport.Response(200, Collections.emptyMap(),
+            mapper.writeValueAsBytes(mapper.createObjectNode().put("model", "text-embedding-3-small").set("data", data)));
       } catch (IOException e) {
         throw new UncheckedIOException(e);
       }

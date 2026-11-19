@@ -34,7 +34,13 @@ import org.apache.spark.sql.types.StructType;
  * Transform source to target dataset before writing.
  */
 @PublicAPIClass(maturity = ApiMaturityLevel.STABLE)
-public interface Transformer {
+public interface Transformer extends AutoCloseable {
+
+  /** Releases driver resources owned by this transformer when the streamer stops or rebuilds it. */
+  @Override
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  default void close() {
+  }
 
   /**
    * Transform source RDD to target RDD.

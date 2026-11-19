@@ -57,12 +57,21 @@ import java.util.Map;
  * Output is persisted and materialized before returning, so each object's status call and inline read run once per round,
  * whether the error table splits the output or not. The next round releases the previous output after the preceding write has
  * consumed it. A round that ends before the transformer (an unchanged checkpoint) does not release it: the last output stays
- * cached until the next round that reaches the transformer, or until the job ends, so at most one round's output is held.
+ * cached until the next round that reaches the transformer, or until this transformer closes, so at most one round's output is held.
  */
 public class BlobQuarantineTransformer implements Transformer {
 
   private static final String CORRUPT_RECORD = BaseErrorTableWriter.ERROR_TABLE_CURRUPT_RECORD_COL_NAME;
   private transient Dataset<Row> previousOutput;
+
+  /** Releases the last successful round when the owning streamer stops or rebuilds. Safe to call repeatedly. */
+  @Override
+  public void close() {
+    if (previousOutput != null) {
+      previousOutput.unpersist(false);
+      previousOutput = null;
+    }
+  }
 
   @Override
   public StructType transformedSchema(JavaSparkContext jsc, SparkSession spark, StructType schema, TypedProperties props) {
@@ -71,10 +80,7 @@ public class BlobQuarantineTransformer implements Transformer {
 
   @Override
   public Dataset<Row> apply(JavaSparkContext jsc, SparkSession spark, Dataset<Row> rows, TypedProperties props) {
-    if (previousOutput != null) {
-      previousOutput.unpersist(false);
-      previousOutput = null;
-    }
+    close();
     StructType inputSchema = rows.schema();
     String storageLevel = ConfigUtils.getStringWithAltKeys(props, HoodieWriteConfig.TAGGED_RECORD_STORAGE_LEVEL_VALUE, true);
     StructType outputSchema = withErrorColumn(inputSchema);

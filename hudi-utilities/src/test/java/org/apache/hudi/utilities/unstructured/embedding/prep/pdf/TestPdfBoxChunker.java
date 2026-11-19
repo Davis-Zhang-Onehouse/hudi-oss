@@ -50,6 +50,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -360,6 +361,23 @@ class TestPdfBoxChunker {
     assertEquals(0, opened.get());
     assertEquals(PdfChunk.Status.FAILED, chunks.get(0).status());
     assertTrue(chunks.get(0).statusDetail().startsWith("INPUT_LIMIT: "));
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void scratchBudgetUsesTheConfiguredLongCapOnly(boolean configured) throws IOException {
+    PdfChunkerConfig config = configured
+        ? config(BPE, EmbeddingTableConfig.PDF_MAX_INPUT_BYTES.key(), "21474836480") : defaults();
+    AtomicLong scratchCap = new AtomicLong(Long.MIN_VALUE);
+    PdfBoxChunker observing = new PdfBoxChunker((source, meta, cfg) -> new PdfBoxPageSource(source, meta, cfg,
+        staging.toFile(), true, (dir, maxBytes) -> {
+          scratchCap.set(maxBytes);
+          return PdfBoxPageSource.PDFBOX_SCRATCH_FILE.create(dir, maxBytes);
+        }));
+    List<PdfChunk> chunks = chunk(observing, PdfFixtures.text("Scratch uses a long byte count."), config);
+    assertEquals("Scratch uses a long byte count.", all(chunks).trim());
+    assertEquals(configured ? 20L << 30 : -1, scratchCap.get());
+    assertTrue(stagingContents().isEmpty());
   }
 
   @Test

@@ -107,6 +107,12 @@ import java.util.function.Function;
 public class FfmpegKeyframeVideoFrameSource implements FrameExtractionStrategy {
 
   /**
+   * Bytes a clip's buffered block reads hold at most (two 1 MiB blocks). A compile-time constant, so a reader of it (the driver's
+   * heap check) does not load this class or FFmpeg.
+   */
+  public static final long BUFFERED_READ_BYTES = (long) BlockBufferedBlob.BLOCK_BYTES * BlockBufferedBlob.BLOCKS;
+
+  /**
    * The keyframe logic, with FFmpeg/JavaCV decoding, pinned in the video prep logic version instead of the FFmpeg and JavaCV
    * versions. Bump only when a dependency upgrade or code change alters prep output; the golden test below proves it:
    * {@code TestFfmpegKeyframeVideoFrameSource} pins the frames kept (the dedup golden).

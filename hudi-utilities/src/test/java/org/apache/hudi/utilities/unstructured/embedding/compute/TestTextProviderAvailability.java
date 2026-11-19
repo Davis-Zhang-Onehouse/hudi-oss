@@ -55,7 +55,7 @@ class TestTextProviderAvailability {
     server.createContext("/v1/embeddings", exchange -> {
       body.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
       authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
-      byte[] response = ("{\"data\":[{\"index\":1,\"embedding\":[5,6,7,8]},"
+      byte[] response = ("{\"model\":\"text-embedding-3-small\",\"data\":[{\"index\":1,\"embedding\":[5,6,7,8]},"
           + "{\"index\":0,\"embedding\":[1,2,3,4]}]}").getBytes(StandardCharsets.UTF_8);
       exchange.getResponseHeaders().set("Content-Type", "application/json");
       exchange.sendResponseHeaders(200, response.length);
@@ -103,7 +103,7 @@ class TestTextProviderAvailability {
     Files.writeString(key, "fake-local-token");
     TypedProperties props = new TypedProperties();
     String prefix = "hoodie.unstructured.embedding.model.local";
-    props.setProperty(prefix + ".endpoint", "http://127.0.0.1:1/predict");
+    props.setProperty(prefix + ".endpoint", "http://127.0.0.1:1/publishers/google/models/multimodalembedding@001:predict");
     props.setProperty(prefix + ".credential.file", key.toString());
     props.setProperty(prefix + ".bedrock.region", "us-east-1");
     EmbeddingModelSpec spec = new EmbeddingModelSpec("local", "emb_local", dimensions, null, provider, model);

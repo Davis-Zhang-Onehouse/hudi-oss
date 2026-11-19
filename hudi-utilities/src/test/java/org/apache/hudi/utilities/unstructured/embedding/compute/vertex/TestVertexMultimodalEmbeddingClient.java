@@ -323,17 +323,14 @@ class TestVertexMultimodalEmbeddingClient {
   }
 
   @Test
-  void preparationRuntimeFailureIsPermanentAndDoesNotFailTheCall() throws Exception {
-    // a deterministic failure while preparing one image must not throw out of embed() (which would retry every
-    // batch-mate alone, re-billing those already embedded)
+  void unexpectedPreparationRuntimeFailureFailsTheCall() throws Exception {
     EmbeddingInput broken = image("broken", () -> {
       throw new IllegalStateException("Image raster budget assertion failed");
     });
-    List<EmbeddingResult> results = client(128).embed(Arrays.asList(broken, imageInput("ok", ImageFixtures.image("png", 20, 20))));
-    assertEquals(EmbeddingResult.Status.PERMANENT_FAILURE, results.get(0).getStatus());
-    assertTrue(results.get(0).getError().contains("Image raster budget assertion failed"), results.get(0).getError());
-    assertEquals(EmbeddingResult.Status.OK, results.get(1).getStatus());
-    assertEquals(1, stub.requests().size());
+    EmbeddingComputePlatformException failure = assertThrows(EmbeddingComputePlatformException.class,
+        () -> client(128).embed(Arrays.asList(broken, imageInput("ok", ImageFixtures.image("png", 20, 20)))));
+    assertTrue(failure.getCause() instanceof IllegalStateException);
+    assertEquals(0, stub.requests().size());
   }
 
   /** A blob whose storage read fails once {@code failAt} bytes have been served. */
@@ -425,6 +422,49 @@ class TestVertexMultimodalEmbeddingClient {
   void missingTokenFailsInit() {
     props.setProperty(key(VertexClientConfig.CREDENTIAL_FILE_SUFFIX), tempDir.resolve("absent").toString());
     assertThrows(EmbeddingClientConfigException.class, () -> client(128));
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {33, 256})
+  void textModalityRefusesChunksBeyondTheEndpointLimit(int maxTokens) {
+    props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), Integer.toString(maxTokens));
+    EmbeddingModelSpec textModel = new EmbeddingModelSpec(ALIAS, "emb_mm", 128, null,
+        VertexMultimodalEmbeddingClient.PROVIDER, "multimodalembedding@001", EmbeddingClient.TEXT_AND_IMAGE);
+    VertexMultimodalEmbeddingClient client = new VertexMultimodalEmbeddingClient();
+    EmbeddingClientConfigException failure = assertThrows(EmbeddingClientConfigException.class, () -> client.init(textModel, props));
+    assertTrue(failure.getMessage().contains(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key()), failure.getMessage());
+    assertEquals(0, stub.requests().size());
+  }
+
+  @Test
+  void textModalityAccepts32TokensAndImageOnlyKeepsItsChunkSetting() {
+    props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "32");
+    VertexMultimodalEmbeddingClient client = new VertexMultimodalEmbeddingClient();
+    client.init(new EmbeddingModelSpec(ALIAS, "emb_mm", 128, null, VertexMultimodalEmbeddingClient.PROVIDER,
+        "multimodalembedding@001", EmbeddingClient.TEXT_AND_IMAGE), props);
+    props.setProperty(EmbeddingTableConfig.CHUNK_MAX_TOKENS.key(), "256");
+    client.init(new EmbeddingModelSpec(ALIAS, "emb_mm", 128, null, VertexMultimodalEmbeddingClient.PROVIDER,
+        "multimodalembedding@001", Collections.singleton(EmbeddingTableSchema.MODALITY_IMAGE)), props);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"multimodalembedding@002:predict", "other-model:predict", "multimodalembedding@001:other"})
+  void explicitEndpointMustNameThePersistedModel(String endpointModel) {
+    props.setProperty(key(VertexClientConfig.ENDPOINT_SUFFIX), stub.endpoint().replace("multimodalembedding@001:predict", endpointModel));
+    EmbeddingClientConfigException failure = assertThrows(EmbeddingClientConfigException.class, () -> client(128));
+    assertTrue(failure.getMessage().contains("model"), failure.getMessage());
+    assertEquals(0, stub.requests().size());
+  }
+
+  @Test
+  void explicitProxyEndpointWithoutAModelIsRefused() {
+    props.setProperty(key(VertexClientConfig.ENDPOINT_SUFFIX), "http://127.0.0.1:12345/predict");
+    assertThrows(EmbeddingClientConfigException.class, () -> client(128));
+  }
+
+  @Test
+  void singleInputRequestsKeepTheWholeCallRejectionGuard() {
+    assertFalse(client(128).answersEachInputAlone());
   }
 
   private VertexMultimodalEmbeddingClient client(int dimension) {

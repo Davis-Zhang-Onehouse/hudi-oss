@@ -72,6 +72,7 @@ public final class PdfChunkerConfig {
   private final int windowChars;
   private final Locale locale;
   private final long maxInputBytes;
+  private final boolean inputBytesConfigured;
   private final int maxPages;
   private final int maxPageChars;
   private final int maxPageGlyphs;
@@ -100,7 +101,8 @@ public final class PdfChunkerConfig {
           + ": only false is supported");
     }
     String inputCap = ConfigUtils.getStringWithAltKeys(props, PDF_MAX_INPUT_BYTES, null);
-    if (inputCap == null || inputCap.trim().isEmpty()) {
+    this.inputBytesConfigured = inputCap != null && !inputCap.trim().isEmpty();
+    if (!inputBytesConfigured) {
       this.maxInputBytes = EmbeddingTableConfig.DEFAULT_PDF_MAX_INPUT_BYTES;
     } else {
       long cap = longValue(props, PDF_MAX_INPUT_BYTES, 0);
@@ -200,6 +202,14 @@ public final class PdfChunkerConfig {
 
   public Locale locale() {
     return locale;
+  }
+
+  /**
+   * Whether the job sets {@link EmbeddingTableConfig#PDF_MAX_INPUT_BYTES}: only then is PDFBox's scratch storage held to the cap
+   * too (its pages are not a byte count of the input, so the default cap bounds only the staged file).
+   */
+  public boolean inputBytesConfigured() {
+    return inputBytesConfigured;
   }
 
   /** The input size cap in bytes ({@link EmbeddingTableConfig#PDF_MAX_INPUT_BYTES}, its default when unset). */

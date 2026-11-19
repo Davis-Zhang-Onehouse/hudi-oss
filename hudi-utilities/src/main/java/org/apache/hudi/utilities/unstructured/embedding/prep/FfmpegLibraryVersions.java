@@ -29,8 +29,10 @@ import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.jar.Manifest;
 
 /**
  * The FFmpeg libraries (JavaCV and its FFmpeg preset) this Hudi build compiles and tests against: the {@code javacv.version} and
@@ -74,7 +76,7 @@ public final class FfmpegLibraryVersions {
     }
   }
 
-  /** The {@code groupId/artifactId:version} of the jar {@code loader} finds {@code resource} in, from its Maven metadata. */
+  /** The {@code groupId/artifactId:version} of the jar {@code loader} finds {@code resource} in, from Maven metadata or a repackaged jar's manifest. */
   static String loaded(ClassLoader loader, String resource, String declared) {
     String artifact = declared.substring(0, declared.indexOf(':'));
     URL url = loader.getResource(resource);
@@ -89,7 +91,10 @@ public final class FfmpegLibraryVersions {
       JarFile jar = ((JarURLConnection) connection).getJarFile();
       JarEntry entry = jar.getJarEntry("META-INF/maven/" + artifact + "/pom.properties");
       if (entry == null) {
-        return "no " + artifact + " Maven metadata in " + jar.getName();
+        Manifest manifest = jar.getManifest();
+        String version = manifest == null ? null : manifest.getMainAttributes().getValue(Attributes.Name.IMPLEMENTATION_VERSION);
+        return version == null || version.trim().isEmpty() ? "no " + artifact + " Maven metadata in " + jar.getName()
+            + " (a shaded or repackaged jar must retain pom.properties or Implementation-Version)" : artifact + ":" + version.trim();
       }
       Properties metadata = new Properties();
       try (InputStream in = jar.getInputStream(entry)) {

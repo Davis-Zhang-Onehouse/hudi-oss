@@ -156,6 +156,9 @@ final class GuardedPageStripper extends PDFTextStripper {
   /** Adds the current stack to the enclosing states before PDFBox starts a nested stream; returns the value to restore. */
   private int enterNestedStream() {
     int enclosing = outerStates;
+    if (outerStates + getGraphicsStackSize() > maxDepth) {
+      throw new PageFailure(PdfFailureCode.GRAPHICS_DEPTH_LIMIT, "more than " + maxDepth + " nested graphics states");
+    }
     outerStates += getGraphicsStackSize();
     return enclosing;
   }

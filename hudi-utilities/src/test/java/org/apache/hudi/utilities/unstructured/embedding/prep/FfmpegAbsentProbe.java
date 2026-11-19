@@ -123,21 +123,22 @@ public class FfmpegAbsentProbe implements Callable<String> {
         .distinct().collect(Collectors.toList());
   }
 
-  /** Opens a video with the registry's mp4 preprocessor: a configuration error is reported, anything else thrown. */
+  /** Reports the unavailable video's quarantine outcome (and the older configuration refusal for the baseline replay). */
   private static String openVideo(PreprocessorRegistry registry, Tokenizer tokenizer, TypedProperties props) throws Exception {
     FilePreprocessor preprocessor = registry.forExtension("mp4").get();
     // seekable, as the prep framework's source rows are: the FFmpeg source refuses any other bytes before it links FFmpeg
     try (ClosableIterator<Chunk> chunks = preprocessor.open(new InMemorySeekableBytes(NOT_A_VIDEO),
         new FileMeta("v1", "mp4", NOT_A_VIDEO.length), tokenizer, props)) {
       throw new IllegalStateException("video opened without FFmpeg: " + chunks.hasNext());
+    } catch (PreprocessingException e) {
+      return "video quarantined " + e.getMessage() + '\n';
     } catch (PreprocessorConfigurationException e) {
       return "video refused " + e.getMessage() + '\n' + "video cause " + e.getCause() + '\n';
     }
   }
 
   /**
-   * A PDF-only round passes; a round holding a PDF then a video fails with the configuration error, after the PDF's rows, and
-   * builds no quarantine entry (side output) for the video.
+   * A PDF-only round passes; a mixed round retains the PDF's rows and quarantines the unavailable video.
    */
   private static String rounds() throws IOException {
     StringBuilder report = new StringBuilder();
@@ -153,7 +154,8 @@ public class FfmpegAbsentProbe implements Callable<String> {
       while (mixedRound.hasNext()) {
         mixedRows.add(mixedRound.next());
       }
-      throw new IllegalStateException("the video round passed without FFmpeg: " + mixedRows.size() + " rows");
+      report.append("mixed round passed\n");
+      report.append("video error ").append(mixedRound.getSideOutputs().get(0).getError()).append('\n');
     } catch (PreprocessorConfigurationException e) {
       report.append("mixed round failed ").append(e.getMessage()).append('\n');
     }

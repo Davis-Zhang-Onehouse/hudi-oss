@@ -39,8 +39,11 @@ import org.junit.jupiter.params.provider.CsvSource;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.AbstractSet;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -68,6 +71,78 @@ class TestDecodeGuardDrawnResources {
   @BeforeAll
   static void fontCache(@TempDir Path cache) {
     System.setProperty("pdfbox.fontcache", cache.toString());
+  }
+
+  @Test
+  void fallbackTraversalStopsAtTheFontVisitRefusal() throws IOException {
+    CountingDictionary fonts = fallbackFonts(StreamDecodeGuard.MAX_STREAMS_PER_PAGE + 1000, true);
+    assertTrue(fonts.visited <= StreamDecodeGuard.MAX_STREAMS_PER_PAGE + 1,
+        "enumerated " + fonts.visited + " entries before refusing the page");
+  }
+
+  @Test
+  void smallFallbackDictionaryIsAccepted() throws IOException {
+    assertEquals(16, fallbackFonts(16, false).visited);
+  }
+
+  private CountingDictionary fallbackFonts(int entries, boolean refused) throws IOException {
+    try (PDDocument document = new PDDocument()) {
+      PDPage page = new PDPage();
+      document.addPage(page);
+      PDResources resources = new PDResources();
+      page.setResources(resources);
+      CountingDictionary fonts = new CountingDictionary();
+      COSBase font = fonts(PdfFixtures.helvetica()).getItem(COSName.getPDFName("F1"));
+      for (int i = 0; i < entries; i++) {
+        fonts.setItem(COSName.getPDFName("Fn" + i), font);
+      }
+      resources.getCOSObject().setItem(COSName.FONT, fonts);
+      StringBuilder ops = new StringBuilder();
+      for (int i = 0; i <= DrawnResources.MAX_NAMES; i++) {
+        ops.append("/Fn").append(i).append(" 12 Tf\n");
+      }
+      setContents(document, page, ops.toString());
+      StreamDecodeGuard guard = new StreamDecodeGuard(CAP, staging.toFile());
+      if (refused) {
+        assertEquals(PdfFailureCode.PAGE_ERROR, assertThrows(PageFailure.class, () -> guard.checkPage(page)).code());
+      } else {
+        assertDoesNotThrow(() -> guard.checkPage(page));
+      }
+      return fonts;
+    }
+  }
+
+  /** Counts enumeration on the real dictionary, including copies made before resource visits. */
+  private static final class CountingDictionary extends COSDictionary {
+    private int visited;
+
+    @Override
+    public Set<COSName> keySet() {
+      Set<COSName> keys = super.keySet();
+      return new AbstractSet<COSName>() {
+        @Override
+        public Iterator<COSName> iterator() {
+          Iterator<COSName> iterator = keys.iterator();
+          return new Iterator<COSName>() {
+            @Override
+            public boolean hasNext() {
+              return iterator.hasNext();
+            }
+
+            @Override
+            public COSName next() {
+              visited++;
+              return iterator.next();
+            }
+          };
+        }
+
+        @Override
+        public int size() {
+          return keys.size();
+        }
+      };
+    }
   }
 
   @Test

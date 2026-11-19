@@ -416,20 +416,19 @@ final class StreamDecodeGuard {
    * follows what the content draws, not the dictionary's size (a large dictionary shared by many pages is not scanned on
    * each); every entry when the record means every resource.
    */
-  private List<COSName> drawnEntries(COSDictionary entries, DrawnResources.Category category, DrawnResources drawn) {
-    List<COSName> found = new ArrayList<>();
+  private Iterable<COSName> drawnEntries(COSDictionary entries, DrawnResources.Category category, DrawnResources drawn) {
     if (drawn.drawsEverything()) {
-      found.addAll(entries.keySet());
       resourceEntriesVisited += entries.size();
-    } else {
-      // looked up by the COSName itself: its bytes, as PDFBox resolves it (a name need not be UTF-8)
-      for (COSName name : drawn.names(category)) {
-        if (entries.containsKey(name)) {
-          found.add(name);
-        }
-      }
-      resourceEntriesVisited += drawn.names(category).size();
+      return entries.keySet();
     }
+    List<COSName> found = new ArrayList<>();
+    // looked up by the COSName itself: its bytes, as PDFBox resolves it (a name need not be UTF-8)
+    for (COSName name : drawn.names(category)) {
+      if (entries.containsKey(name)) {
+        found.add(name);
+      }
+    }
+    resourceEntriesVisited += drawn.names(category).size();
     return found;
   }
 

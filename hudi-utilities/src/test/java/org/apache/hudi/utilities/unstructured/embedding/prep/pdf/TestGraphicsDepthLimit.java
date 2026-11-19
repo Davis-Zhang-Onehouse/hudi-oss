@@ -91,6 +91,23 @@ class TestGraphicsDepthLimit {
     assertTrue(extract(false, "/X1 Do\n/X2 Do\n", form, form).contains("deep"));
   }
 
+  @Test
+  void nestedEntriesWithoutStateSavesRespectTheDepthLimit() throws IOException {
+    for (boolean groups : new boolean[] {false, true}) {
+      assertEquals("deep", extract(groups, entryStreams(MAX_DEPTH)));
+      assertDepthFailure(groups, entryStreams(MAX_DEPTH + 1));
+    }
+  }
+
+  private static String[] entryStreams(int depth) {
+    String[] streams = new String[depth + 1];
+    for (int i = 0; i < depth; i++) {
+      streams[i] = "/X" + (i + 1) + " Do\n";
+    }
+    streams[depth] = TEXT;
+    return streams;
+  }
+
   private static void assertDepthFailure(String... streams) {
     assertDepthFailure(false, streams);
   }

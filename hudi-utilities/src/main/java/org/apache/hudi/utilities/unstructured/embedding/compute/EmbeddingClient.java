@@ -106,10 +106,8 @@ public interface EmbeddingClient extends AutoCloseable {
   }
 
   /**
-   * Whether the compute step takes inputs of several files rejected alike as each input's own rejection, never as the
-   * request's. A per-provider decision, not a description of how requests are sent: only the Vertex client answers true;
-   * every other client keeps the whole-call rule, also one that sends each input alone (Bedrock
-   * Titan text, {@code .request.max.inputs=1}). False by default.
+   * Whether compute treats alike rejections across files as independent input failures. This is a provider-level promise,
+   * not a description of how requests are batched. False by default, including clients that send one request per input.
    */
   default boolean answersEachInputAlone() {
     return false;

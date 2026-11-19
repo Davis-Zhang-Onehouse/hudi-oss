@@ -86,26 +86,26 @@ final class FrameDedup {
   /**
    * The 64-bit difference hash of a 3-byte BGR frame: luma (integer BT.601 weights) box-averaged over a 9×8 grid, one bit per
    * horizontally adjacent cell pair (set when the left cell is darker), rows top to bottom, most significant bit first. Integer
-   * arithmetic only, so the hash of a frame is the same on every JVM.
+   * arithmetic only, so the hash of a frame is the same on every JVM. Axes smaller than the grid reuse nearest pixels.
    */
   static long dhash(BufferedImage frame) {
     if (frame.getType() != BufferedImage.TYPE_3BYTE_BGR) {
       throw new IllegalArgumentException("dhash expects a TYPE_3BYTE_BGR frame, got type " + frame.getType());
     }
-    int width = frame.getWidth();
-    int height = frame.getHeight();
-    if (width < GRID_COLUMNS || height < GRID_ROWS) {
-      throw new IllegalArgumentException("frame " + width + "x" + height + " is smaller than the dhash grid");
-    }
+    int sourceWidth = frame.getWidth();
+    int sourceHeight = frame.getHeight();
+    // Reuse nearest source pixels for a grid axis smaller than its sample count, without allocating an upscaled raster.
+    int width = Math.max(sourceWidth, GRID_COLUMNS);
+    int height = Math.max(sourceHeight, GRID_ROWS);
     byte[] bgr = ((DataBufferByte) frame.getRaster().getDataBuffer()).getData();
     long[] sums = new long[GRID_COLUMNS * GRID_ROWS];
     long[] counts = new long[GRID_COLUMNS * GRID_ROWS];
     for (int y = 0; y < height; y++) {
       int row = (int) ((long) y * GRID_ROWS / height);
-      int offset = y * width * 3;
+      int offset = (int) ((long) y * sourceHeight / height) * sourceWidth * 3;
       for (int x = 0; x < width; x++) {
         int column = (int) ((long) x * GRID_COLUMNS / width);
-        int i = offset + x * 3;
+        int i = offset + (int) ((long) x * sourceWidth / width) * 3;
         int luma = (114 * (bgr[i] & 0xff) + 587 * (bgr[i + 1] & 0xff) + 299 * (bgr[i + 2] & 0xff)) / 1000;
         sums[row * GRID_COLUMNS + column] += luma;
         counts[row * GRID_COLUMNS + column]++;

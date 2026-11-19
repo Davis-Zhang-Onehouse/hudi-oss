@@ -20,6 +20,7 @@ package org.apache.hudi.utilities.unstructured.embedding.compute.vertex;
 
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
+import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingCallStats;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClient;
@@ -79,6 +80,8 @@ public class VertexMultimodalEmbeddingClient implements EmbeddingClient {
   private static final ObjectMapper MAPPER = new ObjectMapper();
   private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
   private static final int MAX_ERROR_BODY_CHARS = 300;
+  /** The endpoint truncates text after this token count. */
+  private static final int MAX_TEXT_TOKENS = 32;
   private static final String VERTEX_ENDPOINT = "Vertex endpoint ";
   /** google.rpc status of a 400 that rejects the configuration (model allowlisting, organization policy), not the input. */
   static final String FAILED_PRECONDITION = "FAILED_PRECONDITION";
@@ -127,6 +130,17 @@ public class VertexMultimodalEmbeddingClient implements EmbeddingClient {
     this.spec = spec;
     try {
       this.config = VertexClientConfig.from(spec, props);
+      if (spec.declares(EmbeddingTableSchema.MODALITY_TEXT)
+          && EmbeddingTableConfig.from(props).chunkMaxTokens() > MAX_TEXT_TOKENS) {
+        throw new EmbeddingClientConfigException("Vertex text inputs require " + EmbeddingTableConfig.CHUNK_MAX_TOKENS.key()
+            + " <= " + MAX_TEXT_TOKENS + "; the endpoint truncates longer text");
+      }
+      String modelPath = "/publishers/google/models/" + spec.getModelName() + ":predict";
+      if (spec.getModelName().contains("/") || !URI.create(config.endpoint()).getPath().endsWith(modelPath)) {
+        throw new EmbeddingClientConfigException("Config " + EmbeddingTableConfig.MODEL_PREFIX + spec.getName()
+            + VertexClientConfig.ENDPOINT_SUFFIX + " must name the configured model " + spec.getModelName()
+            + " in a /publishers/google/models/<model>:predict path");
+      }
     } catch (IllegalArgumentException e) {
       throw new EmbeddingClientConfigException(e.getMessage());
     }
@@ -139,12 +153,6 @@ public class VertexMultimodalEmbeddingClient implements EmbeddingClient {
   @Override
   public EmbeddingModelSpec spec() {
     return spec;
-  }
-
-  /** Each instance travels in a :predict request of its own, so every rejection is that input's (.request.max.inputs is 1). */
-  @Override
-  public boolean answersEachInputAlone() {
-    return true;
   }
 
   @Override

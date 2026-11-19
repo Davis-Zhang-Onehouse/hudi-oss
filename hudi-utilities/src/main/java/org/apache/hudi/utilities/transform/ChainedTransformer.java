@@ -61,6 +61,29 @@ public class ChainedTransformer implements InstantAwareTransformer {
   protected final List<TransformerInfo> transformers;
   private final Supplier<Option<HoodieSchema>> sourceSchemaSupplier;
 
+  /** Closes every child, preserving the first failure and suppressing later cleanup failures. */
+  @Override
+  public void close() {
+    Throwable failure = null;
+    for (TransformerInfo info : transformers) {
+      try {
+        info.getTransformer().close();
+      } catch (RuntimeException | Error cleanup) {
+        if (failure == null) {
+          failure = cleanup;
+        } else if (failure != cleanup) {
+          failure.addSuppressed(cleanup);
+        }
+      }
+    }
+    if (failure instanceof Error) {
+      throw (Error) failure;
+    }
+    if (failure != null) {
+      throw (RuntimeException) failure;
+    }
+  }
+
   public ChainedTransformer(List<Transformer> transformersList) {
     this.transformers = new ArrayList<>(transformersList.size());
     for (Transformer transformer : transformersList) {

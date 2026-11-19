@@ -29,8 +29,10 @@ import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -81,6 +83,21 @@ class TestFfmpegLibraryVersions {
           () -> FfmpegLibraryVersions.requireDeclared(executor));
       assertTrue(refused.getMessage().contains("(expected org.bytedeco/javacv:1.5.11, found no org.bytedeco/javacv"
           + " Maven metadata in "), refused.getMessage());
+    }
+  }
+
+  @Test
+  void repackagedJarUsesItsImplementationVersion() throws IOException {
+    Path jar = Files.createTempFile(temp, "repackaged-javacv-", ".jar");
+    Manifest manifest = new Manifest();
+    manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
+    manifest.getMainAttributes().put(Attributes.Name.IMPLEMENTATION_VERSION, "1.5.11");
+    try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(jar), manifest)) {
+      out.putNextEntry(new JarEntry(JAVACV_CLASS));
+      out.closeEntry();
+    }
+    try (URLClassLoader executor = executor(jar, jar("ffmpeg", FFMPEG_CLASS, "org.bytedeco/ffmpeg", "7.1-1.5.11"))) {
+      assertDoesNotThrow(() -> FfmpegLibraryVersions.requireDeclared(executor));
     }
   }
 

@@ -110,8 +110,6 @@ class TestMultimodalImageFailures {
             () -> new UncheckedIOException(new IOException("Connection reset by peer (simulated)"))),
         failure("IOException under HoodieIOException", EmbeddingResult.Status.RETRYABLE_FAILURE,
             () -> new HoodieIOException("open failed", new IOException("timeout (simulated)"))),
-        failure("other RuntimeException", EmbeddingResult.Status.PERMANENT_FAILURE,
-            () -> new IllegalStateException("Image raster budget assertion failed")),
         failure("IOException that is its own cause", EmbeddingResult.Status.RETRYABLE_FAILURE, SelfCausedIOException::new));
   }
 
@@ -129,6 +127,17 @@ class TestMultimodalImageFailures {
       assertTrue(vertex.getError().contains(input().describeIdentity()), name + ": " + vertex.getError());
     }
     assertEquals(0, stub.requests().size(), "an image that failed preparation sends no request");
+  }
+
+  @Test
+  void unexpectedRuntimeFailureFailsTheRoundOnEveryProvider() throws Exception {
+    for (EmbeddingClient client : Arrays.asList(vertex(), dummy())) {
+      EmbeddingComputePlatformException failure = assertThrows(EmbeddingComputePlatformException.class,
+          () -> embedFailing(client, () -> new IllegalStateException("Image raster budget assertion failed")));
+      assertTrue(failure.getMessage().contains(input().describeIdentity()), failure.getMessage());
+      assertTrue(failure.getCause() instanceof IllegalStateException);
+    }
+    assertEquals(0, stub.requests().size(), "a preparation invariant failure sends no request");
   }
 
   /** A malformed stored-input reference fails the run on every provider, naming the row; no request is sent. */
@@ -178,7 +187,7 @@ class TestMultimodalImageFailures {
     Path tokenFile = tempDir.resolve("vertex.token");
     Files.write(tokenFile, "stub-token-0002\n".getBytes(StandardCharsets.UTF_8));
     TypedProperties props = new TypedProperties();
-    props.setProperty(key(VertexClientConfig.ENDPOINT_SUFFIX), stub.url() + "/predict");
+    props.setProperty(key(VertexClientConfig.ENDPOINT_SUFFIX), stub.url() + "/publishers/google/models/multimodalembedding@001:predict");
     props.setProperty(key(VertexClientConfig.CREDENTIAL_FILE_SUFFIX), tokenFile.toString());
     VertexMultimodalEmbeddingClient client = new VertexMultimodalEmbeddingClient();
     client.init(new EmbeddingModelSpec(ALIAS, "emb_" + ALIAS, 128, null, VertexMultimodalEmbeddingClient.PROVIDER,

@@ -41,9 +41,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@value VideoFramePreprocessor#FFMPEG_JARS_SETTING}. This test runs {@link FfmpegAbsentProbe} in a class loader built from the
  * test class path WITHOUT any org.bytedeco jar (the shipped bundle's situation, whatever the test class path holds) and checks
  * that, with the default video preprocessor, the driver's config check of a PDF-only job and of a video job loads no FFmpeg
- * class (the loader records every class it is asked for), that a PDF-only round passes, and that the first video fails the
- * round with a {@link org.apache.hudi.utilities.unstructured.embedding.source.PreprocessorConfigurationException} naming the
- * FFmpeg jars setting and the video preprocessor key, with no quarantine entry for the video.
+ * class (the loader records every class it is asked for), that a PDF-only round passes, and that an unavailable video is
+ * quarantined with a {@link PreprocessingException} naming the FFmpeg jars setting and the video preprocessor key. The mixed
+ * round keeps the PDF's rows and records the video's error.
  *
  * <p>The probe is called through {@link Callable}, the one type both loaders share: a separate loader is the only way to take
  * classes away from a JVM that has them.
@@ -70,16 +70,13 @@ class TestFfmpegAbsentClassGraph {
     assertTrue(report.contains("video preprocessor " + VideoFramePreprocessor.class.getName() + "\n"), report);
     assertTrue(report.contains("validateConfig loaded ffmpeg classes []\n"), report);
 
-    assertRefusal(line(report, "video refused "), report);
-    String cause = line(report, "video cause ");
-    // without the FFmpeg module the strategy class is missing; with it, its org.bytedeco classes are
-    assertTrue(cause.contains("NoClassDefFoundError: org/bytedeco/"), report);
-
+    assertRefusal(line(report, "video quarantined "), report);
     String pdfRound = line(report, "pdf round rows ");
     assertTrue(pdfRound.endsWith(" side outputs 0") && !pdfRound.startsWith("pdf round rows 0 "), report);
-    assertRefusal(line(report, "mixed round failed "), report);
-    assertEquals(pdfRound.replace("pdf round", "mixed round"), line(report, "mixed round rows "),
-        "the PDF's rows, then the failure: no quarantine entry for the video\n" + report);
+    assertTrue(report.contains("mixed round passed\n"), report);
+    assertEquals(pdfRound.replace("pdf round", "mixed round").replace("side outputs 0", "side outputs 1"),
+        line(report, "mixed round rows "), "the PDF's rows are kept and the unavailable video is quarantined\n" + report);
+    assertRefusal(line(report, "video error "), report);
   }
 
   private static void assertRefusal(String refused, String report) {

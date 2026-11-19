@@ -148,7 +148,7 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
   }
 
   /**
-   * Validates the configuration, reads the API key and, for TEI, the server limits from {@code GET /info}.
+   * Validates the configuration, reads the API key and, for TEI, the served model and server limits from {@code GET /info}.
    *
    * @throws IllegalArgumentException for an invalid configuration
    * @throws IllegalStateException when the key cannot be read, or TEI's {@code /info} is unreachable, fails or does not
@@ -463,6 +463,7 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
     }
     try {
       Parsed parsed = parse(reply.body(), request.size());
+      checkServedModel(parsed.model, config.baseModel(), "response model", OpenAiClientConfig.BASE_MODEL_SUFFIX);
       call.addPromptTokens(parsed.promptTokens);
       return Attempt.done(Outcome.ok(parsed.vectors));
     } catch (IOException e) {
@@ -661,10 +662,11 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
     return out.toByteArray();
   }
 
-  /** Streams {@code data[].index} / {@code data[].embedding} and {@code usage.prompt_tokens} out of a 2xx body. */
+  /** Streams the served model, {@code data[].index} / {@code data[].embedding} and usage out of a 2xx body. */
   private static Parsed parse(byte[] body, int expected) throws IOException {
     float[][] vectors = new float[expected][];
     long promptTokens = -1;
+    String model = null;
     try (JsonParser json = JSON.createParser(body)) {
       if (json.nextToken() != JsonToken.START_OBJECT) {
         throw new IOException("the body is not a JSON object");
@@ -676,6 +678,8 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
           while (json.nextToken() == JsonToken.START_OBJECT) {
             readEntry(json, vectors);
           }
+        } else if ("model".equals(field) && value == JsonToken.VALUE_STRING) {
+          model = json.getText();
         } else if ("usage".equals(field) && value == JsonToken.START_OBJECT) {
           promptTokens = readPromptTokens(json, promptTokens);
         } else {
@@ -683,7 +687,7 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
         }
       }
     }
-    return new Parsed(vectors, promptTokens);
+    return new Parsed(vectors, promptTokens, model);
   }
 
   /**
@@ -745,7 +749,7 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
     return Arrays.copyOf(buffer, size);
   }
 
-  /** TEI: the server limits from {@code GET /info}, which must describe an embedding model. */
+  /** TEI: the served identity and server limits from {@code GET /info}, which must describe the configured embedding model. */
   private void readTeiInfo() {
     String url = OpenAiProvider.HF_TEI.infoUrl(config.endpoint());
     HttpReply reply;
@@ -775,6 +779,9 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
       throw new IllegalStateException("TEI at " + config.endpoint() + " does not serve an embedding model (model_type "
           + modelType + ")");
     }
+    JsonNode modelId = info.get("model_id");
+    checkServedModel(modelId != null && modelId.isTextual() ? modelId.asText() : null, config.modelName(), "model_id",
+        EmbeddingTableConfig.MODEL_NAME_SUFFIX);
     int serverInputs = info.path("max_client_batch_size").asInt(-1);
     long serverTokens = info.path("max_batch_tokens").asLong(-1);
     if (serverInputs <= 0 || serverTokens <= 0) {
@@ -782,6 +789,15 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
     }
     maxInputs = maxInputs > 0 ? Math.min(maxInputs, serverInputs) : serverInputs;
     maxTokens = maxTokens > 0 ? Math.min(maxTokens, serverTokens) : serverTokens;
+  }
+
+  /** A deployment alias or endpoint must not silently serve another vector space of the same dimension. */
+  private void checkServedModel(String served, String expected, String field, String expectedConfigSuffix) {
+    if (!expected.equals(served)) {
+      throw new EmbeddingClientConfigException(config.provider().id() + " " + config.endpoint() + " served model "
+          + field + "=" + redact(served) + " does not match configured model " + expected
+          + " (" + MODEL_KEY_PREFIX + spec.getName() + expectedConfigSuffix + ")");
+    }
   }
 
   /**
@@ -899,10 +915,12 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
   private static final class Parsed {
     private final float[][] vectors;
     private final long promptTokens;
+    private final String model;
 
-    private Parsed(float[][] vectors, long promptTokens) {
+    private Parsed(float[][] vectors, long promptTokens, String model) {
       this.vectors = vectors;
       this.promptTokens = promptTokens;
+      this.model = model;
     }
   }
 }

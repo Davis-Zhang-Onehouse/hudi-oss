@@ -58,6 +58,17 @@ class TestImageFailures {
   private static final String ROW = "source_path_sha=f source_modification_time=0 source_file_size=0 modality=image chunk_id=0";
 
   @Test
+  void unexpectedRuntimeFailureFailsTheRound() {
+    for (Exception failure : new Exception[] {new NullPointerException("client state"),
+        new IllegalStateException("decoder invariant")}) {
+      EmbeddingComputePlatformException thrown = assertThrows(EmbeddingComputePlatformException.class,
+          () -> ImageFailures.result(INPUT, failure));
+      assertSame(failure, thrown.getCause());
+      assertTrue(thrown.getMessage().contains(ROW), thrown.getMessage());
+    }
+  }
+
+  @Test
   public void changedSourceVersionIsPermanentNamingTheRow() {
     EmbeddingResult result = ImageFailures.result(INPUT, new BlobSourceChangedException("source version changed"));
     assertEquals(EmbeddingResult.Status.PERMANENT_FAILURE, result.getStatus());

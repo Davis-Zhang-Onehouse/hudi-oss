@@ -63,7 +63,7 @@ import java.util.Set;
  *   <li>every PERMANENT text names the row (its five key columns), so rows of two files, or of two versions of one file,
  *       never share one text and alike failures of one call are never read as the provider rejecting the request;</li>
  *   <li>any other {@link IOException}, also under an unchecked wrapper (UncheckedIOException, HoodieIOException) → RETRYABLE;
- *       any other RuntimeException (e.g. the raster budget assertion) → PERMANENT.</li>
+ *       any unexpected RuntimeException → a platform failure of the compute round.</li>
  * </ul>
  */
 public final class ImageFailures {
@@ -112,7 +112,7 @@ public final class ImageFailures {
 
   /** The result of a failure that is not the stored input's own: a PERMANENT text starts with {@code row}, so no two rows share one. */
   private static EmbeddingResult result(Exception failure, String row) {
-    if (isPermanent(failure)) {
+    if (isPermanent(failure, row)) {
       return EmbeddingResult.permanent(EmbeddingTableSchema.truncateError(row + (failure instanceof IOException
           && failure.getMessage() != null ? failure.getMessage()
           : "image preparation failed: " + failure.getClass().getSimpleName() + ": " + failure.getMessage())));
@@ -120,7 +120,7 @@ public final class ImageFailures {
     return EmbeddingResult.retryable(EmbeddingTableSchema.truncateError("cannot read the image: " + describeTransient(failure)));
   }
 
-  private static boolean isPermanent(Exception failure) {
+  private static boolean isPermanent(Exception failure, String row) {
     if (BlobReadException.isStorageFailure(failure)) {
       return false;
     }
@@ -134,7 +134,10 @@ public final class ImageFailures {
       }
     }
     if (firstIo == null) {
-      return true;
+      if (find(failure, StackOverflowError.class) != null) {
+        return true;
+      }
+      throw new EmbeddingComputePlatformException("Unexpected image preparation failure for " + row + "; the compute round fails", failure);
     }
     return firstIo instanceof ImageRefusedException || firstIo instanceof ImageHeaderException || firstIo instanceof IIOException;
   }

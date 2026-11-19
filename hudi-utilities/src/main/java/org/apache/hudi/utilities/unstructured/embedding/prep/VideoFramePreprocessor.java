@@ -80,13 +80,13 @@ import java.util.function.Supplier;
  *
  * <p>FFmpeg is optional: Hudi does not ship it (org.bytedeco), and the default strategy is named by its class name only, loaded
  * when the first video's frames are opened. {@link #validateConfig} never loads it, so a job without video runs without the
- * FFmpeg jars; the first video of a JVM without them fails the round with a {@link PreprocessorConfigurationException} naming
- * {@value #FFMPEG_JARS_SETTING} and {@link EmbeddingTableConfig#PREP_VIDEO_PREPROCESSOR_CLASS}, never a quarantine entry. The
- * same holds for the default FFmpeg audio segment source ({@link AudioConfig#DEFAULT_SEGMENT_SOURCE_CLASS}): its driver check
- * reads keys only, and a JVM without FFmpeg fails the first video's speech with a configuration error naming
- * {@value #FFMPEG_JARS_SETTING} and {@link AudioConfigKeys#SEGMENT_SOURCE_CLASS}.
+ * FFmpeg jars; a video on a JVM without them is quarantined with a {@link PreprocessingException} naming
+ * the FFmpeg jars ({@value #FFMPEG_JARS_SETTING}) and {@link EmbeddingTableConfig#PREP_VIDEO_PREPROCESSOR_CLASS}. Broken native linkage still fails the round. The
+ * default FFmpeg audio segment source ({@link AudioConfig#DEFAULT_SEGMENT_SOURCE_CLASS}) is also loaded lazily. With a custom
+ * frame strategy, unavailable audio decoding still fails the first video's speech with a configuration error naming
+ * the FFmpeg jars ({@value #FFMPEG_JARS_SETTING}) and {@link AudioConfigKeys#SEGMENT_SOURCE_CLASS}.
  *
- * <p>Failures: a {@code file_size} above {@link EmbeddingTableConfig#PREP_VIDEO_MAX_BYTES}, when set, fails the file before any read
+ * <p>Failures: a {@code file_size} above {@link EmbeddingTableConfig#PREP_VIDEO_MAX_BYTES} (20 GiB unless the job sets it) fails the file before any read
  * (frames and speech). A content failure of the frames (a video refused by the pixel guard, a corrupt or undecodable stream
  * ({@link VideoDecodeException}), no video stream, a source that is gone, short or whose blob row names no readable range
  * ({@link SourceFailures})) keeps the frames already emitted; with audio off it fails the file at once, with audio on the speech
@@ -143,9 +143,8 @@ public class VideoFramePreprocessor implements FilePreprocessor, AutoCloseable {
   }
 
   /**
-   * The frame extraction strategy, the default FFmpeg one loaded on first use. A JVM without FFmpeg's classes or natives fails
-   * here or on the first video's frames with a {@link PreprocessorConfigurationException}: a deployment error of the task, never
-   * a FAILED file.
+   * The frame extraction strategy, the default FFmpeg one loaded after {@link #open} checks optional decoder availability.
+   * Missing strategy classes or broken native linkage remain configuration/platform failures of the round.
    */
   private FrameExtractionStrategy strategy() {
     if (strategy == null) {
@@ -236,6 +235,11 @@ public class VideoFramePreprocessor implements FilePreprocessor, AutoCloseable {
     if (file.getFileSize() > maxBytes) {
       throw new PreprocessingException("video declares " + file.getFileSize() + " bytes, above "
           + EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key() + " = " + maxBytes + "; refused before any read");
+    }
+    if (strategy == null && (getClass().getClassLoader().getResource("org/bytedeco/javacv/FFmpegFrameGrabber.class") == null
+        || getClass().getClassLoader().getResource("org/bytedeco/ffmpeg/global/avutil.class") == null)) {
+      // FFmpeg is optional: an unavailable video goes to the error table without blocking unrelated files every round.
+      throw new PreprocessingException("FFMPEG_UNAVAILABLE: " + ffmpegMissing(null).getMessage());
     }
     Map<String, String> fileAux = new HashMap<>();
     fileAux.put(AUX_SIZE_BYTES, String.valueOf(file.getFileSize()));

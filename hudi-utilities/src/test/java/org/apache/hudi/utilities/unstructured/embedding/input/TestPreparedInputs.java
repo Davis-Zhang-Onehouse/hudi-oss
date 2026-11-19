@@ -92,9 +92,57 @@ public class TestPreparedInputs {
   @TempDir
   Path tempDir;
 
+  /** Fixtures returned by inputs() live until teardown; task-local try scopes retain their own ownership. */
+  private final List<PreparedInputs> ownedInputs = new ArrayList<>();
+
   @AfterEach
   void unsetTaskContext() {
-    TaskContext$.MODULE$.unset();
+    try {
+      ownedInputs.forEach(PreparedInputs::close);
+    } finally {
+      ownedInputs.clear();
+      TaskContext$.MODULE$.unset();
+    }
+  }
+
+  @Test
+  void fixtureCleanupStopsItsWriteWorkersAfterAwaitWrites() throws Exception {
+    Set<Thread> before = Thread.getAllStackTraces().keySet();
+    PreparedInputs inputs = inputs(THRESHOLD);
+    try {
+      prepare(inputs, row(99), "p", JPEG, bytes((int) THRESHOLD + 1, 1));
+      List<Thread> workers = Thread.getAllStackTraces().keySet().stream()
+          .filter(thread -> !before.contains(thread) && thread.getName().startsWith("hudi-out-of-line-write-"))
+          .collect(Collectors.toList());
+      assertFalse(workers.isEmpty(), "the completed write leaves workers owned by this fixture");
+      unsetTaskContext();
+      for (Thread worker : workers) {
+        worker.join(1000);
+        assertFalse(worker.isAlive(), "fixture cleanup left " + worker.getName());
+      }
+    } finally {
+      inputs.close();
+    }
+  }
+
+  @Test
+  void explicitCloseStopsItsWriteWorkersAfterAwaitWrites() throws Exception {
+    Set<Thread> before = Thread.getAllStackTraces().keySet();
+    PreparedInputs inputs = inputs(THRESHOLD);
+    try {
+      prepare(inputs, row(99), "p", JPEG, bytes((int) THRESHOLD + 1, 1));
+      List<Thread> workers = Thread.getAllStackTraces().keySet().stream()
+          .filter(thread -> !before.contains(thread) && thread.getName().startsWith("hudi-out-of-line-write-"))
+          .collect(Collectors.toList());
+      assertFalse(workers.isEmpty(), "the completed write leaves workers owned by this fixture");
+      inputs.close();
+      for (Thread worker : workers) {
+        worker.join(1000);
+        assertFalse(worker.isAlive(), "fixture cleanup left " + worker.getName());
+      }
+    } finally {
+      inputs.close();
+    }
   }
 
   // ---- (1) inline vs out of line at the threshold and at the ceiling ----
@@ -184,7 +232,7 @@ public class TestPreparedInputs {
       return new ByteArrayInputStream(bytes(64, 3));
     };
     // outside a task: no task ceiling to check, the 64 bytes are inline under the huge threshold
-    assertEquals(HoodieSchema.Blob.INLINE, new PreparedInputs(props, INSTANT, destination()).prepare(row(0), null, JPEG, payload, 64)
+    assertEquals(HoodieSchema.Blob.INLINE, own(new PreparedInputs(props, INSTANT, destination())).prepare(row(0), null, JPEG, payload, 64)
         .getAs(HoodieSchema.Blob.TYPE));
     assertEquals(1, opens[0]);
 
@@ -457,7 +505,7 @@ public class TestPreparedInputs {
     }
     PreparedInputs copy;
     try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(buffer.toByteArray()))) {
-      copy = (PreparedInputs) in.readObject();
+      copy = own((PreparedInputs) in.readObject());
     }
     byte[] small = bytes((int) THRESHOLD, 11);
     byte[] large = bytes(100, 11);
@@ -502,10 +550,15 @@ public class TestPreparedInputs {
         + chunkId;
   }
 
+  private PreparedInputs own(PreparedInputs inputs) {
+    ownedInputs.add(inputs);
+    return inputs;
+  }
+
   private PreparedInputs inputs(long threshold) {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingInputConfig.INLINE_MAX_BYTES.key(), String.valueOf(threshold));
-    return new PreparedInputs(props, INSTANT, destination());
+    return own(new PreparedInputs(props, INSTANT, destination()));
   }
 
   /** The payloads' destination: an embedding table base under the test folder. */

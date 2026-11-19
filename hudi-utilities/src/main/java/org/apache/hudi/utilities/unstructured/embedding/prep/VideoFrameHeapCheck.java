@@ -22,7 +22,9 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.utilities.sources.blob.BlobInlineCeiling;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
+import org.apache.hudi.utilities.unstructured.embedding.video.FfmpegKeyframeVideoFrameSource;
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoFrameConfig;
+import org.apache.hudi.utilities.unstructured.storage.OutOfLineWritePool;
 
 import org.apache.spark.SparkConf;
 import org.slf4j.Logger;
@@ -39,12 +41,14 @@ import java.util.regex.Pattern;
 /**
  * The frame-heap start check of an embedding job that preps video ({@link #prepsVideo}): each round is refused on the driver,
  * before any Spark work, unless
- * {@code slots × (6 · maxPixels + 16 MiB) + reserve ≤ heap − reserved − fixed}, where
+ * {@code slots × (6 · maxPixels + 16 MiB + 10 MiB) + reserve ≤ heap − reserved − fixed}, where
  * <ul>
  *   <li>{@code maxPixels} is {@link EmbeddingTableConfig#PREP_VIDEO_MAX_PIXELS}: the largest frame a video may declare;</li>
  *   <li>{@code 6 · maxPixels} is the per-task decode estimate (measured on the compute
  *       path);</li>
  *   <li>16 MiB per slot is decode overhead, one writer row group and the JPEG encoder's output;</li>
+ *   <li>10 MiB per slot is {@link #STREAMING_BUFFER_BYTES}: the FFmpeg frame source's block reads (2 MiB) and the task's
+ *       background out-of-line frame writes (4 MiB pending plus one payload of at most 4 MiB waiting for room);</li>
  *   <li>{@code reserve = 4 × ⌈3 · maxPixels / R⌉ × R}, 0 when {@code 3 · maxPixels < R / 2}, is the per-executor contiguity
  *       reserve described below, R being the G1 region size;</li>
  *   <li>heap, reserved and slots are what {@link BlobInlineCeiling#onDriver} reads on the driver: the executor heap
@@ -66,11 +70,9 @@ import java.util.regex.Pattern;
  * <p>Data prep's read ahead ({@link EmbeddingTableConfig#PREP_PREFETCH_MAX_BYTES}) never changes this admission: a job reads
  * ahead only when the slot term plus {@code 2 · prefetch} still fits ({@link #admittedPrefetchBytes}), else it reads nothing ahead.
  *
- * <p>Not counted: the FFmpeg frame source's block reads (at most 2 MiB per clip) and a task's background out-of-line frame writes
- * (at most 4 MiB pending plus the payload of at most 4 MiB waiting for room), about 10 MiB per task slot beside the measured
- * 16 MiB, which was measured before either existed. They come out of the fixed rest
- * ({@link EmbeddingTableConfig#PREP_VIDEO_HEAP_FIXED_BYTES}) and the per-slot margin; a job admitted at the boundary with many
- * slots and little fixed rest may need more heap.
+ * <p>Counted per slot besides the measured 16 MiB, which was measured before they existed: the FFmpeg frame source's block reads
+ * (at most 2 MiB per clip) and a task's background out-of-line frame writes (at most 4 MiB pending plus the payload of at most
+ * 4 MiB waiting for room), {@link #STREAMING_BUFFER_BYTES} in all.
  *
  * <p>It is static: it never waits and never defers. The operator lowers the pixel limit or the slots, or gives the executor more
  * heap. It reads only the job's properties and the Spark conf: no decoder class is loaded on the driver. A job whose prepped
@@ -81,6 +83,11 @@ public final class VideoFrameHeapCheck {
 
   /** Per-slot bytes beside the decoded frame: decode overhead, one writer row group, the encoder's output. */
   static final long SLOT_OVERHEAD_BYTES = 16L * 1024 * 1024;
+  /**
+   * Per-slot bytes of the buffers that came after the {@link #SLOT_OVERHEAD_BYTES} measurement: the FFmpeg frame source's block
+   * reads and a task's background out-of-line frame writes (pending, plus one payload waiting for room): 10 MiB.
+   */
+  static final long STREAMING_BUFFER_BYTES = FfmpegKeyframeVideoFrameSource.BUFFERED_READ_BYTES + 2L * OutOfLineWritePool.MAX_PENDING_BYTES;
   private static final Logger LOG = LoggerFactory.getLogger(VideoFrameHeapCheck.class);
   /** The read-ahead buffers a prep task holds at once: the file it prepares and the next one. */
   static final long PREFETCH_BUFFERS_PER_TASK = 2L;
@@ -182,7 +189,7 @@ public final class VideoFrameHeapCheck {
     }
     long region = g1Region.bytes;
     // saturating: a pixel limit large enough to overflow needs more heap than any executor has
-    long slotTerm = saturatedAdd(saturatedAdd(saturatedMultiply(BYTES_PER_PIXEL, maxPixels), SLOT_OVERHEAD_BYTES),
+    long slotTerm = saturatedAdd(saturatedAdd(saturatedMultiply(BYTES_PER_PIXEL, maxPixels), SLOT_OVERHEAD_BYTES + STREAMING_BUFFER_BYTES),
         saturatedMultiply(PREFETCH_BUFFERS_PER_TASK, prefetch));
     long reserve = humongousReserveBytes(maxPixels, region);
     long needed = saturatedAdd(saturatedMultiply(executor.slots(), slotTerm), reserve);
@@ -190,7 +197,8 @@ public final class VideoFrameHeapCheck {
     if (needed > available) {
       return new HoodieValidationException("This job preps video, but its frame decodes do not fit the executor heap: "
           + executor.slots() + " task slots x (" + BYTES_PER_PIXEL + " x " + maxPixels + " pixels ("
-          + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") + " + SLOT_OVERHEAD_BYTES
+          + EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key() + ") + " + SLOT_OVERHEAD_BYTES + " + " + STREAMING_BUFFER_BYTES
+          + " (block reads and out-of-line writes)"
           + (prefetch == 0 ? "" : " + " + PREFETCH_BUFFERS_PER_TASK + " x " + prefetch + " (" + EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES.key() + ")")
           + ") + reserve " + RESERVE_RASTERS
           + " frame rasters (" + RASTER_BYTES_PER_PIXEL + " x " + maxPixels + " bytes each) in " + reserveRegions(maxPixels, region)

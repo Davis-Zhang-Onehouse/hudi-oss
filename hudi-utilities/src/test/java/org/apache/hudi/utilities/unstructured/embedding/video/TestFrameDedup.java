@@ -18,6 +18,7 @@
 
 package org.apache.hudi.utilities.unstructured.embedding.video;
 
+import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.unstructured.embedding.source.PreprocessorConfigurationException;
 
 import org.junit.jupiter.api.Test;
@@ -33,6 +34,19 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Consecutive-frame dedup: the difference hash, the threshold, the last-kept reference and the exact methods. */
 class TestFrameDedup {
+
+  @Test
+  void framesBelowTheHashGridUseDeterministicNearestPixels() {
+    VideoFrameConfig defaults = VideoFrameConfig.from(new TypedProperties());
+    FrameDedup dedup = new FrameDedup(defaults.getDedupMethod(), defaults.getMaxDistance());
+    BufferedImage tiny = new BufferedImage(1, 1, BufferedImage.TYPE_3BYTE_BGR);
+    assertEquals("0000000000000000", dedup.keepDecoded(tiny));
+    assertNull(dedup.keepDecoded(tiny));
+    BufferedImage ramp = new BufferedImage(2, 1, BufferedImage.TYPE_3BYTE_BGR);
+    ramp.setRGB(1, 0, 0xFFFFFF);
+    assertEquals("0808080808080808", dedup.keepDecoded(ramp));
+    assertNull(dedup.keepDecoded(ramp));
+  }
 
   @Test
   void dhashBitsAreTheLeftRightOrderOfAGreyGrid() {
@@ -90,8 +104,6 @@ class TestFrameDedup {
   void dhashRefusesFramesItCannotHash() {
     BufferedImage intRgb = new BufferedImage(90, 80, BufferedImage.TYPE_INT_RGB);
     assertThrows(IllegalArgumentException.class, () -> FrameDedup.dhash(intRgb));
-    BufferedImage narrow = new BufferedImage(8, 80, BufferedImage.TYPE_3BYTE_BGR);
-    assertThrows(IllegalArgumentException.class, () -> FrameDedup.dhash(narrow));
   }
 
   /** A 90x80 grey frame of 9x8 cells of 10x10 pixels; the first {@code darkeningRows} rows darken to the right. */
