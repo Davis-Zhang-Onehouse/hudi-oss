@@ -240,10 +240,10 @@ public final class UnstructuredSchemaContract {
   private static StructType plan(UnstructuredMode mode, String entry, Set<String> ids, StructType incoming, JavaSparkContext jsc,
                                  SparkSession spark, TypedProperties props) {
     String trimmed = entry.trim();
-    TransformerInfo transformer = TransformerInfo.from(trimmed);
-    TypedProperties transformerProps = transformer.getProperties(props, ids);
-    try {
-      return transformer.getTransformer().transformedSchema(jsc, spark, incoming, transformerProps).asNullable();
+    TransformerInfo info = TransformerInfo.from(trimmed);
+    try (Transformer transformer = info.getTransformer()) {
+      TypedProperties transformerProps = info.getProperties(props, ids);
+      return transformer.transformedSchema(jsc, spark, incoming, transformerProps).asNullable();
     } catch (HoodieSchemaException e) {
       throw e;
     } catch (Exception e) {
