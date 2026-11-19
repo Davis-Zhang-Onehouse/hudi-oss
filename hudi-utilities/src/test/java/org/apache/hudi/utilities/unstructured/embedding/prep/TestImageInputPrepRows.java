@@ -72,7 +72,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * by random access); every refusal is a quarantine entry of its file alone; a storage failure that is not the file's own fails the
  * round after the source's open retries.
  */
-public class TestImageInputPrepRows {
+class TestImageInputPrepRows {
 
   private static final StructType BLOB = (StructType) BlobType.dataType();
   private static final StructType REFERENCE = (StructType) BLOB.apply(HoodieSchema.Blob.EXTERNAL_REFERENCE).dataType();
@@ -91,7 +91,7 @@ public class TestImageInputPrepRows {
   private String embeddingTable;
 
   @BeforeEach
-  public void createTable() throws IOException {
+  void createTable() throws IOException {
     embeddingTable = temp.resolve("embedding").toUri().toString();
     HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.layoutOne())
         .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("embedding")
@@ -100,12 +100,12 @@ public class TestImageInputPrepRows {
   }
 
   @AfterEach
-  public void clearHooks() {
+  void clearHooks() {
     SourceOpenHooks.clear();
   }
 
   @Test
-  public void eachImageIsOneRowStoringTheSourceBlobValue() throws IOException {
+  void eachImageIsOneRowStoringTheSourceBlobValue() throws IOException {
     byte[] png = ImageFixtures.image("png", 97, 41);
     // libtiff layout: the directory after the pixel data, read by random access over the object
     byte[] tiff = ImageFixtures.singleStripTiff(400, 300);
@@ -129,7 +129,7 @@ public class TestImageInputPrepRows {
 
   /** Each refusal fails its own file (a quarantine entry, modality image) and the good file between them is still one row. */
   @Test
-  public void everyRefusalIsAQuarantineEntryOfItsFile() throws IOException {
+  void everyRefusalIsAQuarantineEntryOfItsFile() {
     TypedProperties props = props();
     props.setProperty(EmbeddingTableConfig.PREP_IMAGE_MAX_PIXELS.key(), "10000");
     props.setProperty(EmbeddingTableConfig.PREP_IMAGE_MAX_BYTES.key(), "200000");
@@ -164,7 +164,7 @@ public class TestImageInputPrepRows {
 
   /** A transient failure to open an image's object is retried in the round; the row is written once it opens. */
   @Test
-  public void transientOpenFailureIsRetried() throws IOException {
+  void transientOpenFailureIsRetried() throws IOException {
     byte[] png = ImageFixtures.image("png", 30, 20);
     Path local = bucketObject("retried.png", png);
     AtomicInteger attempts = new AtomicInteger();
@@ -184,7 +184,7 @@ public class TestImageInputPrepRows {
 
   /** A storage failure that outlasts the retries is no quarantine entry: the round fails, so a later run reads the file. */
   @Test
-  public void persistentStorageFailureFailsTheRound() throws IOException {
+  void persistentStorageFailureFailsTheRound() throws IOException {
     byte[] png = ImageFixtures.image("png", 30, 20);
     Path local = bucketObject("throttled.png", png);
     SourceOpenHooks.beforeOpen(local.toAbsolutePath().toString(), () -> {
@@ -198,7 +198,7 @@ public class TestImageInputPrepRows {
   }
 
   @Test
-  public void changedImageIsAFileFailureBeforeOpeningIt() throws IOException {
+  void changedImageIsAFileFailureBeforeOpeningIt() throws IOException {
     byte[] png = ImageFixtures.image("png", 30, 20);
     Path local = bucketObject("changed.png", png);
     Row row = referenceRow("sha-changed", "png", bucketPath("changed.png"), png.length);
@@ -227,7 +227,7 @@ public class TestImageInputPrepRows {
     Map<String, String> actualAux = new HashMap<>(row.getJavaMap(EmbeddingTableSchema.BASE_COLUMNS.indexOf(EmbeddingTableSchema.AUX)));
     String version = actualAux.remove(EmbeddingTableSchema.AUX_PREP_LOGIC_VERSION);
     assertNotNull(version);
-    assertTrue(version.matches("prep-logic-v1;sha256=[0-9a-f]{64}"));
+    assertEquals(PrepLogicVersions.from(new TypedProperties()).version("image"), version);
     assertEquals(expectedAux, actualAux);
   }
 

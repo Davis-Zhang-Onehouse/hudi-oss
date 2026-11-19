@@ -304,20 +304,23 @@ public class TestPreprocessingIterator {
 
   @Test
   public void executorMustMatchDriverPinsBeforeOpeningAFile() {
-    TypedProperties matching = props();
-    PrepLogicVersions driver = PrepLogicVersions.from(matching);
-    for (String kind : Arrays.asList("text", "image", "video", "audio")) {
-      matching.setProperty("hoodie.table.embedding.prep." + kind + ".logic.version", driver.version(kind));
-    }
+    TypedProperties matching = PrepLogicVersions.from(props()).executionProperties(props());
     assertEquals(1, drain(iterator(matching, blobRow("control", "txt", "alpha"))).size());
     int opened = PipeSplitPreprocessor.OPENED.get();
     TypedProperties changed = TypedProperties.copy(matching);
     changed.setProperty("hoodie.table.embedding.prep.text.logic.version", "different-driver-runtime");
-    assertThrows(IllegalArgumentException.class, () -> iterator(changed, blobRow("refused", "txt", "beta")));
-    assertEquals(opened, PipeSplitPreprocessor.OPENED.get(), "the refused executor opened no source file");
+    Row changedRow = blobRow("refused", "txt", "beta");
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> iterator(changed, changedRow));
+    assertTrue(refused.getMessage().contains("hoodie.table.embedding.prep.text.logic.version="), refused.getMessage());
+    TypedProperties setting = TypedProperties.copy(matching);
+    setting.setProperty("hoodie.table.embedding.prep.chunk.max.tokens", "7");
+    Row settingRow = blobRow("setting", "txt", "delta");
+    assertThrows(IllegalArgumentException.class, () -> iterator(setting, settingRow));
     TypedProperties incomplete = TypedProperties.copy(matching);
     incomplete.remove("hoodie.table.embedding.prep.audio.logic.version");
-    assertThrows(IllegalArgumentException.class, () -> iterator(incomplete, blobRow("missing", "txt", "gamma")));
+    Row incompleteRow = blobRow("missing", "txt", "gamma");
+    assertThrows(IllegalArgumentException.class, () -> iterator(incomplete, incompleteRow));
+    assertEquals(opened, PipeSplitPreprocessor.OPENED.get(), "the refused executors opened no source file");
   }
 
   @Test

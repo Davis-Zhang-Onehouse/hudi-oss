@@ -30,10 +30,13 @@ import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobReadException;
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
 import org.apache.hudi.utilities.unstructured.embedding.source.PreprocessorConfigurationException;
+import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlob;
+import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobBytesSupplier;
 
 import org.jcodec.codecs.h264.H264Utils;
 import org.jcodec.codecs.h264.io.model.SeqParameterSet;
 import org.jcodec.codecs.h264.mp4.AvcCBox;
+import org.jcodec.containers.mp4.demuxer.MP4Demuxer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -74,7 +77,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * keyframes at the times ffprobe measured (codec-matrix-expected.txt), every other type is refused naming the reason and the
  * FFmpeg preprocessor, and a storage failure stays a storage failure.
  */
-public class TestJcodecKeyframeVideoFrameSource {
+class TestJcodecKeyframeVideoFrameSource {
 
   private static final String MATRIX = "/video/codec-matrix/";
   /** c01's presented keyframes (codec-matrix-expected.txt, measured with ffprobe). */
@@ -84,7 +87,7 @@ public class TestJcodecKeyframeVideoFrameSource {
   Path dir;
 
   @Test
-  public void testH264Mp4FramesAreTheKeyframesFfprobeMeasured() throws Exception {
+  void testH264Mp4FramesAreTheKeyframesFfprobeMeasured() throws Exception {
     Path c01 = resource(MATRIX + "c01-h264-aac.mp4");
     List<ExtractedFrame> jcodec = new ArrayList<>();
     List<byte[]> images = new ArrayList<>();
@@ -110,7 +113,7 @@ public class TestJcodecKeyframeVideoFrameSource {
 
   /** Without dedup, one keyframe per second of c01 at the presentation times ffprobe measured, from the container's start. */
   @Test
-  public void testEveryScheduledKeyframeIsKeptAtItsPresentationTime() throws Exception {
+  void testEveryScheduledKeyframeIsKeptAtItsPresentationTime() throws Exception {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_DEDUP_METHOD.key(), "none");
     List<ExtractedFrame> frames = new ArrayList<>();
@@ -123,7 +126,7 @@ public class TestJcodecKeyframeVideoFrameSource {
    * outlives the video, however many keyframes it has (JCodec's decoder would otherwise start a pool per keyframe).
    */
   @Test
-  public void testAMultiSliceVideoDecodesWithoutLeavingThreads() throws Exception {
+  void testAMultiSliceVideoDecodesWithoutLeavingThreads() throws Exception {
     // JCodec starts its decoder pool only on a machine with more than one CPU
     assumeTrue(Runtime.getRuntime().availableProcessors() > 1, "a single CPU: JCodec starts no decoder thread");
     Path clip = resource("/video/h264-4slices.mp4");
@@ -139,7 +142,7 @@ public class TestJcodecKeyframeVideoFrameSource {
   }
 
   @Test
-  public void testTheSameVideoYieldsTheSameBytes() throws Exception {
+  void testTheSameVideoYieldsTheSameBytes() throws Exception {
     Path c01 = resource(MATRIX + "c01-h264-aac.mp4");
     List<byte[]> first = new ArrayList<>();
     List<byte[]> second = new ArrayList<>();
@@ -152,7 +155,7 @@ public class TestJcodecKeyframeVideoFrameSource {
   }
 
   @Test
-  public void testTheIntervalKeyIsHonoured() throws Exception {
+  void testTheIntervalKeyIsHonoured() throws Exception {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS.key(), "2000");
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_DEDUP_METHOD.key(), "none");
@@ -170,14 +173,14 @@ public class TestJcodecKeyframeVideoFrameSource {
       "c02-mpeg4-mp3.mp4, MPEG-4 Part 2 (mp4v)",
       "t02-h264-aac-video-delayed.mp4, edit list of 2 entries",
       "t01-h264-aac-trimmed-in-gop.mp4, before the start of its edit list"})
-  public void testOtherTypesAreRefusedNamingFfmpeg(String file, String reason) throws Exception {
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        resource(MATRIX + file), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+  void testOtherTypesAreRefusedNamingFfmpeg(String file, String reason) throws Exception {
+    Path clip = resource(MATRIX + file);
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
     assertRefusal(refused, reason, "mp4");
   }
 
   @Test
-  public void testAJcodecThatCannotDecodeOnOneThreadIsAConfigurationErrorAtRunTime() {
+  void testAJcodecThatCannotDecodeOnOneThreadIsAConfigurationErrorAtRunTime() {
     // an executor whose class path holds another JCodec than the driver checked: the platform's, never the video's (class P)
     IllegalStateException unavailable = new IllegalStateException("JCodec's H264Decoder has no usable 'tp'/'threaded' fields");
     PreprocessorConfigurationException e = assertThrows(PreprocessorConfigurationException.class,
@@ -186,22 +189,22 @@ public class TestJcodecKeyframeVideoFrameSource {
   }
 
   @Test
-  public void testAnotherExtensionIsRefusedBeforeAnyRead() {
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        resource(MATRIX + "c13-h264-aac.mov"), "mov", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+  void testAnotherExtensionIsRefusedBeforeAnyRead() throws Exception {
+    Path clip = resource(MATRIX + "c13-h264-aac.mov");
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mov"));
     assertRefusal(refused, "extension 'mov'", "mov");
   }
 
   /** An MP4 without a video track (c01 with its video track's handler relabelled as a text track) has no video stream. */
   @Test
-  public void testAnMp4WithoutAVideoTrackHasNoVideoStream() throws Exception {
+  void testAnMp4WithoutAVideoTrackHasNoVideoStream() throws Exception {
     byte[] bytes = c01Bytes();
     // hdlr: size, type, version and flags, pre-defined, then the handler type
     int hdlr = indexOf(bytes, "vide".getBytes(StandardCharsets.US_ASCII), box(bytes, "hdlr"));
     assertEquals(box(bytes, "hdlr") + 16, hdlr, "c01's first handler is its video track's");
     System.arraycopy("text".getBytes(StandardCharsets.US_ASCII), 0, bytes, hdlr, 4);
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        write("no-video-track.mp4", bytes), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    Path clip = write("no-video-track.mp4", bytes);
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
     assertTrue(refused.getMessage().contains("has no video stream"), refused.getMessage());
   }
 
@@ -210,7 +213,7 @@ public class TestJcodecKeyframeVideoFrameSource {
    * of its first keyframe replaced by noise (its NAL lengths and headers kept).
    */
   @Test
-  public void testAStreamJcodecCannotDecodeIsAVideoDecodeException() throws Exception {
+  void testAStreamJcodecCannotDecodeIsAVideoDecodeException() throws Exception {
     byte[] bytes = c01Bytes();
     // stco: size, type, version and flags, count, then the first chunk's offset; stsz: the first sample's size
     int sample = (int) getInt(bytes, box(bytes, "stco") + 16);
@@ -221,24 +224,25 @@ public class TestJcodecKeyframeVideoFrameSource {
         bytes[i] = (byte) noise.nextInt(256);
       }
     }
-    VideoDecodeException failed = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        write("noise-keyframe.mp4", bytes), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    Path clip = write("noise-keyframe.mp4", bytes);
+    VideoDecodeException failed = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
     assertRefusal(failed, "by JCodec", "mp4");
   }
 
   @Test
-  public void testThePixelGuardRefusesBeforeDecode() {
+  void testThePixelGuardRefusesBeforeDecode() throws Exception {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key(), String.valueOf(160 * 120 - 1));
-    UncheckedIOException refused = assertThrows(UncheckedIOException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        resource(MATRIX + "c01-h264-aac.mp4"), "mp4", props, new ArrayList<>(), new ArrayList<>()));
+    Path clip = resource(MATRIX + "c01-h264-aac.mp4");
+    List<ExtractedFrame> kept = new ArrayList<>();
+    UncheckedIOException refused = assertThrows(UncheckedIOException.class, () -> drainJcodec(clip, "mp4", props, kept));
     assertTrue(refused.getCause() instanceof ImageRefusedException, String.valueOf(refused.getCause()));
     assertTrue(refused.getCause().getMessage().contains(EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key()), refused.getCause().getMessage());
   }
 
   /** A video declaring more than 1920x1080 is refused before decode, naming FFmpeg (c01 with its declared size raised). */
   @Test
-  public void testAFrameAboveTheJcodecCeilingIsRefused() throws Exception {
+  void testAFrameAboveTheJcodecCeilingIsRefused() throws Exception {
     byte[] bytes = Files.readAllBytes(resource(MATRIX + "c01-h264-aac.mp4"));
     // the sample entry, inside stsd (the ftyp box names avc1 as a compatible brand first)
     int stsd = indexOf(bytes, "stsd".getBytes(StandardCharsets.US_ASCII), 0);
@@ -250,39 +254,37 @@ public class TestJcodecKeyframeVideoFrameSource {
     putShort(bytes, entry + 30, 1080);
     Path big = dir.resolve("declared-2000x1080.mp4");
     Files.write(big, bytes);
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        big, "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(big, "mp4"));
     assertRefusal(refused, "2000x1080", "mp4");
     assertTrue(refused.getMessage().contains(String.valueOf(JcodecKeyframeVideoFrameSource.MAX_PIXELS)), refused.getMessage());
   }
 
   @Test
-  public void testAFileCutShortIsTruncated() throws Exception {
+  void testAFileCutShortIsTruncated() throws Exception {
     byte[] bytes = Files.readAllBytes(resource(MATRIX + "c01-h264-aac.mp4"));
     Path half = dir.resolve("half.mp4");
     Files.write(half, Arrays.copyOf(bytes, bytes.length / 2));
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        half, "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(half, "mp4"));
     assertTrue(refused.getMessage().contains("truncated"), refused.getMessage());
   }
 
   @Test
-  public void testGarbageIsAVideoDecodeException() throws Exception {
+  void testGarbageIsAVideoDecodeException() throws Exception {
     Path garbage = dir.resolve("garbage.mp4");
     byte[] bytes = new byte[4096];
     new Random(7).nextBytes(bytes);
     Files.write(garbage, bytes);
-    assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(), garbage, "mp4",
-        new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    assertThrows(VideoDecodeException.class, () -> drainJcodec(garbage, "mp4"));
   }
 
   /** A storage failure under a read reaches the caller as one (a BlobReadException in the chain), never as corrupt data. */
   @Test
-  public void testAStorageFailureIsReportedAsSuch() throws Exception {
+  void testAStorageFailureIsReportedAsSuch() throws Exception {
     Path c01 = resource(MATRIX + "c01-h264-aac.mp4");
     for (long failAfter : new long[] {0L, 100L, Files.size(c01) / 2}) {
-      Exception failed = assertThrows(Exception.class, () -> drainSupplier(VideoClips.failingSupplier(c01, failAfter),
-          new FileMeta("fid-1", "mp4", Files.size(c01))));
+      SeekableBlobBytesSupplier failing = VideoClips.failingSupplier(c01, failAfter);
+      FileMeta meta = new FileMeta("fid-1", "mp4", Files.size(c01));
+      Exception failed = assertThrows(Exception.class, () -> drainSupplier(failing, meta));
       assertTrue(hasCause(failed, BlobReadException.class), "fail after " + failAfter + ": " + failed);
       assertFalse(failed instanceof VideoDecodeException, "not a content failure: " + failed);
     }
@@ -293,7 +295,7 @@ public class TestJcodecKeyframeVideoFrameSource {
    * connection drops after every budget from 0 to the file's size, in steps that land in each of those reads.
    */
   @Test
-  public void testAStorageFailureAtAnyPointOfTheReadIsReportedAsSuch() throws Exception {
+  void testAStorageFailureAtAnyPointOfTheReadIsReportedAsSuch() throws Exception {
     Path c01 = resource(MATRIX + "c01-h264-aac.mp4");
     int failures = 0;
     for (long budget = 0; budget <= Files.size(c01); budget += 499) {
@@ -310,14 +312,14 @@ public class TestJcodecKeyframeVideoFrameSource {
 
   /** A sample table declaring more entries than its box holds is refused before JCodec allocates for them (an oversized count). */
   @Test
-  public void testATableDeclaringMoreEntriesThanItHoldsIsRefusedBeforeParsing() throws Exception {
+  void testATableDeclaringMoreEntriesThanItHoldsIsRefusedBeforeParsing() throws Exception {
     for (long count : new long[] {0x7FFFFFF0L, 1000L}) {
       byte[] bytes = c01Bytes();
       int stss = box(bytes, "stss");
       // stss: size, type, version and flags, then the entry count
       putInt(bytes, stss + 12, count);
-      VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-          write("stss-" + count + ".mp4", bytes), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+      Path clip = write("stss-" + count + ".mp4", bytes);
+      VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
       assertTrue(refused.getMessage().contains("'stss' table") && refused.getMessage().contains(String.valueOf(count)),
           refused.getMessage());
     }
@@ -333,7 +335,7 @@ public class TestJcodecKeyframeVideoFrameSource {
       "duplicate, '1, 11, 11, 31, 41, 51', entry 3 (11) is not above the one before it (11)",
       "zero, '0, 11, 21, 31, 41, 51', entry 1 (0) is outside [1, 60]",
       "pastTheEnd, '1, 11, 21, 31, 41, 61', entry 6 (61) is outside [1, 60]"})
-  public void testASyncSampleTableOutOfOrderOrRangeIsRefusedBeforeAnyFrame(String name, String entries, String reason)
+  void testASyncSampleTableOutOfOrderOrRangeIsRefusedBeforeAnyFrame(String name, String entries, String reason)
       throws Exception {
     byte[] bytes = c01Bytes();
     int stss = box(bytes, "stss");
@@ -344,8 +346,9 @@ public class TestJcodecKeyframeVideoFrameSource {
       putInt(bytes, stss + 16 + 4 * i, Long.parseLong(values[i]));
     }
     List<ExtractedFrame> frames = new ArrayList<>();
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        write("stss-" + name + ".mp4", bytes), "mp4", new TypedProperties(), frames, new ArrayList<>()));
+    Path clip = write("stss-" + name + ".mp4", bytes);
+    TypedProperties none = new TypedProperties();
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4", none, frames));
     assertTrue(refused.getMessage().contains("sync-sample table (stss)") && refused.getMessage().contains(reason),
         refused.getMessage());
     assertTrue(frames.isEmpty(), "refused before any frame: " + frames.size());
@@ -357,15 +360,16 @@ public class TestJcodecKeyframeVideoFrameSource {
    * samples of its 60; made to cover 1, the table covers 58.
    */
   @Test
-  public void testACompositionOffsetTableCoveringFewerSamplesThanTheTrackIsRefusedBeforeAnyFrame() throws Exception {
+  void testACompositionOffsetTableCoveringFewerSamplesThanTheTrackIsRefusedBeforeAnyFrame() throws Exception {
     byte[] bytes = c01Bytes();
     int ctts = box(bytes, "ctts");
     // ctts: size, type, version and flags, the entry count, then {sample count, offset} entries
     assertEquals(3, getInt(bytes, ctts + 16), "precondition: c01's first composition entry covers 3 samples");
     putInt(bytes, ctts + 16, 1);
     List<ExtractedFrame> frames = new ArrayList<>();
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        write("ctts-short.mp4", bytes), "mp4", new TypedProperties(), frames, new ArrayList<>()));
+    Path clip = write("ctts-short.mp4", bytes);
+    TypedProperties none = new TypedProperties();
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4", none, frames));
     assertTrue(refused.getMessage().contains("corrupt composition-offset table (ctts): it covers 58 of the track's 60 samples"),
         refused.getMessage());
     assertTrue(frames.isEmpty(), "refused before any frame: " + frames.size());
@@ -377,7 +381,7 @@ public class TestJcodecKeyframeVideoFrameSource {
    * table, and its sync table relabelled as partial sync, each with an oversized count.
    */
   @Test
-  public void testATableAnywhereInTheIndexIsCheckedBeforeParsing() throws Exception {
+  void testATableAnywhereInTheIndexIsCheckedBeforeParsing() throws Exception {
     byte[] underUserData = c01Bytes();
     int edts = box(underUserData, "edts");
     int elst = box(underUserData, "elst");
@@ -389,8 +393,8 @@ public class TestJcodecKeyframeVideoFrameSource {
     System.arraycopy("stps".getBytes(StandardCharsets.US_ASCII), 0, partialSync, stss + 4, 4);
     putInt(partialSync, stss + 12, 0x7FFFFFF0L);
     for (Object[] patched : new Object[][] {{"under-udta.mp4", underUserData, "'stss' table"}, {"stps.mp4", partialSync, "'stps' table"}}) {
-      VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-          write((String) patched[0], (byte[]) patched[1]), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+      Path clip = write((String) patched[0], (byte[]) patched[1]);
+      VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
       assertTrue(refused.getMessage().contains((String) patched[2]), refused.getMessage());
     }
   }
@@ -400,7 +404,7 @@ public class TestJcodecKeyframeVideoFrameSource {
    * the file is prepared as without it (c01 with a free box of such text appended to its index, which ends the file).
    */
   @Test
-  public void testTextInTheIndexThatSpellsATableNameIsNotATable() throws Exception {
+  void testTextInTheIndexThatSpellsATableNameIsNotATable() throws Exception {
     byte[] original = c01Bytes();
     int moov = box(original, "moov");
     assertEquals(original.length, moov + getInt(original, moov), "c01's index ends the file");
@@ -425,7 +429,7 @@ public class TestJcodecKeyframeVideoFrameSource {
    * body), so its oversized count is refused like any other (c01 with such a time-to-sample table appended to its index).
    */
   @Test
-  public void testATableWithANegativeLargeSizeIsChecked() throws Exception {
+  void testATableWithANegativeLargeSizeIsChecked() throws Exception {
     byte[] original = c01Bytes();
     int moov = box(original, "moov");
     assertEquals(original.length, moov + getInt(original, moov), "c01's index ends the file");
@@ -440,8 +444,8 @@ public class TestJcodecKeyframeVideoFrameSource {
     byte[] bytes = Arrays.copyOf(original, original.length + table.length);
     System.arraycopy(table, 0, bytes, original.length, table.length);
     putInt(bytes, moov, getInt(original, moov) + table.length);
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        write("negative-size-table.mp4", bytes), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    Path clip = write("negative-size-table.mp4", bytes);
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
     assertTrue(refused.getMessage().contains("'stts' table") && refused.getMessage().contains(String.valueOf(0x7FFFFFF0L)),
         refused.getMessage());
   }
@@ -451,7 +455,7 @@ public class TestJcodecKeyframeVideoFrameSource {
    * is not capped, and the video beside it is prepared (c01's audio sizes made constant, with two million samples).
    */
   @Test
-  public void testAConstantSizeSampleTableIsNotCapped() throws Exception {
+  void testAConstantSizeSampleTableIsNotCapped() throws Exception {
     byte[] bytes = c01Bytes();
     int audioSizes = indexOf(bytes, "stsz".getBytes(StandardCharsets.US_ASCII), box(bytes, "stsz") + 8) - 4;
     assertTrue(audioSizes > box(bytes, "stsz"), "c01 has a second (audio) stsz");
@@ -468,7 +472,7 @@ public class TestJcodecKeyframeVideoFrameSource {
 
   /** The parameter-set bounds JCodec sizes its decoder from: c01's own passes, each bound refuses. */
   @Test
-  public void testParameterSetBounds() throws Exception {
+  void testParameterSetBounds() throws Exception {
     SeqParameterSet c01 = c01Sps();
     assertNull(JcodecKeyframeVideoFrameSource.spsRefusal(c01), "c01's parameter set is decodable");
     SeqParameterSet wide = c01Sps();
@@ -499,50 +503,85 @@ public class TestJcodecKeyframeVideoFrameSource {
 
   /** A keyframe declaring more bytes than the file holds is refused before its buffer is allocated (an oversized sample). */
   @Test
-  public void testAKeyframeDeclaringMoreBytesThanTheFileIsRefused() throws Exception {
+  void testAKeyframeDeclaringMoreBytesThanTheFileIsRefused() throws Exception {
     byte[] bytes = c01Bytes();
     // stsz: size, type, version and flags, constant size, count, then the first sample's size
     putInt(bytes, box(bytes, "stsz") + 20, 0x7FFFFFF0L);
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        write("oversized-sample.mp4", bytes), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    Path clip = write("oversized-sample.mp4", bytes);
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
     assertTrue(refused.getMessage().contains("keyframe sample 0"), refused.getMessage());
   }
 
   /** A keyframe whose bytes run past the file's end (its index points beyond the data) is a truncated file. */
   @Test
-  public void testAKeyframeRunningPastTheFileEndIsTruncated() throws Exception {
+  void testAKeyframeRunningPastTheFileEndIsTruncated() throws Exception {
     byte[] bytes = c01Bytes();
     // stco: size, type, version and flags, count, then the first chunk's offset
     long firstChunk = getInt(bytes, box(bytes, "stco") + 16);
     putInt(bytes, box(bytes, "stsz") + 20, bytes.length - firstChunk + 10);
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        write("sample-past-end.mp4", bytes), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    Path clip = write("sample-past-end.mp4", bytes);
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
     assertTrue(refused.getMessage().contains("ends inside sample 0") && refused.getMessage().contains("truncated"),
         refused.getMessage());
   }
 
   /** A movie fragment ({@code moof}) is refused naming FFmpeg (c01 with its media box relabelled as a fragment). */
   @Test
-  public void testAFragmentedMp4IsRefused() throws Exception {
+  void testAFragmentedMp4IsRefused() throws Exception {
     byte[] bytes = c01Bytes();
     int mdat = box(bytes, "mdat");
     System.arraycopy("moof".getBytes(StandardCharsets.US_ASCII), 0, bytes, mdat + 4, 4);
-    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drain(new JcodecKeyframeVideoFrameSource(),
-        write("fragmented.mp4", bytes), "mp4", new TypedProperties(), new ArrayList<>(), new ArrayList<>()));
+    Path clip = write("fragmented.mp4", bytes);
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainJcodec(clip, "mp4"));
     assertRefusal(refused, "is a fragmented MP4", "mp4");
   }
 
+  /**
+   * A video refused after its demuxer is built (an index carrying a movie-extends box, c01 with its udta relabelled) closes that
+   * demuxer: the blob is closed once, through {@code MP4Demuxer.close()}.
+   */
   @Test
-  public void testBadKeysAreRefusedOnTheDriver() {
+  void testTheDemuxerIsClosedWhenAVideoIsRefusedAfterItOpens() throws Exception {
+    byte[] bytes = c01Bytes();
+    System.arraycopy("mvex".getBytes(StandardCharsets.US_ASCII), 0, bytes, box(bytes, "udta") + 4, 4);
+    Path file = write("movie-extends.mp4", bytes);
+    List<StackTraceElement[]> closes = new ArrayList<>();
+    SeekableBlobBytesSupplier supplier = new SeekableBlobBytesSupplier() {
+      @Override
+      public SeekableBlob openSeekable() throws IOException {
+        return new VideoClips.FileBlob(file, Long.MAX_VALUE) {
+          @Override
+          public void close() throws IOException {
+            closes.add(new Throwable().getStackTrace());
+            super.close();
+          }
+        };
+      }
+
+      @Override
+      public InputStream open() throws IOException {
+        return Files.newInputStream(file);
+      }
+    };
+    FileMeta meta = new FileMeta("fid-1", "mp4", bytes.length);
+    VideoDecodeException refused = assertThrows(VideoDecodeException.class, () -> drainSupplier(supplier, meta));
+    assertRefusal(refused, "is a fragmented MP4", "mp4");
+    assertEquals(1, closes.size(), "the blob is closed once");
+    assertTrue(Arrays.stream(closes.get(0)).anyMatch(frame -> frame.getClassName().equals(MP4Demuxer.class.getName())
+        && frame.getMethodName().equals("close")), "the blob is closed by closing its demuxer");
+  }
+
+  @Test
+  void testBadKeysAreRefusedOnTheDriver() {
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS.key(), "0");
-    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-        () -> new JcodecKeyframeVideoFrameSource().validateConfig(props));
+    JcodecKeyframeVideoFrameSource strategy = new JcodecKeyframeVideoFrameSource();
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> strategy.validateConfig(props));
     assertTrue(refused.getMessage().contains(EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS.key()), refused.getMessage());
   }
 
   @Test
-  public void testTheLogicVersionNamesTheLogicNotTheLibrary() {
+  void testTheLogicVersionNamesTheLogicNotTheLibrary() {
     assertEquals("video-keyframe-h264mp4-v2", new JcodecKeyframeVideoFrameSource().name());
   }
 
@@ -566,6 +605,17 @@ public class TestJcodecKeyframeVideoFrameSource {
         }
       }
     }
+  }
+
+  /** Drains the JCodec strategy over {@code file} with the default keys, keeping nothing: one call for an assertThrows. */
+  private static void drainJcodec(Path file, String extension) throws IOException {
+    drainJcodec(file, extension, new TypedProperties(), new ArrayList<>());
+  }
+
+  /** Drains the JCodec strategy over {@code file} into {@code frames}: one call for an assertThrows. */
+  private static void drainJcodec(Path file, String extension, TypedProperties props, List<ExtractedFrame> frames)
+      throws IOException {
+    drain(new JcodecKeyframeVideoFrameSource(), file, extension, props, frames, new ArrayList<>());
   }
 
   private static void drainSupplier(BlobBytesSupplier supplier, FileMeta file) throws IOException {
