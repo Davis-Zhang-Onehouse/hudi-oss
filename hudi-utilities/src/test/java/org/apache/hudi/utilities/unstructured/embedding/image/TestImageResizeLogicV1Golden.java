@@ -58,7 +58,7 @@ class TestImageResizeLogicV1Golden {
       "bmp-600x26, 512x22, a3352e526e46d0c8598853fdea2e44954da09d840b2e4e8e33984f250d3671cd",
       "tiff-520x30, 512x30, 9101a27c067aa5fa1195f258fbaf115ff85e1a78d5f98840e6c39b03dd0981fc"})
   void preparedPixelsArePinnedForThisLogicVersion(String fixture, String size, String digest) throws IOException {
-    assertEquals("image-resize-v1", ImageResizeLogicV1.LOGIC_VERSION, "a new logic version needs new pinned digests");
+    assertEquals("image-resize-v2", ImageResizeLogicV1.LOGIC_VERSION, "a new logic version needs new pinned digests");
     PreparedImage prepared = new ImagePreparer(DEFAULTS).prepare(ImageFixtures.source(fixture(fixture)));
     BufferedImage pixels = ImageFixtures.decode(prepared.getEncoded());
     assertEquals(size, pixels.getWidth() + "x" + pixels.getHeight());

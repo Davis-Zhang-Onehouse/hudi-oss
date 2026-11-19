@@ -217,6 +217,7 @@ class TestReadOptimizationFailures {
     Row row = mock(Row.class);
     Row blob = mock(Row.class);
     Row reference = mock(Row.class);
+    when(row.getAs(BlobColumns.SOURCE_MODIFICATION_TIME)).thenReturn(0L);
     when(row.fieldIndex(BlobColumns.BLOB)).thenReturn(0);
     when(row.getStruct(0)).thenReturn(blob);
     when(blob.getAs(HoodieSchema.Blob.TYPE)).thenReturn(HoodieSchema.Blob.OUT_OF_LINE);
