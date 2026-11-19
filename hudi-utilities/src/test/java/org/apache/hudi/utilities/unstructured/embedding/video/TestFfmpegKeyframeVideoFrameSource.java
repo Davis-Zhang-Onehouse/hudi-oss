@@ -304,7 +304,7 @@ public class TestFfmpegKeyframeVideoFrameSource {
   @Test
   public void configurationErrorsAreIllegalArgumentsNamingTheKey() {
     FfmpegKeyframeVideoFrameSource source = new FfmpegKeyframeVideoFrameSource();
-    assertEquals("video-keyframe-v1", source.name());
+    assertEquals("video-keyframe-v2", source.name());
     source.validateConfig(new TypedProperties());
     String[][] bad = {
         {EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS.key(), "0"},

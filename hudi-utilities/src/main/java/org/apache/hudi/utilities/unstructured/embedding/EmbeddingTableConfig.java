@@ -189,7 +189,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> CHUNK_OVERLAP_TOKENS = ConfigProperty
       .key(CHUNK_PREFIX + "overlap.tokens")
       .noDefaultValue("min(128, chunkMaxTokens/2)")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Tokens two adjacent chunks may share, from 0 up to hoodie.unstructured.chunk.max.tokens / 2.");
 
   /** Default overlap cap: at most 128 tokens of overlap between 2 adjacent chunks. */
@@ -649,26 +649,21 @@ public class EmbeddingTableConfig implements Serializable {
       .key(BALANCE_PREFIX + "strategy.class")
       .defaultValue("org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("RowBalancingStrategy implementation. The default, SizeTypeAwareBalancingStrategy, gives each "
           + "preprocessor group (pdf, image, video, a custom preprocessor) its own tasks, sized by the group's byte budget per "
           + "task. HashBalancingStrategy spreads the files over exactly hoodie.unstructured.embedding.prep.num.partitions "
           + "tasks by a hash of their source version (path sha, modification time, size), with one shuffle and no plan: a file's "
           + "task depends on its version alone, and task file counts are balanced in expectation, not exactly equal.");
 
-  /**
-   * Number of Spark partitions P, must be positive: the exact task count of the hash strategy (default
-   * {@code spark.default.parallelism}), and the parallelism each group's task floor uses in
-   * {@code balance.SizeTypeAwareBalancingStrategy} (default derived from the job's executors).
-   */
+  /** Exact task count of {@code balance.HashBalancingStrategy}; positive, default {@code spark.default.parallelism}. */
   public static final ConfigProperty<String> BALANCE_NUM_PARTITIONS = ConfigProperty
       .key(PREP_PREFIX + "num.partitions")
       .noDefaultValue("<derived>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
-      .withDocumentation("Number of Spark partitions P, a positive integer: the exact task count of the hash strategy, "
-          + "HashBalancingStrategy (default spark.default.parallelism), and the parallelism each group's task floor uses in the "
-          + "size and type aware strategy, SizeTypeAwareBalancingStrategy (default derived from the job's executors).");
+      .sinceVersion(SINCE_1_3_0)
+      .withDocumentation("Exact task count of HashBalancingStrategy, a positive integer (default spark.default.parallelism). "
+          + "Ignored by SizeTypeAwareBalancingStrategy; its per-group floor uses hoodie.unstructured.embedding.prep.balance.min.partitions.");
 
   /**
    * Parallelism P of {@code balance.SizeTypeAwareBalancingStrategy}'s per-group floor: at least {@code min(files, P)} tasks per
@@ -730,7 +725,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "source.retry.max.attempts")
       .defaultValue(3)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Tries in all of opening one blob's stored bytes when the open fails transiently (a throttled, reset or "
           + "timed-out request), within the same prep round; the last failure fails the round, which the next run retries "
           + "from the same checkpoint. A file's own fault (gone, short) and an access denial are never retried. A positive "
@@ -747,7 +742,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREP_PREFIX + "source.retry.backoff.ms")
       .defaultValue(1000L)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The wait in ms before the second try of a source open "
           + "(hoodie.unstructured.embedding.prep.source.retry.max.attempts); each later wait doubles, capped at 30 s. "
           + "Must not be negative. Not part of the preprocessing style.");

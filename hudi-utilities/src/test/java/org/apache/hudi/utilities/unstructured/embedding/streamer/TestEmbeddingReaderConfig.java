@@ -29,6 +29,7 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingPrepFailedExcep
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingRoundTestBase;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
+import org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties;
 import org.apache.hudi.utilities.unstructured.embedding.prep.Chunk;
 import org.apache.hudi.utilities.unstructured.embedding.prep.TextPipePreprocessor;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSupplier;
@@ -74,14 +75,15 @@ public class TestEmbeddingReaderConfig extends EmbeddingRoundTestBase {
     RecordingPreprocessor.session = session;
     RecordingPreprocessor.OBSERVED.clear();
     String target = table();
-    // The streamer starts the table before invoking the transformer; prep's payload destination requires it.
-    HoodieTableMetaClient.newTableBuilder().setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("reader_config")
-        .setRecordKeyFields(String.join(",", EmbeddingTableSchema.KEY_COLUMNS)).initTable(storage(), target);
     TypedProperties props = props(target, EmbeddingTableConfig.MODE_PREP_ONLY,
         HoodieErrorTableConfig.ERROR_TABLE_ENABLED.key(), "false",
         EmbeddingTableConfig.PREP_FILE_EXTENSIONS.key(), TEXT_EXTENSION,
         EmbeddingTableConfig.PREPROCESSOR_CLASS_PREFIX + TEXT_EXTENSION + EmbeddingTableConfig.PREPROCESSOR_CLASS_SUFFIX,
         RecordingPreprocessor.class.getName());
+    // The streamer starts the table before invoking the transformer; prep's payload destination requires it.
+    HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.embedding(props))
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("reader_config")
+        .setRecordKeyFields(String.join(",", EmbeddingTableSchema.KEY_COLUMNS)).initTable(storage(), target);
     byte[] bytes = (failed ? TextPipePreprocessor.BROKEN : "alpha").getBytes(StandardCharsets.UTF_8);
     Row source = RowFactory.create("source", 100L, "file:///source.tif", "source.tif", TEXT_EXTENSION, (long) bytes.length,
         "text/plain", RowFactory.create(HoodieSchema.Blob.INLINE, bytes, null));
