@@ -54,6 +54,8 @@ public class EmbeddingTableConfig implements Serializable {
 
   private static final long serialVersionUID = 1L;
 
+  private static final String SINCE_1_3_0 = "1.3.0";
+
   /** Root of every unstructured-data key (embedding and chunking); never passed through to the Hudi writer. */
   public static final String UNSTRUCTURED_PREFIX = "hoodie.unstructured.";
 
@@ -166,7 +168,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(CHUNK_PREFIX + "tokenizer.class")
       .noDefaultValue("<unset>")
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Tokenizer implementation (public no-arg constructor); when set it wins over "
           + "hoodie.unstructured.chunk.tokenizer.type.");
 
@@ -174,7 +176,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> TOKENIZER_TYPE = ConfigProperty
       .key(CHUNK_PREFIX + "tokenizer.type")
       .defaultValue("openai-bpe")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Built-in tokenizer type: word-count or openai-bpe.");
 
   /**
@@ -185,7 +187,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> TOKENIZER_ENCODING = ConfigProperty
       .key(CHUNK_PREFIX + "tokenizer.encoding")
       .defaultValue("cl100k_base")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("jtokkit encoding of the openai-bpe tokenizer type (e.g. o200k_base). The default, cl100k_base, is the "
           + "encoding of OpenAI's text-embedding-3-small/-large and ada-002 models. Part of the tokenizer id "
           + "(openai-bpe:<encoding>).");
