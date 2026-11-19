@@ -105,7 +105,8 @@ import scala.collection.JavaConverters;
  *   <li>an interrupted task is never isolated as a file failure: the exception propagates; nor is any failure whose cause or
  *       suppressed chain holds a round failure ({@link PrepFailures#roundFailure}): a {@link SourceReadException} (a storage
  *       failure of a source a later run can still read), a {@link PreprocessorConfigurationException}, a
- *       {@link PrepPlatformException} or a retryable {@link TokenizerException}; it propagates and fails the task;</li>
+ *       {@link PrepPlatformException}, a retryable {@link TokenizerException} or a JVM failure a decoder wrapped (an
+ *       OutOfMemoryError or a LinkageError, not a StackOverflowError); it propagates and fails the task;</li>
  *   <li>an {@link Error} met while a file is opened or read closes this iterator (the open file and every preprocessor) and
  *       propagates;</li>
  *   <li>it closes the open file iterator on file switch, on failure, on exhaustion and on Spark task completion, and the
@@ -687,6 +688,28 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
   }
 
   /**
+   * A failure of the source is classified before a decoder can wrap it as a content failure: the file's own (its source gone or
+   * short, its row malformed) and one that already fails the round pass as they are; any other, checked or unchecked, is a
+   * storage failure of a source a later run can still read, because bad input that cannot be told from a platform failure is a
+   * platform failure.
+   */
+  static IOException classified(Exception failure) {
+    RuntimeException round = PrepFailures.roundFailure(failure);
+    if (round == null && !SourceFailures.isContentFailure(failure)) {
+      throw new SourceReadException("Failed to read the blob source", failure);
+    }
+    if (round != null && round.getCause() == failure) {
+      // a JVM failure under the read (roundFailure wraps it around the failure): thrown unchecked, so no decoder can take
+      // the read's IOException for an end of data and the file for bad input
+      throw round;
+    }
+    if (failure instanceof RuntimeException) {
+      throw (RuntimeException) failure;
+    }
+    return (IOException) failure;
+  }
+
+  /**
    * The bytes of one source row, as a stream or for random access. The object's length is the one the source listed for it, so
    * an open sends no status request for it; an object read ahead whole is served from memory, with no storage access.
    */
@@ -980,21 +1003,5 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
         failure.addSuppressed(closeFailure);
       }
     }
-  }
-
-  static IOException classified(Exception failure) {
-    RuntimeException round = PrepFailures.roundFailure(failure);
-    if (round == null && !SourceFailures.isContentFailure(failure)) {
-      throw new SourceReadException("Failed to read the blob source", failure);
-    }
-    if (round != null && round.getCause() == failure) {
-      // a JVM failure under the read (roundFailure wraps it around the failure): thrown unchecked, so no decoder can take
-      // the read's IOException for an end of data and the file for bad input
-      throw round;
-    }
-    if (failure instanceof RuntimeException) {
-      throw (RuntimeException) failure;
-    }
-    return (IOException) failure;
   }
 }

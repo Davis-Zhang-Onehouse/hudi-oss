@@ -261,7 +261,7 @@ public class TestAudioStubParts {
     withModel.setProperty(WhisperConfig.MODEL_DIR.key(), "/models");
     AudioConfig.from(withModel).validate();
     assertEquals("audio=" + FfmpegAudioSegmentSource.LOGIC_VERSION + ";asr=whisper-cpp-1.7.1-base.en/en/transcribe;pack="
-        + "transcript-pack-v1;tokenizer=word-count;speech=prep-v1", AudioConfig.from(withModel).logicLine(new WordCountTokenizer()));
+        + "transcript-pack-v2;tokenizer=word-count;speech=prep-v1", AudioConfig.from(withModel).logicLine(new WordCountTokenizer()));
     AudioConfig stubs = AudioConfig.from(AudioStubs.named(props()));
     assertTrue(stubs.newSegmentSource() instanceof StubAudioSegmentSource);
     assertTrue(stubs.newTranscriber() instanceof StubSegmentTranscriber);

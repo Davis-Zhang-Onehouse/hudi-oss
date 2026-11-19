@@ -30,6 +30,7 @@ import org.apache.hudi.utilities.unstructured.embedding.source.SeekableBlobBytes
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoClips;
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoDecodeException;
 
+import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -64,6 +65,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** The FFmpeg audio track source over generated clips and one public-domain speech clip. */
 public class TestFfmpegAudioSegmentSource {
@@ -73,6 +75,9 @@ public class TestFfmpegAudioSegmentSource {
   private static final long[][] LAYOUT_SEGMENTS = {{0, 2000}, {3000, 6000}, {8000, 11000}};
   /** A boundary may move by the codec's priming and smearing and by the 30 ms window grid. */
   private static final long TOLERANCE_MS = 90;
+  /** The read budgets of the probe-failure sweep: one every 512 bytes up to 64 KiB, past the probe of the small clips. */
+  private static final long PROBE_BUDGET_STEP = 512;
+  private static final long PROBE_BUDGET_LIMIT = 64 * 1024;
   /** The speech clip: 12 s of LibriVox speech (public domain) over H.264 video. */
   private static final String SPEECH_CLIP = "/video/h264-aac-speech-12s.mp4";
 
@@ -186,35 +191,105 @@ public class TestFfmpegAudioSegmentSource {
   }
 
   /**
-   * A resume from any checkpoint yields the same segments: identical indexes, spans and sizes for every codec. The payload bytes
-   * are identical too where the decoder is (MP3); FFmpeg's AAC decoder does not produce the same samples after a seek as when it
-   * decodes from the start (a difference of up to 1e-4 on the generated clip and 0.04 on the speech clip), so for AAC only the segmentation is compared.
+   * A resume from any checkpoint yields the same segments, payloads included, for every codec: MP3 resumes by seeking, whose
+   * decoder gives the same samples after a seek; AAC resumes by decoding from the start and skipping, because FFmpeg's AAC
+   * decoder does not give the same samples after a seek as from the start (a difference of up to 1e-4 on the generated clip and
+   * 0.04 on the speech clip, which can also move a segment boundary near the threshold).
    */
   @ParameterizedTest
   @ValueSource(strings = {"aac", "mp3", "speech"})
   public void resumeFromEveryCheckpointYieldsTheSameSegments(String clipName) throws IOException {
     Path clip = clipName.equals("aac") ? aac : clipName.equals("mp3") ? mp3 : speech;
-    boolean bitExact = clipName.equals("mp3");
     TypedProperties props = props(AudioConfigKeys.SEGMENT_MAX_MS.key(), 1500);
     List<Seen> full = segments(clip, 0, 0, props);
     assertTrue(full.size() >= 6, "enough checkpoints: " + full);
+    int fromTheStart = 0;
+    int pastThePreRoll = 0;
     for (int k = 1; k <= full.size(); k++) {
       List<Seen> rest = full.subList(k, full.size());
-      List<Seen> seek = segments(clip, k, full.get(k - 1).endMs, props);
-      assertEquals(spans(rest), spans(seek), "seek resume after segment " + (k - 1));
-      if (bitExact) {
-        assertEquals(rest, seek, "seek resume payloads after segment " + (k - 1));
+      long checkpointMs = full.get(k - 1).endMs;
+      try (LogCapture logs = LogCapture.of(FfmpegAudioSegmentSource.class)) {
+        assertEquals(rest, segments(clip, k, checkpointMs, props), "resume at the checkpoint after segment " + (k - 1));
+        if (checkpointMs > FfmpegAudioSegmentSource.PRE_ROLL_MS) {
+          pastThePreRoll++;
+          fromTheStart += logs.lines().stream().anyMatch(line -> line.contains("by decoding from the start")) ? 1 : 0;
+        }
       }
       assertEquals(rest, segments(clip, k, 0, props), "skip resume after segment " + (k - 1));
     }
+    // the path taken: MP3 seeks past the pre-roll, AAC always decodes from the start
+    assertTrue(pastThePreRoll > 0, "some checkpoints are past the pre-roll: " + full);
+    assertEquals(clipName.equals("mp3") ? 0 : pastThePreRoll, fromTheStart, "resumes that decoded from the start");
   }
 
-  private static List<String> spans(List<Seen> seen) {
-    List<String> spans = new ArrayList<>();
-    for (Seen segment : seen) {
-      spans.add(segment.index + ":[" + segment.startMs + "," + segment.endMs + ")" + segment.bytes);
+  /**
+   * A storage failure FFmpeg swallows while it probes leaves the grabber started with incomplete parameters; here a grabber that
+   * reads (a read that fails in storage, which the stream remembers and JavaCV reports to FFmpeg as an end of file) and then
+   * reports no audio stream, as FFmpeg would. The result is a retryable storage failure, not an empty iterator with "no audio stream".
+   */
+  @Test
+  public void storageFailureSwallowedByTheProbeIsRetryableNotNoAudio() {
+    FfmpegAudioSegmentSource probeSwallowsAFailure = new FfmpegAudioSegmentSource() {
+      @Override
+      FFmpegFrameGrabber newGrabber(InputStream stream) {
+        return new FFmpegFrameGrabber(stream) {
+          @Override
+          public void start() {
+            try {
+              stream.read(new byte[64]);
+              fail("the read budget is 0: the first read fails in storage");
+            } catch (IOException readFailure) {
+              // JavaCV's read callback reports it to FFmpeg as an end of file; the stream remembers it
+            }
+          }
+
+          @Override
+          public int getAudioStream() {
+            return -1;
+          }
+        };
+      }
+    };
+    AudioInput failing = AudioClips.input("f", aac, VideoClips.failingAfterBytesRead(aac, 0));
+    UncheckedIOException failure = assertThrows(UncheckedIOException.class, () -> {
+      try (FfmpegAudioSegmentSource.Segments iterator = probeSwallowsAFailure.segments(failing, 0, 0, new TypedProperties())) {
+        while (iterator.hasNext()) {
+          iterator.next();
+        }
+        fail("ended as: " + iterator.endReason());
+      }
+    });
+    assertTrue(BlobReadException.isStorageFailure(failure), "RETRYABLE: " + failure);
+  }
+
+  /**
+   * A storage failure FFmpeg swallows while it probes the file (the stream reports it as an end of file, and FFmpeg can still
+   * open the file with incomplete audio parameters) is a retryable storage failure, never an empty result: at read budgets every
+   * {@value #PROBE_BUDGET_STEP} bytes up to the first {@value #PROBE_BUDGET_LIMIT} bytes of an MPEG-TS clip (whose audio
+   * parameters come from its packets) and of an MP4 clip.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"mpegts", "mp4"})
+  public void storageFailureSwallowedWhileProbingIsRetryable(String format) throws IOException {
+    Path clip = format.equals("mp4") ? aac
+        : AudioClips.generate(dir.resolve("probe-aac.ts"), "mpegts", AudioClips.Codec.AAC, 44100, 2, LAYOUT);
+    long size = Files.size(clip);
+    for (long budget = 0; budget < Math.min(size, PROBE_BUDGET_LIMIT); budget += PROBE_BUDGET_STEP) {
+      AudioInput failing = AudioClips.input("f", clip, VideoClips.failingAfterBytesRead(clip, budget));
+      String endReason = "segments";
+      RuntimeException failure = null;
+      try (FfmpegAudioSegmentSource.Segments iterator = new FfmpegAudioSegmentSource().segments(failing, 0, 0,
+          new TypedProperties())) {
+        while (iterator.hasNext()) {
+          iterator.next();
+        }
+        endReason = iterator.endReason();
+      } catch (UncheckedIOException | VideoDecodeException e) {
+        failure = e;
+      }
+      assertTrue(failure != null, "budget " + budget + " of " + size + " ended without a failure, as: " + endReason);
+      assertTrue(BlobReadException.isStorageFailure(failure), "budget " + budget + " of " + size + ": RETRYABLE: " + failure);
     }
-    return spans;
   }
 
   /**
