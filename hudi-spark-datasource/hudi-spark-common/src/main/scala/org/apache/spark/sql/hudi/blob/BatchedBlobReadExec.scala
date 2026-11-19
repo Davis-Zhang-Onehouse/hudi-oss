@@ -58,6 +58,15 @@ case class BatchedBlobReadExec(child: SparkPlan,
                                 tableLayoutVersion: Option[String] = None)
   extends UnaryExecNode {
 
+  /** Constructs the node by its earlier column-name API, without a known table path or layout. */
+  def this(child: SparkPlan,
+           maxGapBytes: Int,
+           storageConf: StorageConfiguration[_],
+           lookaheadSize: Int,
+           blobAttrName: String,
+           output: Seq[Attribute]) =
+    this(child, maxGapBytes, storageConf, lookaheadSize, BatchedBlobReadExec.attributeNamed(child, blobAttrName), None, output, None)
+
   override protected def doExecute(): RDD[InternalRow] = {
     val ordinal = child.output.indexWhere(_.exprId == blobAttr.exprId)
     require(ordinal >= 0, s"Blob column $blobAttr is not in the child output ${child.output.mkString("[", ", ", "]")}")
@@ -79,5 +88,22 @@ case class BatchedBlobReadExec(child: SparkPlan,
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
     copy(child = newChild)
+  }
+}
+
+object BatchedBlobReadExec {
+  /** The earlier factory resolves exactly one output attribute of the requested name. */
+  def apply(child: SparkPlan,
+            maxGapBytes: Int,
+            storageConf: StorageConfiguration[_],
+            lookaheadSize: Int,
+            blobAttrName: String,
+            output: Seq[Attribute]): BatchedBlobReadExec =
+    new BatchedBlobReadExec(child, maxGapBytes, storageConf, lookaheadSize, blobAttrName, output)
+
+  private def attributeNamed(child: SparkPlan, name: String): Attribute = {
+    val matches = child.output.filter(_.name == name)
+    require(matches.size == 1, s"Blob column $name must name exactly one child output attribute, found ${matches.size}")
+    matches.head
   }
 }

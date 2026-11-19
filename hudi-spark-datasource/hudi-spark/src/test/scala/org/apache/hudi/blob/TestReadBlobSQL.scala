@@ -22,10 +22,15 @@ package org.apache.hudi.blob
 import org.apache.hudi.blob.BlobTestHelpers._
 import org.apache.hudi.common.schema.HoodieSchema
 import org.apache.hudi.exception.HoodieIOException
+import org.apache.hudi.storage.hadoop.HadoopStorageConfiguration
 import org.apache.hudi.testutils.HoodieClientTestBase
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.Row
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.hudi.blob.BatchedBlobReadExec
 import org.apache.spark.sql.types._
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.Test
@@ -45,6 +50,23 @@ import java.util.Collections
  * </ul>
  */
 class TestReadBlobSQL extends HoodieClientTestBase {
+
+  @Test
+  def testExecNodeByColumnNameResolvesExactlyOneChildAttribute(): Unit = {
+    val blob = AttributeReference("file_info", BlobType())()
+    val id = AttributeReference("id", IntegerType)()
+    val child = LocalTableScanExec(Seq(id, blob), Seq.empty)
+    val conf = new HadoopStorageConfiguration(new Configuration())
+    val byName = BatchedBlobReadExec(child, 4096, conf, 8, "file_info", Seq(id, blob))
+    assertEquals(blob.exprId, byName.blobAttr.exprId)
+    assertEquals(None, byName.tableBasePath)
+    assertEquals(None, byName.tableLayoutVersion)
+    assertEquals(blob.exprId, new BatchedBlobReadExec(child, 4096, conf, 8, "file_info", Seq(id, blob)).blobAttr.exprId)
+    assertThrows(classOf[IllegalArgumentException], () => BatchedBlobReadExec(child, 4096, conf, 8, "missing", Seq(id, blob)))
+    val duplicate = AttributeReference("file_info", BlobType())()
+    val ambiguous = LocalTableScanExec(Seq(blob, duplicate), Seq.empty)
+    assertThrows(classOf[IllegalArgumentException], () => BatchedBlobReadExec(ambiguous, 4096, conf, 8, "file_info", Seq(blob)))
+  }
 
   @Test
   def testReadOutOfLineBlobOnHudiBackedTable(): Unit = {
