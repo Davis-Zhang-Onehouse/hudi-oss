@@ -22,9 +22,9 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.common.util.collection.ClosableIterator;
+import org.apache.hudi.exception.ExceptionUtil;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
-import org.apache.hudi.utilities.unstructured.SourceCauses;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.audio.AudioConfig;
@@ -419,7 +419,7 @@ public class VideoFramePreprocessor implements FilePreprocessor, AutoCloseable {
   }
 
   private static boolean hasCause(Throwable failure, Class<? extends Throwable> type) {
-    for (Throwable cause : SourceCauses.getCauses(failure)) {
+    for (Throwable cause : ExceptionUtil.getCauses(failure)) {
       if (type.isInstance(cause)) {
         return true;
       }

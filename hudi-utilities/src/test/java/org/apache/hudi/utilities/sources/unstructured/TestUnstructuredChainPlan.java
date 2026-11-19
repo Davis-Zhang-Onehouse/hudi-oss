@@ -25,6 +25,7 @@ import org.apache.hudi.common.schema.internal.HoodieSchemaException;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieErrorTableConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.utilities.config.CloudSourceConfig;
 import org.apache.hudi.utilities.config.SqlTransformerConfig;
 import org.apache.hudi.utilities.sources.blob.BlobQuarantineTransformer;
@@ -268,5 +269,22 @@ public class TestUnstructuredChainPlan extends UtilitiesTestBase {
     public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rows, TypedProperties props) {
       return rows.drop(props.getString(COLUMN));
     }
+  }
+
+  /** A partition path into a struct column that the job's own transformer adds is produced, so the plan passes (RV32-3). */
+  @Test
+  void nestedPartitionPathProducedByTransformerPasses() {
+    TypedProperties props = blob("SELECT *, named_struct('region', CAST('eu' AS STRING)) AS ingest_meta FROM <SRC>");
+    props.setProperty(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key(), "ingest_meta.region");
+    plan(UnstructuredMode.BLOB, props, Option.empty(), QUARANTINE, SQL, GUARD);
+  }
+
+  /** A nested partition path that no transformer produces is still refused, naming the path. */
+  @Test
+  void missingNestedPartitionPathRefused() {
+    TypedProperties props = blob("SELECT *, named_struct('region', CAST('eu' AS STRING)) AS ingest_meta FROM <SRC>");
+    props.setProperty(KeyGeneratorOptions.PARTITIONPATH_FIELD_NAME.key(), "ingest_meta.country");
+    String refused = refusal(UnstructuredMode.BLOB, props, QUARANTINE, SQL, GUARD);
+    assertTrue(refused.contains("refuses partition column ingest_meta.country"), refused);
   }
 }
