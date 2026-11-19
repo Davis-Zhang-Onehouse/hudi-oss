@@ -180,7 +180,7 @@ public class TestPreprocessingIterator {
   }
 
   private PreprocessingIterator iterator(TypedProperties props, Row... rows) {
-    return new PreprocessingIterator(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props),
+    return new PreprocessingIterator(Arrays.asList(rows).iterator(), EmbeddingTableConfig.from(props), "001",
         new BlobBytesSource(HadoopFSUtils.getStorageConf(new Configuration())), new PreprocessorRegistry(props),
         new WordCountTokenizer(),
         new PrepCounters(filesOk, filesFailed, chunks, new LongAccumulator(), new LongAccumulator()),

@@ -33,6 +33,7 @@ import org.apache.hudi.utilities.unstructured.embedding.balance.BalancedRows;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ComputeCounters;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ComputeRound;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientFactory;
+import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
 import org.apache.hudi.utilities.unstructured.embedding.prep.VideoFrameHeapCheck;
 import org.apache.hudi.utilities.unstructured.embedding.source.BlobBytesSource;
@@ -196,6 +197,12 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
     try {
       PrepRound.checkPrepFileExtensions(config, registry);
       registry.validateConfig(props, TokenizerFactory.create(props));
+      EmbeddingInputConfig.inlineMaxBytes(props);
+      EmbeddingInputConfig.inlineMaxHeapFraction(props);
+      if (registry.storesInputs(config)) {
+        // the input store's inline threshold against the per-task heap ceiling, before any Spark work
+        EmbeddingInputConfig.checkOnDriver(props, spark.sparkContext().getConf());
+      }
       if (VideoFrameHeapCheck.prepsVideo(config, registry)) {
         // the executor heap must hold the frame decodes of a video: refused before any Spark work
         VideoFrameHeapCheck.check(config, spark.sparkContext().getConf());
@@ -337,7 +344,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       int parallelism = config.computeParallelism(jsc.defaultParallelism());
       ComputeCounters counters = ComputeCounters.register(jsc.sc());
       Dataset<Row> embedded = ComputeRound.embed(spark, ComputeRound.roundRobin(toEmbed, parallelism), tableSchema, model, props,
-          new BlobBytesSource(storageConf, config.prepSourceRetry()), counters, level);
+          new BlobBytesSource(target, storageConf, config.prepSourceRetry()), counters, level);
       caches.outputs.add(embedded);
       LOG.info("Embedding round of {} at instant {}: model {} over {} task(s): {} row(s) embedded, {} failed for good", target,
           instant, model.getName(), parallelism, counters.getRowsEmbedded().value(), counters.getRowsPermanent().value());

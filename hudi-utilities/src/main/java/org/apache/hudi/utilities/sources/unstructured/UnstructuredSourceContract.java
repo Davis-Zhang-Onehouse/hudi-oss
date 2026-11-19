@@ -23,8 +23,11 @@ import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.schema.HoodieSchema;
 import org.apache.hudi.common.table.HoodieTableConfig;
+import org.apache.hudi.common.table.marker.MarkerType;
+import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
+import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.keygen.ComplexKeyGenerator;
 import org.apache.hudi.keygen.NonpartitionedKeyGenerator;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
@@ -78,6 +81,12 @@ public class UnstructuredSourceContract implements SourceContract {
         UnstructuredSourceContract::fields, " (these fields, in this order)");
     require(merged, HoodieStorageConfig.HOODIE_PARQUET_CONFIG_INJECTOR_CLASS, mode.injectorClass(), String::trim,
         " (a job's own injector goes under " + mode.injectorDelegateKey() + ", and runs first)");
+    if (mode == UnstructuredMode.EMBEDDING && ConfigUtils.getBooleanWithAltKeys(merged, HoodieWriteConfig.BLOB_MARKERS_ENABLE)) {
+      require(merged, HoodieWriteConfig.MARKERS_TYPE, MarkerType.TIMELINE_SERVER_BASED.name(),
+          value -> value.trim().toLowerCase(java.util.Locale.ROOT), "");
+      require(merged, HoodieWriteConfig.ROLLBACK_USING_MARKERS_ENABLE, "true",
+          value -> value.trim().toLowerCase(java.util.Locale.ROOT), "");
+    }
     if (mode == UnstructuredMode.BLOB) {
       setDefault(merged, HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME, "uncompressed");
       setDefault(merged, HoodieStorageConfig.PARQUET_WITH_BLOOM_FILTER_ENABLED, "false");
