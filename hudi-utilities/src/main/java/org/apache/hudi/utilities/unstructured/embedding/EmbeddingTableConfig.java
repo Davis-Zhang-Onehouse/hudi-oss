@@ -56,6 +56,8 @@ public class EmbeddingTableConfig implements Serializable {
 
   private static final String SINCE_1_3_0 = "1.3.0";
 
+  private static final String REQUIRED = "<required>";
+
   /** Root of every unstructured-data key (embedding and chunking); never passed through to the Hudi writer. */
   public static final String UNSTRUCTURED_PREFIX = "hoodie.unstructured.";
 
@@ -72,17 +74,18 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<String> MODELS = ConfigProperty
       .key(PREFIX + "models")
       .defaultValue("")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Comma-separated aliases of the declared embedding models, each owning a nullable VECTOR column. Only for "
-          + "prep_and_compute: a prep_only table declares no model.");
+          + "prep_and_compute: a prep_only table declares no model. Each model's rate.limit.requests.per.second is per compute "
+          + "task, so the job's aggregate request rate scales with its active compute tasks.");
 
   /** Comma-separated declared models the compute flow fills; empty means every declared model. Only for prep_and_compute. */
   public static final ConfigProperty<String> ACTIVE_MODELS = ConfigProperty
       .key(PREFIX + "active.models")
       .defaultValue("")
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Comma-separated declared models the compute flow fills; empty means every declared model. Only for "
-          + "prep_and_compute.");
+          + "prep_and_compute. A name not declared in " + PREFIX + "models is refused.");
 
   /** Prefix of the per-model keys {@code hoodie.unstructured.embedding.model.<alias>.*}. */
   public static final String MODEL_PREFIX = PREFIX + "model.";
@@ -353,7 +356,7 @@ public class EmbeddingTableConfig implements Serializable {
       .key(PREFIX + "compute.max.attempts")
       .defaultValue(3)
       .markAdvanced()
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("Tries of one row within one compute step: a row whose call fails transiently (the call throws, the answer "
           + "is malformed, the client answers RETRYABLE) is tried again, with backoff "
           + "(hoodie.unstructured.embedding.compute.retry.backoff.ms), until it has been tried this many times; a row "
@@ -395,8 +398,8 @@ public class EmbeddingTableConfig implements Serializable {
    */
   public static final ConfigProperty<String> MODE = ConfigProperty
       .key(PREFIX + "mode")
-      .noDefaultValue("<required>")
-      .sinceVersion("1.3.0")
+      .noDefaultValue(REQUIRED)
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("What one round of the embedding job does: prep_only writes the prepared rows and sets no model or compute "
           + "key, so the table has no model column; prep_and_compute also computes every row's embedding with the active model "
           + "(hoodie.unstructured.embedding.active.models), into its VECTOR column, before the same commit. A table is "
