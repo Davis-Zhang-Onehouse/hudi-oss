@@ -45,6 +45,7 @@ import org.apache.hudi.utilities.unstructured.embedding.prep.video.ExtractedFram
 import org.apache.hudi.utilities.unstructured.embedding.source.FileMeta;
 import org.apache.hudi.utilities.unstructured.embedding.video.FfmpegKeyframeVideoFrameSource;
 import org.apache.hudi.utilities.unstructured.embedding.video.VideoClips;
+import org.apache.hudi.utilities.unstructured.storage.ManagedBlobPaths;
 import org.apache.hudi.utilities.unstructured.storage.ParquetInlineCap;
 
 import org.apache.spark.sql.Row;
@@ -146,7 +147,7 @@ public class TestVideoInputStoreRound extends EmbeddingRoundTestBase {
     assertNull(prepared.getAs(HoodieSchema.Blob.INLINE_DATA_FIELD), "the row holds the reference only: " + key);
     Row reference = prepared.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE);
     String path = reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_PATH);
-    assertTrue(path.startsWith(HoodieTableMetaClient.METAFOLDER_NAME + "/.blob/") && path.endsWith(".bin"), path);
+    assertTrue(ManagedBlobPaths.isManagedBlobPath(path) && path.endsWith(".bin"), path);
     assertEquals(0L, (long) reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_OFFSET));
     assertEquals((long) image.length, (long) reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_LENGTH));
     assertEquals(true, reference.getAs(HoodieSchema.Blob.EXTERNAL_REFERENCE_IS_MANAGED), key);
