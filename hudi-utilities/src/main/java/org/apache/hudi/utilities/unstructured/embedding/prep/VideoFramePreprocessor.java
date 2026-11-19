@@ -265,16 +265,20 @@ public class VideoFramePreprocessor implements FilePreprocessor {
   }
 
   private static long maxBytes(TypedProperties props) {
+    String raw = ConfigUtils.getStringWithAltKeys(props, EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES, null);
+    if (raw == null || raw.trim().isEmpty()) {
+      return EmbeddingTableConfig.DEFAULT_PREP_VIDEO_MAX_BYTES;
+    }
     long maxBytes;
     try {
-      maxBytes = ConfigUtils.getLongWithAltKeys(props, EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES);
+      maxBytes = Long.parseLong(raw.trim());
     } catch (NumberFormatException e) {
       throw new IllegalArgumentException("Config " + EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key() + " must be an integer, got "
-          + ConfigUtils.getStringWithAltKeys(props, EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES, null), e);
+          + raw, e);
     }
     if (maxBytes <= 0) {
-      throw new IllegalArgumentException("Config " + EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key() + " must be positive, got "
-          + maxBytes);
+      throw new IllegalArgumentException("Config " + EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES.key() + " must be a positive byte "
+          + "count, got " + maxBytes);
     }
     return maxBytes;
   }
