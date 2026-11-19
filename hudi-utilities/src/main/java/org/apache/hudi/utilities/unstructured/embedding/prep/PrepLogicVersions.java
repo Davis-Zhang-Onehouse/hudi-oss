@@ -109,22 +109,24 @@ public final class PrepLogicVersions {
       EmbeddingTableConfig.CHUNK_MAX_TOKENS, EmbeddingTableConfig.CHUNK_MAX_WORDS,
       EmbeddingTableConfig.CHUNK_WINDOW_MAX_CHARS, EmbeddingTableConfig.CHUNK_SENTENCE_LOCALE,
       EmbeddingTableConfig.CHUNK_NORMALIZE_DEHYPHENATE, EmbeddingTableConfig.TOKENIZER_TYPE,
-      EmbeddingTableConfig.TOKENIZER_ENCODING, EmbeddingTableConfig.PDF_MAX_INPUT_BYTES,
-      EmbeddingTableConfig.PDF_MAX_PAGES, EmbeddingTableConfig.PDF_MAX_PAGE_CHARS,
+      EmbeddingTableConfig.TOKENIZER_ENCODING, EmbeddingTableConfig.PDF_MAX_PAGES, EmbeddingTableConfig.PDF_MAX_PAGE_CHARS,
       EmbeddingTableConfig.PDF_MAX_PAGE_GLYPHS, EmbeddingTableConfig.PDF_MAX_DECODED_STREAM_BYTES,
       EmbeddingTableConfig.PDF_MAX_PAGE_FONT_BYTES, EmbeddingTableConfig.PDF_MAX_GRAPHICS_DEPTH,
       EmbeddingTableConfig.PREP_IMAGE_MAX_PIXELS, EmbeddingTableConfig.PREP_IMAGE_HEADER_MAX_BYTES,
-      EmbeddingTableConfig.PREP_IMAGE_MAX_BYTES, EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES,
       EmbeddingTableConfig.PREP_VIDEO_KEYFRAME_INTERVAL_MS, EmbeddingTableConfig.PREP_VIDEO_DEDUP_METHOD,
       EmbeddingTableConfig.PREP_VIDEO_DEDUP_MAX_DISTANCE, EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS,
       AudioConfigKeys.ENABLED, AudioConfigKeys.SAMPLE_RATE, AudioConfigKeys.VAD_THRESHOLD_DB, AudioConfigKeys.VAD_MIN_SILENCE_MS,
       AudioConfigKeys.SEGMENT_MAX_MS, AudioConfigKeys.SEGMENT_MAX_BYTES, AudioConfigKeys.MAX_DURATION_MS
   };
   /**
-   * Recognized prep settings that do not decide prep output and are not pinned: performance and placement keys, and
-   * implementation-class keys whose resolved identity is pinned instead (the extension mapping, the tokenizer).
+   * Recognized prep settings that do not decide prep output and are not pinned: performance and placement keys,
+   * implementation-class keys whose resolved identity is pinned instead (the extension mapping, the tokenizer), and the input
+   * size caps, which only refuse a file and never change the rows of a file they accept, so a cap can
+   * be added to or changed on an existing table. Raising a cap does not re-prepare a file it already refused: prep reads a file
+   * again only when its source row changes, so the refusal stays until the source object changes.
    */
   static final ConfigProperty<?>[] NON_OUTPUT_SETTINGS = {
+      EmbeddingTableConfig.PDF_MAX_INPUT_BYTES, EmbeddingTableConfig.PREP_IMAGE_MAX_BYTES, EmbeddingTableConfig.PREP_VIDEO_MAX_BYTES,
       EmbeddingTableConfig.TOKENIZER_CLASS, EmbeddingTableConfig.PREP_VIDEO_PREPROCESSOR_CLASS,
       EmbeddingTableConfig.PREP_VIDEO_HEAP_FIXED_BYTES, EmbeddingTableConfig.PREP_PREFETCH_MAX_BYTES,
       EmbeddingTableConfig.BALANCE_STRATEGY_CLASS, EmbeddingTableConfig.BALANCE_NUM_PARTITIONS,
@@ -396,8 +398,8 @@ public final class PrepLogicVersions {
 
   /**
    * The table property a job setting is stored as: {@value #PREFIX} and the setting's name below its family's prefix
-   * ({@code hoodie.unstructured.chunk.max.tokens}: {@code chunk.max.tokens}; {@code hoodie.unstructured.embedding.prep.video.max.bytes}:
-   * {@code video.max.bytes}; {@code hoodie.unstructured.embedding.audio.enabled}: {@code audio.enabled}).
+   * ({@code hoodie.unstructured.chunk.max.tokens}: {@code chunk.max.tokens}; {@code hoodie.unstructured.embedding.prep.video.max.pixels}:
+   * {@code video.max.pixels}; {@code hoodie.unstructured.embedding.audio.enabled}: {@code audio.enabled}).
    */
   static String settingProperty(String setting) {
     for (String prefix : new String[] {EmbeddingTableConfig.PREP_PREFIX, EmbeddingTableConfig.PREFIX,

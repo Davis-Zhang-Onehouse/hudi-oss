@@ -96,6 +96,8 @@ public class EmbeddingColumnInfoStore {
   /** Governs the parser of the auxiliary history file, independently of blob layout and table schema versions. */
   public static final ConfigProperty<String> LAYOUT_VERSION = ConfigProperty
       .key("hoodie.table.embedding.column.info.layout.version").noDefaultValue();
+  /** The history layout this build writes and reads, pinned when the table is created. */
+  public static final String CURRENT_LAYOUT_VERSION = "1";
   public static final String RELATIVE_PATH = ".hoodie/.aux/embedding-column-info.json";
   /** The commit-time identity fence: {layout_version: 1, committed: snapshot or null, pending: {instant, snapshot}}. */
   static final String FENCE_PATH = ".hoodie/.aux/embedding-column-fence.json";

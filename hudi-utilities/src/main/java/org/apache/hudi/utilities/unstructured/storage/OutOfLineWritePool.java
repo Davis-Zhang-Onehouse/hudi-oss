@@ -62,6 +62,11 @@ public final class OutOfLineWritePool implements Closeable {
   private final Object done = new Object();
 
   public OutOfLineWritePool() {
+    this(0L);
+  }
+
+  /** Test seam before bounded waits are ported; this baseline still waits without a bound. */
+  OutOfLineWritePool(long waitMillis) {
     int pool = POOLS.incrementAndGet();
     AtomicInteger thread = new AtomicInteger();
     this.writeThreads = new ThreadPoolExecutor(THREADS, THREADS, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
@@ -83,6 +88,11 @@ public final class OutOfLineWritePool implements Closeable {
    *
    * @throws HoodieException when interrupted while waiting for room (the interrupt is kept), or when the pool is closed
    */
+  /** Baseline compatibility seam for the write label; the unchanged submit owns the write. */
+  public void submit(long bytes, String description, Write write) {
+    submit(bytes, write);
+  }
+
   public void submit(long bytes, Write write) {
     rethrowFailure();
     if (writeThreads.isShutdown()) {

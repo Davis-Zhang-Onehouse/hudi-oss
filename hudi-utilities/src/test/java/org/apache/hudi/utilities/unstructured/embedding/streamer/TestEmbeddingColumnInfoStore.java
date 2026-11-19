@@ -105,6 +105,17 @@ class TestEmbeddingColumnInfoStore {
   }
 
   @Test
+  void lostHistoryWithoutAFenceRefusesEveryNewJob() throws Exception {
+    add("text", MODEL, FIRST);
+    Files.delete(file());
+    for (int job = 0; job < 2; job++) {
+      assertThrows(IllegalArgumentException.class,
+          () -> store().checkAtStart(Collections.singletonMap("text", MODEL), Collections.singletonMap("text", 1536)));
+    }
+    assertFalse(Files.exists(file()));
+  }
+
+  @Test
   void noModelsLeavesBothPropertyAndFileAbsent() {
     EmbeddingColumnInfoStore store = store();
     store.checkAtStart(Collections.emptyMap(), Collections.emptyMap());
@@ -975,4 +986,30 @@ class TestEmbeddingColumnInfoStore {
   private static EmbeddingColumnInfoStore.Identity identity(String provider, String model, int dimension, String version) {
     return new EmbeddingColumnInfoStore.Identity(provider, model, dimension, version);
   }
+
+  public static class PlainObjectFileSystem extends org.apache.hadoop.fs.RawLocalFileSystem {
+    @Override
+    public java.net.URI getUri() {
+      return java.net.URI.create("gs://bucket");
+    }
+  }
+
+  @Test
+  void nonabortableObjectOutputRefusesAtStart() throws Exception {
+    org.apache.hadoop.conf.Configuration configuration = new org.apache.hadoop.conf.Configuration(false);
+    configuration.set("fs.gs.impl", PlainObjectFileSystem.class.getName());
+    configuration.setBoolean("fs.gs.impl.disable.cache", true);
+    StorageConfiguration<?> objectConf = org.apache.hudi.hadoop.fs.HadoopFSUtils.getStorageConf(configuration);
+    String objectBase = "gs://bucket" + temp.resolve("object-table");
+    Properties pins = new Properties();
+    pins.setProperty(EmbeddingColumnInfoStore.LAYOUT_VERSION.key(), EmbeddingColumnInfoStore.CURRENT_LAYOUT_VERSION);
+    HoodieTableMetaClient.newTableBuilder().setTableVersion(9).setTableName("object_column_info")
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setAdditionalProperties(pins).initTable(objectConf, objectBase);
+    EmbeddingColumnInfoStore objectStore = new EmbeddingColumnInfoStore(objectBase, objectConf, new TypedProperties());
+    HoodieIOException failure = assertThrows(HoodieIOException.class,
+        () -> objectStore.checkAtStart(Collections.singletonMap("text", MODEL), Collections.emptyMap()));
+    assertTrue(failure.getCause().getMessage().contains("fs.capability.outputstream.abortable"), failure.toString());
+    assertFalse(Files.exists(temp.resolve("object-table/.hoodie/.aux/embedding-column-info.json")));
+  }
+
 }
