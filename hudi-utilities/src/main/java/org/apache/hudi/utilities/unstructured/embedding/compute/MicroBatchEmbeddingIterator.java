@@ -227,6 +227,7 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
         }
       }
       if (retryable.isEmpty()) {
+        checkNotRejectedAsAWhole(inputs, results);
         return results;
       }
       if (tries >= maxAttempts) {
@@ -242,6 +243,26 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
         results.set(i, embedAlone(inputs.get(i)));
       }
     }
+  }
+
+  /** Alike permanent rejections across files fail the round unless the client promises independent input answers. */
+  private void checkNotRejectedAsAWhole(List<EmbeddingInput> inputs, List<EmbeddingResult> results) {
+    if (client.answersEachInputAlone()) {
+      return;
+    }
+    String error = results.isEmpty() ? null : results.get(0).getError();
+    for (EmbeddingResult result : results) {
+      if (result.getStatus() != EmbeddingResult.Status.PERMANENT_FAILURE || error == null || !error.equals(result.getError())) {
+        return;
+      }
+    }
+    if (inputs.stream().map(EmbeddingInput::getSourcePathSha).distinct().count() < 2) {
+      return;
+    }
+    throw new EmbeddingClientConfigException("EMBED-COMPUTE-REJECTED-AS-A-WHOLE model=" + model.getName() + ": all "
+        + results.size() + " inputs of one call, of more than one file, first " + inputs.get(0).describeIdentity()
+        + ", were rejected with the same error and none was embedded, so the provider "
+        + "rejects the request, not an input: " + error + "; the compute commit fails and the next sync retries from the same checkpoint");
   }
 
   /** The wait before try {@code tries + 1}: {@link #backoffMs} doubled per earlier retry, capped. */
@@ -293,6 +314,8 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
           inputs.size(), inputs.get(0).describeIdentity(), e);
       counters.getBatchesFailed().add(1);
       return Collections.nCopies(inputs.size(), EmbeddingResult.retryable(describe(e)));
+    } finally {
+      addRateLimitWait();
     }
   }
 
@@ -310,6 +333,16 @@ public class MicroBatchEmbeddingIterator implements Iterator<Row>, AutoCloseable
     } catch (Exception e) {
       LOG.warn("EMBED-COMPUTE-INPUT-FAILED model={} {}", model.getName(), input.describeIdentity(), e);
       return EmbeddingResult.retryable(describe(e));
+    } finally {
+      addRateLimitWait();
+    }
+  }
+
+  /** Includes pacing from successful and throwing calls in the round counters. */
+  private void addRateLimitWait() {
+    EmbeddingCallStats stats = client.lastCallStats();
+    if (stats != null && stats.getRateLimitWaitMillis() > 0) {
+      counters.getRateLimitWaitMillis().add(stats.getRateLimitWaitMillis());
     }
   }
 
