@@ -35,12 +35,11 @@ import java.nio.file.Path;
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Every blob the FFmpeg keyframe source opens (the scanner's and the decoder's) is closed on every way out. */
+/** The one blob the FFmpeg keyframe source opens per video (its grabber's) is closed on every way out. */
 public class TestFfmpegKeyframeVideoFrameSourceHandleRelease {
 
   @TempDir
@@ -54,7 +53,7 @@ public class TestFfmpegKeyframeVideoFrameSourceHandleRelease {
   }
 
   @Test
-  public void drainedVideoClosesBothBlobs() throws IOException {
+  public void drainedVideoClosesItsBlob() throws IOException {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip);
     int frames = 0;
     try (ClosableIterator<ExtractedFrame> it = new FfmpegKeyframeVideoFrameSource().frames(bytes, meta(), new TypedProperties())) {
@@ -64,33 +63,33 @@ public class TestFfmpegKeyframeVideoFrameSourceHandleRelease {
       }
     }
     assertTrue(frames > 0, "the clip yields frames");
-    assertEquals(2, bytes.opened(), "the scanner's and the decoder's blobs");
+    assertEquals(1, bytes.opened(), "one blob per video: the scan and the decodes share it");
     assertEquals(Collections.emptyList(), bytes.unclosed(), "unclosed handles after a drained video");
   }
 
   @Test
-  public void abandonedAfterTheFirstFrameClosesBothBlobs() throws IOException {
+  public void abandonedAfterTheFirstFrameClosesItsBlob() throws IOException {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip);
     try (ClosableIterator<ExtractedFrame> it = new FfmpegKeyframeVideoFrameSource().frames(bytes, meta(), new TypedProperties())) {
       assertTrue(it.hasNext());
       it.next();
     }
-    assertEquals(2, bytes.opened());
+    assertEquals(1, bytes.opened());
     assertEquals(Collections.emptyList(), bytes.unclosed(), "unclosed handles after the consumer stopped early");
   }
 
   @Test
-  public void refusalWhileOpeningClosesTheScannerBlob() {
+  public void refusalWhileOpeningClosesTheBlob() {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip);
     TypedProperties props = new TypedProperties();
     props.setProperty(EmbeddingTableConfig.PREP_VIDEO_MAX_PIXELS.key(), "100");
     assertThrows(RuntimeException.class, () -> new FfmpegKeyframeVideoFrameSource().frames(bytes, meta(), props));
-    assertEquals(1, bytes.opened(), "refused after the scanner's probe, before the decoder opens");
+    assertEquals(1, bytes.opened(), "refused after the probe");
     assertEquals(Collections.emptyList(), bytes.unclosed(), "unclosed handles after a refusal while opening");
   }
 
   @Test
-  public void storageFailurePartWayClosesBothBlobs() throws IOException {
+  public void storageFailurePartWayClosesTheBlob() throws IOException {
     TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip, Files.size(clip) * 3 / 4, n -> null);
     assertThrows(RuntimeException.class, () -> {
       try (ClosableIterator<ExtractedFrame> it = new FfmpegKeyframeVideoFrameSource().frames(bytes, meta(), new TypedProperties())) {
@@ -104,28 +103,24 @@ public class TestFfmpegKeyframeVideoFrameSourceHandleRelease {
   }
 
   /**
-   * The decoder's close fails with an Error (thrown by its blob's close, as a native free or an exhausted heap would): the
-   * scanner's grabber and blob (blob #1, opened first) and the frame encoder's JPEG writer, closed after it, must still be
-   * released, and that Error is the one close() throws. Whether the decoder's own blob (#2) is closed by a retry is not under
-   * test.
+   * The grabber's close fails with an Error (thrown by its blob's close, as a native free or an exhausted heap would): the
+   * frame encoder's JPEG writer, closed after it, must still be released, and that Error is the one close() throws.
    */
   @Test
-  public void errorClosingTheDecoderStillClosesTheScanner() throws IOException {
-    Error closeFailure = new OutOfMemoryError("test: the decoder blob failed to close");
-    TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip, Long.MAX_VALUE, n -> n == 2 ? closeFailure : null);
+  public void errorClosingTheGrabberStillDisposesTheEncoder() throws IOException {
+    Error closeFailure = new OutOfMemoryError("test: the video blob failed to close");
+    TrackedBlobSupplier bytes = new TrackedBlobSupplier(clip, Long.MAX_VALUE, n -> n == 1 ? closeFailure : null);
     try (ImageProviderLeakSpies spies = ImageProviderLeakSpies.installJpeg(false, false)) {
       ClosableIterator<ExtractedFrame> it = new FfmpegKeyframeVideoFrameSource().frames(bytes, meta(), new TypedProperties());
       assertEquals(1, spies.spyWriter().created().size(), "the frame encoder chose the spy JPEG writer");
       assertTrue(it.hasNext());
       it.next();
       Error thrown = assertThrows(Error.class, it::close);
-      assertSame(closeFailure, thrown, "close() rethrows the decoder's close failure");
-      assertTrue(spies.spyWriter().created().get(0).disposed(), "the encoder's JPEG writer was not disposed after the decoder's "
+      assertSame(closeFailure, thrown, "close() rethrows the grabber's close failure");
+      assertTrue(spies.spyWriter().created().get(0).disposed(), "the encoder's JPEG writer was not disposed after the grabber's "
           + "close threw an Error");
     }
-    assertEquals(2, bytes.opened(), "the scanner's blob and the decoder's");
-    assertFalse(bytes.unclosed().contains("blob #1"), "the scanner's blob #1 was not closed after the decoder's close threw an "
-        + "Error; unclosed: " + bytes.unclosed());
+    assertEquals(1, bytes.opened(), "one blob per video");
   }
 
   private static FileMeta meta() throws IOException {

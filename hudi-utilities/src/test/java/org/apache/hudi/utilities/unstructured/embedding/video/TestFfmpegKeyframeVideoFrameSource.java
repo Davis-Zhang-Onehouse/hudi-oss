@@ -449,26 +449,23 @@ public class TestFfmpegKeyframeVideoFrameSource {
   }
 
   /**
-   * An {@link Error} while the decoder opens (thrown from its blob under the grabber's start, as a failing native link would be),
-   * after the scanner's blob stream is open and its grabber started: it is rethrown as it is and both blob streams are closed.
+   * An {@link Error} while the video opens, after its blob is open (thrown from the blob, as a failing native link would be): it
+   * is rethrown as it is and the blob is closed once.
    */
   @Test
-  public void errorWhileOpeningClosesBothBlobStreamsAndIsRethrown() throws IOException {
-    LinkageError linkFailure = new LinkageError("test: a native library failed to link while the decoder started");
+  public void errorWhileOpeningClosesTheBlobAndIsRethrown() throws IOException {
+    LinkageError linkFailure = new LinkageError("test: a native library failed to link while the video opened");
     AtomicInteger opened = new AtomicInteger();
     AtomicInteger closed = new AtomicInteger();
     SeekableBlobBytesSupplier bytes = new SeekableBlobBytesSupplier() {
       @Override
       public SeekableBlob openSeekable() throws IOException {
-        boolean decoder = opened.incrementAndGet() == 2;
+        opened.incrementAndGet();
         return new VideoClips.FileBlob(clip, Long.MAX_VALUE) {
           @Override
-          public long getPos() throws IOException {
-            if (decoder) {
-              // the grabber's start marks the stream (InputStream.mark, outside its read callbacks): the Error escapes start()
-              throw linkFailure;
-            }
-            return super.getPos();
+          public long length() {
+            // asked once, as the video opens, outside FFmpeg's read callbacks: the Error escapes the open
+            throw linkFailure;
           }
 
           @Override
@@ -486,8 +483,8 @@ public class TestFfmpegKeyframeVideoFrameSource {
     };
     Error thrown = assertThrows(Error.class, () -> drain(bytes, meta(clip), new TypedProperties()));
     assertSame(linkFailure, thrown);
-    assertEquals(2, opened.get(), "the scanner's and the decoder's blob streams opened");
-    assertEquals(2, closed.get(), "each blob stream is closed once");
+    assertEquals(1, opened.get(), "one blob per video");
+    assertEquals(1, closed.get(), "the blob is closed once");
   }
 
   /** A blob stream that fails to close changes no outcome but leaves a WARN naming the video. */
@@ -524,8 +521,8 @@ public class TestFfmpegKeyframeVideoFrameSource {
   }
 
   /**
-   * Each grabber's close fails on its blob stream's first close, which leaves the blob open (as a pooled connection whose release
-   * throws would): both blob streams are still closed afterwards, and the failures are logged.
+   * The grabber's close fails on its blob stream's first close, which leaves the blob open (as a pooled connection whose release
+   * throws would): the blob stream is still closed afterwards, and the failure is logged.
    */
   @Test
   public void blobStreamsAreClosedWhenTheGrabbersCloseFails() throws IOException {
@@ -559,9 +556,9 @@ public class TestFfmpegKeyframeVideoFrameSource {
       assertEquals(KEPT_TIMESTAMPS.size(), drain(bytes, file, new TypedProperties()).size(), "the frames are out");
       warnings = logs.warnings();
     }
-    assertEquals(2, opened.get(), "the scanner's and the decoder's blob streams");
-    assertEquals(2, closed.get(), "each blob stream is closed after its grabber's close failed");
-    assertEquals(2, warnings.size(), warnings.toString());
+    assertEquals(1, opened.get(), "one blob stream per video");
+    assertEquals(1, closed.get(), "the blob stream is closed after the grabber's close failed");
+    assertEquals(1, warnings.size(), warnings.toString());
     for (String warning : warnings) {
       assertTrue(warning.contains(file.toString()) && warning.contains("failed to close"), warning);
     }

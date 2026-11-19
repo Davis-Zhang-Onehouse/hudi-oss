@@ -288,10 +288,16 @@ public class PreprocessingIterator implements Iterator<Row>, AutoCloseable {
         return;
       }
       if (lookahead == null && !blobRows.hasNext()) {
-        if (preparedInputs != null) {
-          preparedInputs.awaitWrites();
+        try {
+          if (preparedInputs != null) {
+            // every payload file of the task is written before the iterator reports its end, so the task succeeds only with
+            // its files; a failed write fails the task
+            preparedInputs.awaitWrites();
+          }
+        } finally {
+          // closed also when a write failed: nothing else closes an iterator outside a Spark task
+          close();
         }
-        close();
         return;
       }
       Row next = lookahead != null ? lookahead : blobRows.next();
