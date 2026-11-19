@@ -150,6 +150,14 @@ public class EmbeddingTableConfig implements Serializable {
       .sinceVersion("1.3.0")
       .withDocumentation("Provider-side name of the model. Replace <alias> with the declared model alias.");
 
+  /**
+   * Per-model declared modalities: a non-empty subset of {@code text} and {@code image}, comma-separated, in any letter case and
+   * order; required for the active model under {@code prep_and_compute}. Compute sends the model only rows of a declared
+   * modality; the job refuses at start a declaration the model's client has no request format for, or one beyond what a known
+   * model can embed ({@code ModelModalityChecks}, {@code KnownEmbeddingModels}).
+   */
+  public static final String MODEL_MODALITIES_SUFFIX = ".modalities";
+
   /** Per-chunk token limit, must be positive. */
   public static final ConfigProperty<Integer> CHUNK_MAX_TOKENS = ConfigProperty
       .key(CHUNK_PREFIX + "max.tokens")
@@ -809,7 +817,7 @@ public class EmbeddingTableConfig implements Serializable {
   public static final ConfigProperty<Integer> COMPUTE_IMAGE_LONG_SIDE = ConfigProperty
       .key(COMPUTE_IMAGE_PREFIX + "long.side")
       .defaultValue(ImagePreprocessingSpec.DEFAULT_LONG_SIDE)
-      .sinceVersion("1.3.0")
+      .sinceVersion(SINCE_1_3_0)
       .withDocumentation("The long side in pixels compute resizes an image to before the model call (never upscaled); must be "
           + "positive; default 512 (Vertex multimodalembedding resizes to 512x512 itself). Refused under prep_only.");
 
