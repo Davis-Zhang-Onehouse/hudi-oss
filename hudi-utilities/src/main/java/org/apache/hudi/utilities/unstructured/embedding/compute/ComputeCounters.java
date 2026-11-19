@@ -38,20 +38,32 @@ public class ComputeCounters implements Serializable {
   private final LongAccumulator rowsEmbedded;
   private final LongAccumulator rowsRetried;
   private final LongAccumulator rowsPermanent;
+  private final LongAccumulator rateLimitWaitMillis;
 
+  /**
+   * Counters with a fresh, unregistered rate-limit wait accumulator: driver-local only (tests that run the iterator in the
+   * driver). Spark refuses to ship an unregistered accumulator to executors; production uses {@link #register}.
+   */
   public ComputeCounters(LongAccumulator batchesOk, LongAccumulator batchesFailed, LongAccumulator rowsEmbedded,
                          LongAccumulator rowsRetried, LongAccumulator rowsPermanent) {
+    this(batchesOk, batchesFailed, rowsEmbedded, rowsRetried, rowsPermanent, new LongAccumulator());
+  }
+
+  public ComputeCounters(LongAccumulator batchesOk, LongAccumulator batchesFailed, LongAccumulator rowsEmbedded,
+                         LongAccumulator rowsRetried, LongAccumulator rowsPermanent, LongAccumulator rateLimitWaitMillis) {
     this.batchesOk = batchesOk;
     this.batchesFailed = batchesFailed;
     this.rowsEmbedded = rowsEmbedded;
     this.rowsRetried = rowsRetried;
     this.rowsPermanent = rowsPermanent;
+    this.rateLimitWaitMillis = rateLimitWaitMillis;
   }
 
   public static ComputeCounters register(SparkContext sc) {
     return new ComputeCounters(sc.longAccumulator("embedding.compute.batchesOk"),
         sc.longAccumulator("embedding.compute.batchesFailed"), sc.longAccumulator("embedding.compute.rowsEmbedded"),
-        sc.longAccumulator("embedding.compute.rowsRetried"), sc.longAccumulator("embedding.compute.rowsPermanent"));
+        sc.longAccumulator("embedding.compute.rowsRetried"), sc.longAccumulator("embedding.compute.rowsPermanent"),
+        sc.longAccumulator("embedding.compute.rateLimitWaitMillis"));
   }
 
   public LongAccumulator getBatchesOk() {
@@ -74,5 +86,13 @@ public class ComputeCounters implements Serializable {
   /** Rows skipped for good (PERMANENT). */
   public LongAccumulator getRowsPermanent() {
     return rowsPermanent;
+  }
+
+  /**
+   * Milliseconds the model's clients waited for rate-limit tokens ({@link RequestRateLimiter}), summed over the calls of every
+   * compute task: pacing, as opposed to a slow provider.
+   */
+  public LongAccumulator getRateLimitWaitMillis() {
+    return rateLimitWaitMillis;
   }
 }

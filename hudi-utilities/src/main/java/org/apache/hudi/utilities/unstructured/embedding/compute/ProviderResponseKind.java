@@ -27,6 +27,9 @@ public enum ProviderResponseKind {
   OK,
   /** Transient: retried with backoff. */
   RETRYABLE,
+  /** Out of quota or billing (429 insufficient_quota, credit_balance_exhausted, a spend or usage limit): the run fails at once;
+   *  no retry within the run can help. */
+  QUOTA,
   /** The configuration is rejected. */
   CONFIG,
   /** Some input is rejected. */

@@ -182,7 +182,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
         checkModelColumnMatchesTable(model.get(), config.targetTablePath(), table.get());
       }
       // the model's client must load on the driver, so a misconfigured model fails the round before any Spark work
-      EmbeddingClientFactory.clientClassName(model.get());
+      EmbeddingClientFactory.checkConfig(model.get(), props);
       config.computeBatchSize();
       config.computeMaxAttempts();
       config.computeRetryBackoffMs();
