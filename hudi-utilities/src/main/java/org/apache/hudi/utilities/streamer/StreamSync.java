@@ -222,6 +222,7 @@ public class StreamSync implements Serializable, Closeable {
    * Allows transforming source to target table before writing.
    */
   private transient Option<Transformer> transformer = Option.empty();
+  private final AtomicBoolean transformerClosed = new AtomicBoolean();
 
   /** The contract of the job's source, which prepared {@link #props}; {@link SourceContracts#NONE} for a source without one. */
   private transient SourceContract sourceContract = SourceContracts.NONE;
@@ -1714,7 +1715,7 @@ public class StreamSync implements Serializable, Closeable {
    */
   @Override
   public void close() {
-    try (Transformer closeTransformer = transformer.orElse(null)) {
+    try (Transformer closeTransformer = transformerClosed.compareAndSet(false, true) ? transformer.orElse(null) : null) {
       if (writeClient != null) {
         writeClient.close();
         writeClient = null;
