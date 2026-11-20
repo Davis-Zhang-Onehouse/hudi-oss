@@ -50,6 +50,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -64,6 +65,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -73,6 +75,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * and the segments, and the real packer's chunk iterator exactly once.
  */
 public class TestVideoSpeechChunks {
+
+  @Test
+  public void cycleInSpeechFailureDetailsTerminates() {
+    IOException first = new IOException("first");
+    IOException second = new IOException("second", first);
+    first.initCause(second);
+    assertTimeoutPreemptively(Duration.ofSeconds(1), () -> assertTrue(VideoSpeechChunks.describe(first).contains("second")));
+  }
 
   private static final String LOGIC = "audio=fake;asr=fake;pack=" + StubTranscriptChunker.LOGIC_VERSION + ";tokenizer=word-count";
 
@@ -330,8 +340,8 @@ public class TestVideoSpeechChunks {
       }
     };
     // the real packer under its default chunk keys (this class's 6-token cap is for the stub chunker)
-    VideoSpeechChunks speech = new VideoSpeechChunks(source, transcriber, new TranscriptPacker(), input(), failing,
-        new TypedProperties(), LOGIC, SpeakerLabels.SCOPE_FILE);
+    VideoSpeechChunks.Engines engines = new VideoSpeechChunks.Engines(source, transcriber, new TranscriptPacker());
+    VideoSpeechChunks speech = new VideoSpeechChunks(engines, input(), failing, new TypedProperties(), LOGIC, SpeakerLabels.SCOPE_FILE);
     RuntimeException failure = assertThrows(RuntimeException.class, () -> drain(speech));
     assertTrue(failure instanceof TokenizerException, failure.toString());
     assertEquals(TokenizerException.Kind.RETRYABLE, ((TokenizerException) failure).kind());
