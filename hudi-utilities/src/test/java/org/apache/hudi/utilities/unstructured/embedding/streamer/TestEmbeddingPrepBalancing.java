@@ -29,6 +29,7 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.FixtureFile;
 import org.apache.hudi.utilities.unstructured.embedding.PrepRoundCounters;
+import org.apache.hudi.utilities.unstructured.embedding.UnstructuredTableTestProperties;
 import org.apache.hudi.utilities.unstructured.embedding.balance.BalancingAssignment;
 import org.apache.hudi.utilities.unstructured.embedding.balance.HashBalancingStrategy;
 import org.apache.hudi.utilities.unstructured.embedding.balance.SizeTypeAwareBalancingStrategy;
@@ -156,12 +157,13 @@ public class TestEmbeddingPrepBalancing extends EmbeddingRoundTestBase {
   @Test
   public void prepRoundKeepsBothSourceVersionsOfAPath() throws Exception {
     String target = table("versions");
-    // the round's table exists before the transformer runs (the streamer starts the instant first); prep writes large payloads
-    // under it
-    HoodieTableMetaClient.newTableBuilder().setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("versions")
-        .setRecordKeyFields(String.join(",", EmbeddingTableSchema.KEY_COLUMNS)).initTable(storage(), target);
     TypedProperties props = props(target, EmbeddingTableConfig.MODE_PREP_ONLY,
         EmbeddingTableConfig.BALANCE_STRATEGY_CLASS.key(), RecordingStrategy.class.getName());
+    // the round's table exists before the transformer runs (the streamer starts the instant first); prep writes large payloads
+    // under it
+    HoodieTableMetaClient.newTableBuilder().setAdditionalProperties(UnstructuredTableTestProperties.embedding(props))
+        .setTableType(HoodieTableType.COPY_ON_WRITE).setTableName("versions")
+        .setRecordKeyFields(String.join(",", EmbeddingTableSchema.KEY_COLUMNS)).initTable(storage(), target);
     byte[] first = PdfFixtures.text("Alpha from the first version.");
     byte[] second = PdfFixtures.text("Beta from the second version.");
     Row v1 = sourceVersion(100L, first);
