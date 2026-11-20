@@ -21,10 +21,12 @@ package org.apache.hudi.utilities.unstructured.embedding.streamer;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.schema.HoodieSchema;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.storage.StorageConfiguration;
+import org.apache.hudi.utilities.exception.HoodiePreCommitRefusalException;
 import org.apache.hudi.utilities.transform.InstantAwareTransformer;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingModelSpec;
 import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableConfig;
@@ -32,6 +34,7 @@ import org.apache.hudi.utilities.unstructured.embedding.EmbeddingTableSchema;
 import org.apache.hudi.utilities.unstructured.embedding.balance.BalancedRows;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ComputeCounters;
 import org.apache.hudi.utilities.unstructured.embedding.compute.ComputeRound;
+import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientConfigException;
 import org.apache.hudi.utilities.unstructured.embedding.compute.EmbeddingClientFactory;
 import org.apache.hudi.utilities.unstructured.embedding.input.EmbeddingInputConfig;
 import org.apache.hudi.utilities.unstructured.embedding.prep.PreprocessorRegistry;
@@ -103,6 +106,8 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
   /** The caches of each table's last round, released at the table's next round. */
   private static final ConcurrentMap<String, RoundCaches> ROUND_CACHES = new ConcurrentHashMap<>();
 
+  private final ConcurrentMap<String, ComputeCheck> pendingCompute = new ConcurrentHashMap<>();
+
   @Override
   public Dataset<Row> apply(JavaSparkContext jsc, SparkSession sparkSession, Dataset<Row> rowDataset, TypedProperties properties) {
     throw new HoodieException(getClass().getSimpleName() + " writes every row of a round under the round's instant: it runs only "
@@ -129,6 +134,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
     EmbeddingTableConfig config = EmbeddingTableConfig.from(properties);
     String target = config.targetTablePath();
     releaseRound(target);
+    pendingCompute.remove(target);
     StorageConfiguration<?> storageConf = HadoopFSUtils.getStorageConf(jsc.hadoopConfiguration());
     // the table first: its minimum version
     PrepRound.checkTable(config, storageConf);
@@ -282,8 +288,9 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
 
   /**
    * The schema of the rows the round writes: the latest writer schema of an existing table ({@code table}) without its meta
-   * fields, every column beyond the base ones nullable (prep writes null in a column it does not make), with the active model's
-   * VECTOR column added under {@code prep_and_compute} when the table does not have it yet; else the configuration's
+   * fields, every column beyond the base ones nullable (prep writes null in a column it does not make), with the nullable
+   * prepared-image BLOB column added when missing and the active model's VECTOR column added under
+   * {@code prep_and_compute} when the table does not have it yet; else the configuration's
    * ({@link EmbeddingTableSchema#build}).
    */
   static StructType outputSchema(EmbeddingTableConfig config, Option<StructType> table, Option<EmbeddingModelSpec> model) {
@@ -369,6 +376,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       Dataset<Row> embedded = ComputeRound.embed(spark, ComputeRound.hashPartitionByKey(toEmbed, parallelism), tableSchema, model, props,
           new BlobBytesSource(target, storageConf, config.prepSourceRetry()), counters, level);
       caches.outputs.add(embedded);
+      pendingCompute.put(target, new ComputeCheck(instant, model, counters));
       LOG.info("Embedding round of {} at instant {}: model {} over {} task(s): {} row(s) embedded, {} failed for good", target,
           instant, model.getName(), parallelism, counters.getRowsEmbedded().value(), counters.getRowsPermanent().value());
       if (!PrepRound.errorTableEnabled(props)) {
@@ -385,6 +393,7 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       return routed(output, props);
     } catch (Exception e) {
       // a failed Spark job surfaces as a checked SparkException: the round's caches are released for it too
+      pendingCompute.remove(target);
       caches.release();
       throw e instanceof RuntimeException ? (RuntimeException) e
           : new HoodieException("Embedding round of " + target + " failed at instant " + instant, e);
@@ -400,5 +409,37 @@ public class EmbeddingTableTransformer implements InstantAwareTransformer {
       return output;
     }
     return output.filter(functions.col(PrepRound.CORRUPT_RECORD).isNull()).drop(PrepRound.CORRUPT_RECORD);
+  }
+
+  private static final class ComputeCheck {
+    private final String instant;
+    private final EmbeddingModelSpec model;
+    private final ComputeCounters counters;
+
+    private ComputeCheck(String instant, EmbeddingModelSpec model, ComputeCounters counters) {
+      this.instant = instant;
+      this.model = model;
+      this.counters = counters;
+    }
+  }
+
+  @Override
+  public void onPreCommit(JavaSparkContext jsc, SparkSession sparkSession, TypedProperties properties, String instantTime,
+                          HoodieTableMetaClient metaClient) {
+    String target = EmbeddingTableConfig.from(properties).targetTablePath();
+    ComputeCheck compute = pendingCompute.get(target);
+    if (compute != null && compute.instant.equals(instantTime)) {
+      try {
+        ComputeRound.checkRefused(compute.model, compute.counters);
+      } catch (EmbeddingClientConfigException refusal) {
+        throw new HoodiePreCommitRefusalException(refusal.getMessage(), refusal);
+      }
+    }
+  }
+
+  @Override
+  public void onCommit(JavaSparkContext jsc, SparkSession sparkSession, TypedProperties properties, String instantTime) {
+    String target = EmbeddingTableConfig.from(properties).targetTablePath();
+    pendingCompute.computeIfPresent(target, (path, compute) -> compute.instant.equals(instantTime) ? null : compute);
   }
 }
