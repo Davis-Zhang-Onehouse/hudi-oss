@@ -266,9 +266,9 @@ class TestStoredImageOutcomes {
         file.toUri().toString(), "source.png"}, sourceSchema);
     PrepCounters counters = new PrepCounters(new LongAccumulator(), new LongAccumulator(), new LongAccumulator(),
         new LongAccumulator(), new LongAccumulator());
-    try (PreprocessingIterator prep = PreprocessingIterator.builder(Collections.singletonList(source).iterator(),
-        EmbeddingTableConfig.from(props), "001").bytesSource(storedInputs()).registry(new PreprocessorRegistry(props))
-        .tokenizer(new WordCountTokenizer()).counters(counters).build()) {
+    try (PreprocessingIterator prep = new PreprocessingIterator(Collections.singletonList(source).iterator(),
+        EmbeddingTableConfig.from(props), "001", storedInputs(), new PreprocessorRegistry(props),
+        new WordCountTokenizer(), counters, null)) {
       List<Row> rows = new ArrayList<>();
       prep.forEachRemaining(rows::add);
       assertEquals(1, rows.size(), prep.getSideOutputs().toString());
@@ -460,7 +460,7 @@ class TestStoredImageOutcomes {
   }
 
   /** A multimodal client whose every call fails on a broken invariant. */
-  public static class PlatformFailingClient implements MultimodalEmbeddingClient {
+  public static class PlatformFailingClient implements EmbeddingClient {
     static final String MESSAGE = "image input without a prepared image (model " + MODEL + ")";
     private EmbeddingModelSpec spec;
 
@@ -508,6 +508,7 @@ class TestStoredImageOutcomes {
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_DIMENSIONS_SUFFIX, String.valueOf(DIM));
     props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_PROVIDER_SUFFIX,
         DummyMultimodalEmbeddingClient.PROVIDER);
+    props.setProperty(EmbeddingTableConfig.MODEL_PREFIX + MODEL + EmbeddingTableConfig.MODEL_MODALITIES_SUFFIX, "text,image");
     props.setProperty(EmbeddingTableConfig.COMPUTE_RETRY_BACKOFF_MS.key(), "0");
     return props;
   }
